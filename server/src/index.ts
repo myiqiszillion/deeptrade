@@ -551,7 +551,7 @@ async function backfillHistory(): Promise<void> {
     } else {
       const yahooSymbol = YAHOO_SYMBOLS[symbol];
       if (yahooSymbol) {
-        const bars = await fetchYahooMinuteBars(yahooSymbol, '1d');
+        const bars = await fetchYahooMinuteBars(yahooSymbol);
         ticks = reconstructTicksFromBars(bars, instrument.tickSize);
         if (ticks.length > 0) source = 'RECONSTRUCTED_1M';
       }
@@ -566,8 +566,12 @@ async function backfillHistory(): Promise<void> {
       return;
     }
 
+    // Avoid duplicating the same history in the replay buffer when a symbol is revisited.
+    const buffered = backtest.getRecordedTicks();
+    const lastBufferedTs = buffered.length > 0 ? buffered[buffered.length - 1].timestamp : 0;
+
     for (const tick of ticks) {
-      backtest.recordTick(tick);
+      if (tick.timestamp > lastBufferedTs) backtest.recordTick(tick);
       footprint.processTick(tick);
       profile.processTick(tick);
       vwap.processTick(tick);

@@ -39,7 +39,7 @@ async function getJson(url: string): Promise<unknown | null> {
 }
 
 /** Real 1-minute bars from Yahoo's public chart endpoint (no key required). */
-export async function fetchYahooMinuteBars(yahooSymbol: string, range = '1d'): Promise<HistoryBar[]> {
+export async function fetchYahooMinuteBars(yahooSymbol: string): Promise<HistoryBar[]> {
   // Yahoo silently returns an EMPTY chart when the ticker is percent-encoded (ES%3DF), so the
   // raw symbol is used after a strict allow-list check instead of encodeURIComponent.
   if (!/^[A-Za-z0-9.^=-]{1,16}$/.test(yahooSymbol)) {
