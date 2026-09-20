@@ -13,7 +13,10 @@ export class BinanceFuturesFeed {
   private wsDepth: WebSocket | null = null;
   private callbacks: DataFeedCallbacks;
   private isRunning = false;
-  private reconnectTimer: NodeJS.Timeout | null = null;
+  // One timer per stream: a single shared field cannot cancel both reconnects and silently
+  // lost one of them, so a stopped instance could still have a pending reconnect.
+  private tradeReconnectTimer: NodeJS.Timeout | null = null;
+  private depthReconnectTimer: NodeJS.Timeout | null = null;
   /** True once teardown was requested: late callbacks are expected and must stay silent. */
   private intentionalStop = false;
 
@@ -34,9 +37,13 @@ export class BinanceFuturesFeed {
     // Mark the teardown as intentional so late error/close callbacks are treated as expected
     // (they still must not reconnect or mutate state) and are not logged as feed failures.
     this.intentionalStop = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+    if (this.tradeReconnectTimer) {
+      clearTimeout(this.tradeReconnectTimer);
+      this.tradeReconnectTimer = null;
+    }
+    if (this.depthReconnectTimer) {
+      clearTimeout(this.depthReconnectTimer);
+      this.depthReconnectTimer = null;
     }
 
     const sockets = [this.wsTrade, this.wsDepth].filter((socket): socket is WebSocket => socket !== null);
@@ -121,10 +128,14 @@ export class BinanceFuturesFeed {
     });
 
     this.wsTrade.on('close', () => {
-      if (this.isRunning) {
-        console.log('[BinanceFeed] aggTrade closed, reconnecting in 3s...');
-        setTimeout(() => this.connectTradeStream(), 3000);
-      }
+      if (this.intentionalStop || !this.isRunning) return; // teardown: never reconnect
+      console.log('[BinanceFeed] aggTrade closed, reconnecting in 3s...');
+      if (this.tradeReconnectTimer) clearTimeout(this.tradeReconnectTimer);
+      this.tradeReconnectTimer = setTimeout(() => {
+        this.tradeReconnectTimer = null;
+        if (this.intentionalStop || !this.isRunning) return; // generation/lifecycle guard
+        this.connectTradeStream();
+      }, 3000);
     });
   }
 
@@ -158,10 +169,14 @@ export class BinanceFuturesFeed {
     });
 
     this.wsDepth.on('close', () => {
-      if (this.isRunning) {
-        console.log('[BinanceFeed] depth closed, reconnecting in 3s...');
-        setTimeout(() => this.connectDepthStream(), 3000);
-      }
+      if (this.intentionalStop || !this.isRunning) return; // teardown: never reconnect
+      console.log('[BinanceFeed] depth closed, reconnecting in 3s...');
+      if (this.depthReconnectTimer) clearTimeout(this.depthReconnectTimer);
+      this.depthReconnectTimer = setTimeout(() => {
+        this.depthReconnectTimer = null;
+        if (this.intentionalStop || !this.isRunning) return; // generation/lifecycle guard
+        this.connectDepthStream();
+      }, 3000);
     });
   }
 }
