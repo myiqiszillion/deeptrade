@@ -208,7 +208,7 @@ export interface GEXProfile {
   regime: 'POSITIVE_GAMMA' | 'NEGATIVE_GAMMA';
   levels: GEXStrikeLevel[];
   timestamp: number;
-  dataSource: 'SIMULATED' | 'LIVE' | 'CBOE_DELAYED';
+  dataSource: 'CBOE_DELAYED' | 'LIVE';
 }
 
 export interface OptionsFlowTrade {
@@ -225,7 +225,7 @@ export interface OptionsFlowTrade {
   price: number;
   premiumUsd: number;
   spotPrice: number;
-  source: 'SIMULATED' | 'LIVE';
+  source: 'LIVE';
 }
 
 export type TrailingMode = 'INTRADAY_PEAK' | 'END_OF_DAY';
@@ -303,7 +303,7 @@ export type WSServerMessage =
       deepTradeThresholdUsd?: number;
       slaves?: SlaveAccount[];
       timeframe?: string;
-      historySource?: 'NONE' | 'REAL_TICKS' | 'RECONSTRUCTED_1M';
+      historySource?: 'NONE' | 'REAL_TICKS';
     }
   | { type: 'TICK'; tick: Tick }
   | { type: 'BAR_UPDATE'; bar: FootprintBar }

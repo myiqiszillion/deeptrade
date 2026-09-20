@@ -8,8 +8,8 @@ interface TickReplayWidgetProps {
   progress?: ReplayProgress;
   symbol: string;
   isCrypto: boolean;
-  historySource: 'NONE' | 'REAL_TICKS' | 'RECONSTRUCTED_1M';
-  gexSource?: 'SIMULATED' | 'LIVE' | 'CBOE_DELAYED';
+  historySource: 'NONE' | 'REAL_TICKS';
+  gexSource?: 'CBOE_DELAYED' | 'LIVE';
 }
 
 export const TickReplayWidget: React.FC<TickReplayWidgetProps> = ({

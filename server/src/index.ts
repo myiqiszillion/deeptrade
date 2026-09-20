@@ -9,7 +9,7 @@ import { FootprintEngine } from './footprintEngine.js';
 import { FUTURES_INSTRUMENTS, FuturesInstrument } from './futuresConfig.js';
 import { GEXEngine } from './gexEngine.js';
 import { CboeOptionsProvider } from './dataFeeds/cboeOptionsFeed.js';
-import { fetchBinanceAggTrades, fetchYahooMinuteBars, reconstructTicksFromBars } from './dataFeeds/historyFeed.js';
+import { fetchBinanceAggTrades } from './dataFeeds/historyFeed.js';
 import { OrderbookManager } from './orderbook.js';
 import { ProfileEngine } from './profileEngine.js';
 import { MAX_SESSIONS, TradingSession } from './session.js';
@@ -48,17 +48,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 // Per-connection trading state: markets are global, accounts are not.
 const sessions = new Map<WebSocket, TradingSession>();
 
-// Yahoo symbols used to backfill real 1-minute history for futures/index instruments.
-const YAHOO_SYMBOLS: Record<string, string> = {
-  ES: 'ES=F',
-  NQ: 'NQ=F',
-  YM: 'YM=F',
-  RTY: 'RTY=F',
-  GC: 'GC=F',
-  CL: 'CL=F',
-  NG: 'NG=F',
-};
-type HistorySource = 'NONE' | 'REAL_TICKS' | 'RECONSTRUCTED_1M';
+type HistorySource = 'NONE' | 'REAL_TICKS';
 let historySource: HistorySource = 'NONE';
 let lastOrderbookUpdate = 0;
 let lastBarUpdate = 0;
@@ -400,6 +390,10 @@ function switchInstrument(symbol: string, source: 'binance' | 'simulator' | 'cme
   currentSymbol = symbol;
   currentInstrument = FUTURES_INSTRUMENTS[symbol] || FUTURES_INSTRUMENTS.ES;
 
+  // Stop the previous feed BEFORE rebuilding engines: a straggler depth frame from the old
+  // instrument would otherwise contaminate the new (empty) order book.
+  startFeed(source);
+
   orderbook = new OrderbookManager(50);
   footprint = new FootprintEngine(currentInstrument.tickSize, 60 * 1000, 3.0, 1.0);
   profile = new ProfileEngine(currentInstrument.tickSize);
@@ -410,8 +404,6 @@ function switchInstrument(symbol: string, source: 'binance' | 'simulator' | 'cme
     clearRestingOrders(session, 'switch instrument');
     session.setPointValue(currentInstrument.pointValue);
   }
-
-  startFeed(source);
 
   // Refresh GEX (real CBOE chain when reachable) and re-seed history for the new contract.
   if (currentInstrument.underlyingIndex) {
@@ -641,15 +633,27 @@ wss.on('connection', (ws: WebSocket) => {
           broadcastOpenOrders(session);
         } else if (msg.action === 'FLATTEN') {
           clearRestingOrders(session, 'FLATTEN');
-          // Exit at the mid price: a side-aware best-bid/best-ask would systematically
-          // penalise one direction and require per-trade handling.
+          // Exit at the mid price when there is a live book; otherwise use the last REAL
+          // observed price for this instrument (never the synthetic base price).
           const bestBid = orderbook.getBestBid();
           const bestAsk = orderbook.getBestAsk();
           const midPrice =
-            bestBid !== null && bestAsk !== null ? (bestBid + bestAsk) / 2 : currentInstrument.basePrice;
+            bestBid !== null && bestAsk !== null
+              ? (bestBid + bestAsk) / 2
+              : lastPriceBySymbol.get(currentSymbol) ?? currentInstrument.basePrice;
           settleClosedTrades(session, msg.price && msg.price > 0 ? msg.price : midPrice);
           session.send({ type: 'PROP_STATE_UPDATE', state: session.propRisk.getState() });
         } else if (msg.action === 'BUY' || msg.action === 'SELL') {
+          // --- Real-only guard: a fill price must come from a live real book ---
+          if (feedStatus !== 'LIVE') {
+            session.send({
+              type: 'ORDER_REJECT',
+              reason: `No real market-data feed for ${currentSymbol} — orders are rejected instead of being filled at a fabricated price`,
+              orderId: msg.orderId,
+            });
+            return;
+          }
+
           // --- Runtime input validation: WebSocket payloads are untrusted ---
           const size = msg.size;
           if (typeof size !== 'number' || !Number.isFinite(size) || size <= 0) {

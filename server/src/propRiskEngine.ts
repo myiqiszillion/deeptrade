@@ -75,20 +75,6 @@ export class PropRiskEngine {
       openContractsCount: 0,
     };
 
-    if (process.env.DEMO === '1') {
-      this.seedDemo();
-    }
-  }
-
-  public seedDemo() {
-    this.historicalDailyProfits = [650, 420, 890, -150];
-    this.state.todayPnL = 350.0;
-    this.state.dailyLossRemaining = this.config.dailyLossLimit + 350.0;
-    this.state.dailyLossPercent = 100;
-    this.state.profitTargetProgressPercent = (350 / this.config.profitTarget) * 100;
-    this.state.highestDayProfit = 890;
-    this.state.consistencyPercent = 35.6;
-    this.recalculate();
   }
 
   public rollDay() {

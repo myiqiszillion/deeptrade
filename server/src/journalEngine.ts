@@ -1,4 +1,4 @@
-import { JournalTrade } from './types.js';
+﻿import { JournalTrade } from './types.js';
 
 export class JournalEngine {
   private trades: JournalTrade[] = [];
@@ -9,53 +9,6 @@ export class JournalEngine {
     this.pointValue = v;
   }
 
-  constructor() {
-    if (process.env.DEMO === '1') {
-      this.seedDemo();
-    }
-  }
-
-  /** Sample closed trades used only for UI demos (enable with DEMO=1). */
-  public seedDemo() {
-    this.trades.push(
-      {
-        id: 'trade_seed_1',
-        symbol: 'BTCUSDT',
-        timestamp: Date.now() - 3600 * 1000 * 4,
-        exitTimestamp: Date.now() - 3600 * 1000 * 3.8,
-        side: 'LONG',
-        entryPrice: 63200,
-        exitPrice: 63580,
-        size: 0.5,
-        pnl: 190.0,
-        pnlPercent: 0.6,
-        fee: 6.3,
-        status: 'CLOSED',
-        mae: -45.0,
-        mfe: 210.0,
-        notes: 'Stacked Bid Imbalance at Session VAL bounce. Clear absorption.',
-        imbalanceContext: '3x Stacked Bid Imbalance (450% ratio)',
-      },
-      {
-        id: 'trade_seed_2',
-        symbol: 'BTCUSDT',
-        timestamp: Date.now() - 3600 * 1000 * 2,
-        exitTimestamp: Date.now() - 3600 * 1000 * 1.7,
-        side: 'SHORT',
-        entryPrice: 63850,
-        exitPrice: 63620,
-        size: 0.75,
-        pnl: 172.5,
-        pnlPercent: 0.36,
-        fee: 9.5,
-        status: 'CLOSED',
-        mae: -30.0,
-        mfe: 195.0,
-        notes: 'Passive Seller Absorption at VP POC with high negative Delta.',
-        imbalanceContext: 'Single Print rejection + Unfinished High',
-      }
-    );
-  }
 
   /** Wipe journal state (used by test suites and account resets). */
   public reset() {

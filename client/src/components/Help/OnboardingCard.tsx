@@ -1,11 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Info, X } from 'lucide-react';
 
 const STORAGE_KEY = 'deepchart.onboarding.v1';
 
 interface OnboardingCardProps {
   symbol: string;
-  historySource: 'NONE' | 'REAL_TICKS' | 'RECONSTRUCTED_1M';
 }
 
 /**
@@ -13,16 +12,15 @@ interface OnboardingCardProps {
  * orderflow terminal, so the first thing they get is a 30-second primer on what to click
  * and — importantly — which data is real, which is delayed and which is simulated.
  */
-export const OnboardingCard: React.FC<OnboardingCardProps> = ({ symbol, historySource }) => {
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
+export const OnboardingCard: React.FC<OnboardingCardProps> = ({ symbol }) => {
+  // Read the dismissal flag lazily on mount (no effect needed, avoids a cascading render).
+  const [visible, setVisible] = useState(() => {
     try {
-      setVisible(window.localStorage.getItem(STORAGE_KEY) !== 'dismissed');
+      return window.localStorage.getItem(STORAGE_KEY) !== 'dismissed';
     } catch {
-      setVisible(true); // private mode / storage blocked
+      return true; // private mode / storage blocked
     }
-  }, []);
+  });
 
   const dismiss = () => {
     try {
@@ -67,22 +65,23 @@ export const OnboardingCard: React.FC<OnboardingCardProps> = ({ symbol, historyS
           </section>
 
           <section>
-            <div className="font-bold text-slate-100 mb-1">3 · What you are looking at</div>
+            <div className="font-bold text-slate-100 mb-1">3 · What you are looking at (real data only)</div>
             <ul className="list-disc list-inside space-y-0.5 text-[11px]">
               <li>
-                <b>BTCUSDT</b> — real-time prices and real historical trades (Binance, no key needed).
+                <b>BTCUSDT</b> — real-time prices, real depth and real historical trades (Binance). Everything
+                you see here is measured, not invented.
               </li>
               <li>
-                <b>Futures / indices ({symbol})</b> — real prices and volume from 1-minute bars (delayed),
-                with the intra-bar tick path reconstructed
-                {historySource === 'RECONSTRUCTED_1M' ? '' : ' — no free history was reachable for this run'}.
+                <b>Futures / indices ({symbol})</b> — no licensed real-time vendor is configured, so these
+                instruments report <b>FEED: UNAVAILABLE</b>. DeepChart will not show reconstructed ticks,
+                synthetic depth, a fabricated footprint or an invented volume profile.
               </li>
               <li>
-                <b>GEX</b> — real gamma and open interest from CBOE’s free delayed chain (≈15 min), falling
-                back to a synthetic model when unavailable.
+                <b>GEX</b> — real gamma and open interest from CBOE’s free delayed chain (≈15 min); shows
+                UNAVAILABLE when the chain cannot be fetched.
               </li>
               <li>
-                <b>Options flow</b> — synthetic sweep/block tape.
+                <b>Options flow</b> — UNAVAILABLE until a real flow provider is wired.
               </li>
             </ul>
           </section>

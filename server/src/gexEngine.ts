@@ -22,11 +22,11 @@ export interface GEXProfile {
   levels: GEXStrikeLevel[];
   timestamp: number;
   /**
-   * 'SIMULATED'     = synthetic dealer-gamma model (fallback, no external data)
-   * 'CBOE_DELAYED'  = computed from CBOE's free delayed option chain (real gamma + OI)
-   * 'LIVE'          = reserved for a licensed real-time options feed
+   * 'CBOE_DELAYED' = computed from CBOE's free delayed option chain (real gamma + OI)
+   * 'LIVE'         = reserved for a licensed real-time options feed
+   * DeepChart never substitutes a synthetic gamma model.
    */
-  dataSource: 'SIMULATED' | 'LIVE' | 'CBOE_DELAYED';
+  dataSource: 'CBOE_DELAYED' | 'LIVE';
 }
 
 export interface OptionsFlowTrade {
@@ -43,8 +43,8 @@ export interface OptionsFlowTrade {
   price: number;
   premiumUsd: number;
   spotPrice: number;
-  /** 'SIMULATED' = synthetic tape, not a live options-flow provider. */
-  source: 'SIMULATED' | 'LIVE';
+  /** Only real providers may publish flow; DeepChart ships no synthetic tape. */
+  source: 'LIVE';
 }
 
 export class GEXEngine {
@@ -57,25 +57,6 @@ export class GEXEngine {
     // "no data" instead of inventing walls.
   }
 
-  public generateGexProfile(underlying: string, spotPrice: number): GEXProfile {
-    // Synthetic GEX generation has been removed: only real chains (buildFromChain) publish
-    // profiles. This returns an empty profile so no fabricated wall can ever be shown.
-    const empty: GEXProfile = {
-      underlying,
-      spotPrice,
-      callWall: spotPrice,
-      putWall: spotPrice,
-      zeroGammaFlip: spotPrice,
-      totalNetGex: 0,
-      total0DteGex: 0,
-      regime: 'POSITIVE_GAMMA',
-      levels: [],
-      timestamp: Date.now(),
-      dataSource: 'SIMULATED',
-    };
-    this.currentProfiles.set(underlying, empty);
-    return empty;
-  }
 
   /**
    * Build a GEX profile from a REAL option chain (CBOE delayed quotes).
@@ -208,19 +189,6 @@ export class GEXEngine {
     return profile;
   }
 
-  /**
-   * Re-generate every tracked profile around a small random walk of its spot price.
-   * Called on a timer so GEX walls/flip stay "alive" instead of freezing at boot values.
-   */
-  public refreshAll(): GEXProfile[] {
-    const updated: GEXProfile[] = [];
-    for (const [underlying, profile] of this.currentProfiles.entries()) {
-      const drift = (Math.random() - 0.5) * 0.002; // +/- 10 bps per refresh
-      const nextSpot = Math.round(profile.spotPrice * (1 + drift) * 100) / 100;
-      updated.push(this.generateGexProfile(underlying, nextSpot));
-    }
-    return updated;
-  }
 
   public getProfile(underlying: string): GEXProfile | undefined {
     return this.currentProfiles.get(underlying);
@@ -245,73 +213,4 @@ export class GEXEngine {
     return this.recentFlow;
   }
 
-  private seedInitialFlow() {
-    const now = Date.now();
-    this.recentFlow = [
-      {
-        id: 'flow_1',
-        timestamp: now - 1000 * 45,
-        underlying: 'SPX',
-        contractType: 'CALL',
-        strike: 5880,
-        expiration: '0DTE',
-        dte: 0,
-        orderType: 'SWEEP',
-        sentiment: 'BULLISH',
-        size: 250,
-        price: 8.4,
-        premiumUsd: 210000,
-        spotPrice: 5860.5,
-        source: 'SIMULATED',
-      },
-      {
-        id: 'flow_2',
-        timestamp: now - 1000 * 120,
-        underlying: 'SPY',
-        contractType: 'PUT',
-        strike: 580,
-        expiration: '2DTE',
-        dte: 2,
-        orderType: 'BLOCK',
-        sentiment: 'BEARISH',
-        size: 5000,
-        price: 1.85,
-        premiumUsd: 925000,
-        spotPrice: 585.2,
-        source: 'SIMULATED',
-      },
-      {
-        id: 'flow_3',
-        timestamp: now - 1000 * 240,
-        underlying: 'QQQ',
-        contractType: 'CALL',
-        strike: 500,
-        expiration: '0DTE',
-        dte: 0,
-        orderType: 'SWEEP',
-        sentiment: 'BULLISH',
-        size: 3200,
-        price: 1.15,
-        premiumUsd: 368000,
-        spotPrice: 495.4,
-        source: 'SIMULATED',
-      },
-      {
-        id: 'flow_4',
-        timestamp: now - 1000 * 400,
-        underlying: 'SPX',
-        contractType: 'PUT',
-        strike: 5820,
-        expiration: '0DTE',
-        dte: 0,
-        orderType: 'SWEEP',
-        sentiment: 'BEARISH',
-        size: 400,
-        price: 12.2,
-        premiumUsd: 488000,
-        spotPrice: 5861.0,
-        source: 'SIMULATED',
-      },
-    ];
-  }
 }

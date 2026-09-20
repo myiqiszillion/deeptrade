@@ -9,11 +9,14 @@ interface GEXPanelProps {
 
 export const GEXPanel: React.FC<GEXPanelProps> = ({ profile, currentPrice }) => {
   const [show0DteOnly, setShow0DteOnly] = useState(false);
-  if (!profile) {
+  if (!profile || profile.levels.length === 0) {
     return (
-      <div className="w-80 h-full border-l border-brand-border bg-brand-surface p-4 text-slate-500 text-center flex flex-col justify-center text-xs">
-        <span>No Gamma Exposure data available for this symbol.</span>
-        <span className="text-[10px] mt-1 text-slate-600">Select ES, NQ, SPX, or SPY to view GEX.</span>
+      <div className="w-80 h-full border-l border-brand-border bg-brand-surface p-4 text-slate-400 text-center flex flex-col justify-center gap-2 text-xs">
+        <span className="font-bold text-amber-400">GEX: UNAVAILABLE</span>
+        <span>No real option chain could be loaded from CBOE for this instrument.</span>
+        <span className="text-[10px] text-slate-500">
+          DeepChart does not substitute a synthetic gamma model; it retries on the next refresh.
+        </span>
       </div>
     );
   }
@@ -33,17 +36,12 @@ export const GEXPanel: React.FC<GEXPanelProps> = ({ profile, currentPrice }) => 
               className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-300 font-normal"
               title="Computed from CBOE's free delayed option chain (real gamma + open interest, ~15 min delayed)"
             >
-              CBOE DELAYED
+              REAL · DELAYED
             </span>
           ) : (
-            profile.dataSource === 'SIMULATED' && (
-              <span
-                className="text-[9px] px-1 py-0.5 rounded bg-slate-700 text-slate-300 font-normal"
-                title="Synthetic dealer-gamma model — not a live OPRA/open-interest feed"
-              >
-                SIMULATED
-              </span>
-            )
+            <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-normal">
+              REAL · LIVE
+            </span>
           )}
         </div>
         <span className="text-[10px] px-1.5 py-0.5 bg-brand-bg text-amber-400 rounded font-bold">

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { wsClient } from './services/websocket';
+import { formatPrice } from './services/priceFormat';
 import {
   AbsorptionAlert,
   DeepTrade,
@@ -116,7 +117,8 @@ export const App: React.FC = () => {
   const [notices, setNotices] = useState<{ id: number; kind: 'ok' | 'error'; text: string }[]>([]);
   const [breachAlert, setBreachAlert] = useState<string | undefined>();
   const [deepTradeThresholdUsd, setDeepTradeThresholdUsd] = useState<number | undefined>();
-  const [historySource, setHistorySource] = useState<'NONE' | 'REAL_TICKS' | 'RECONSTRUCTED_1M'>('NONE');
+  const [historySource, setHistorySource] = useState<'NONE' | 'REAL_TICKS'>('NONE');
+  const [feedStatus, setFeedStatus] = useState<'LIVE' | 'UNAVAILABLE'>('UNAVAILABLE');
 
   // High-frequency tick buffering: ticks arrive every 30-120ms. Buffering them and
   // flushing to React state at ~8Hz keeps the Time & Sales tape lossless while cutting
@@ -124,6 +126,7 @@ export const App: React.FC = () => {
   const pendingTicksRef = useRef<Tick[]>([]);
   const lastPriceRef = useRef<number | null>(null);
   const symbolRef = useRef('ES');
+  const instrumentRef = useRef<FuturesInstrument | undefined>(undefined);
   const desiredSymbolRef = useRef('ES');
   const timeframeRef = useRef('1m');
 
@@ -179,9 +182,11 @@ export const App: React.FC = () => {
         }
         setSymbol(data.symbol);
         setInstrument(data.instrument);
+        instrumentRef.current = data.instrument;
         if (typeof data.deepTradeThresholdUsd === 'number') setDeepTradeThresholdUsd(data.deepTradeThresholdUsd);
         if (data.slaves) setSlaves(data.slaves);
         if (data.historySource) setHistorySource(data.historySource);
+        if (data.feedStatus) setFeedStatus(data.feedStatus);
         if (data.timeframe) {
           timeframeRef.current = data.timeframe;
           setTimeframe(data.timeframe);
@@ -243,9 +248,9 @@ export const App: React.FC = () => {
       },
       onOrderAck: (data) => {
         if (data.action === 'PLACED') {
-          pushNotice('ok', `LIMIT resting: ${data.size} @ ${data.price?.toFixed(1)}`);
+          pushNotice('ok', `LIMIT resting: ${data.size} @ ${formatPrice(data.price, instrumentRef.current?.tickSize)}`);
         } else if (data.action === 'FILLED') {
-          pushNotice('ok', `Filled: ${data.size} @ ${data.price?.toFixed(1)}`);
+          pushNotice('ok', `Filled: ${data.size} @ ${formatPrice(data.price, instrumentRef.current?.tickSize)}`);
         } else {
           pushNotice('ok', 'Order cancelled');
         }
@@ -603,8 +608,25 @@ export const App: React.FC = () => {
         gexSource={gexProfile?.dataSource}
       />
 
+      {/* Real-only guard: never render fabricated market data for feedless instruments */}
+      {feedStatus === 'UNAVAILABLE' && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none">
+          <div className="max-w-[560px] mx-4 px-5 py-4 rounded-lg border border-amber-500/40 bg-brand-surface/95 shadow-2xl text-center space-y-2">
+            <div className="text-sm font-bold text-amber-400">FEED: UNAVAILABLE — {symbol}</div>
+            <div className="text-[11px] text-slate-300">
+              No licensed real-time market-data vendor is configured for this instrument. DeepChart is real-only: it
+              will not display simulated ticks, generated depth, a reconstructed footprint or a synthetic volume
+              profile.
+            </div>
+            <div className="text-[10px] text-slate-500">
+              Connect a licensed vendor (Databento, Rithmic, Tradovate, IBKR…) to stream futures. BTCUSDT is live today.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* First-run primer (dismissible, remembered locally) */}
-      <OnboardingCard symbol={symbol} historySource={historySource} />
+      <OnboardingCard symbol={symbol} />
 
       {/* Modals */}
       <TradeCopierModal
