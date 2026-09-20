@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { GEXProfile } from '../../types';
-import { Shield, TrendingUp, AlertCircle } from 'lucide-react';
+import { Shield } from 'lucide-react';
 
 interface GEXPanelProps {
   profile?: GEXProfile;
@@ -92,7 +92,6 @@ export const GEXPanel: React.FC<GEXPanelProps> = ({ profile, currentPrice }) => 
           const isZeroFlip = lvl.strike === profile.zeroGammaFlip;
           const isAtTheMoney = Math.abs(lvl.strike - currentPrice) <= 5;
 
-          const gexValue = show0DteOnly ? lvl.zeroDteGex : lvl.netGex;
           const callWidth = Math.min(50, (lvl.callGex / maxGex) * 50);
           const putWidth = Math.min(50, (Math.abs(lvl.putGex) / maxGex) * 50);
 

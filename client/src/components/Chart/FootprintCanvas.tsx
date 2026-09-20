@@ -12,6 +12,7 @@ interface FootprintCanvasProps {
   showImbalances: boolean;
   showDeltaNumbers: boolean;
   tickSize?: number;
+  symbol?: string;
 }
 
 export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
@@ -25,8 +26,12 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   showImbalances,
   showDeltaNumbers,
   tickSize = 0.5,
+  symbol,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // When enabled the newest bar stays pinned to the right edge of the viewport.
+  const [autoFollow, setAutoFollow] = useState(true);
 
   // Viewport / Camera state
   const [viewport, setViewport] = useState({
@@ -41,22 +46,27 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const mousePosRef = useRef<{ x: number; y: number } | null>(null);
 
-  // Auto-scroll to latest bar when bars change if near edge
+  // Fit the viewport once per instrument: centre price vertically, anchor on the right.
   useEffect(() => {
-    if (bars.length > 0 && canvasRef.current) {
-      const canvasWidth = canvasRef.current.width;
-      const totalWidth = bars.length * (viewport.barWidth + viewport.barSpacing);
-      setViewport((prev) => {
-        // Center vertically on current price
-        const targetPanY = canvasRef.current ? canvasRef.current.height / 2 : 0;
-        return {
-          ...prev,
-          panX: canvasWidth - totalWidth - 80, // Leave margin on right for current price
-          panY: targetPanY,
-        };
-      });
-    }
-  }, [bars.length === 1]); // run on first bar
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const cssWidth = canvas.parentElement?.clientWidth || 800;
+    const cssHeight = canvas.parentElement?.clientHeight || 600;
+    setViewport((prev) => ({ ...prev, panY: cssHeight / 2, panX: cssWidth - 80 }));
+  }, [symbol]);
+
+  // Auto-follow: pin the newest bar near the right edge while enabled.
+  useEffect(() => {
+    if (!autoFollow) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const cssWidth = canvas.parentElement?.clientWidth || 800;
+    const totalWidth = bars.length * (viewport.barWidth + viewport.barSpacing);
+    setViewport((prev) => {
+      const nextPanX = cssWidth - totalWidth - 80;
+      return nextPanX === prev.panX ? prev : { ...prev, panX: nextPanX };
+    });
+  }, [bars.length, autoFollow, viewport.barWidth, viewport.barSpacing]);
 
   // Mouse handlers for pan & zoom
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -81,6 +91,8 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     if (isDraggingRef.current) {
       const dx = e.clientX - dragStartRef.current.x;
       const dy = e.clientY - dragStartRef.current.y;
+      // Manual panning takes over from auto-follow until the user re-enables it.
+      if (autoFollow) setAutoFollow(false);
       setViewport((prev) => ({
         ...prev,
         panX: dragStartRef.current.panX + dx,
@@ -114,7 +126,9 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
 
   // Convert Price to Canvas Y
   const priceToY = useCallback(
-    (price: number, canvasHeight: number) => {
+    (price: number, _canvasHeight: number) => {
+      // Vertical anchoring is driven by viewport.panY (set on fit + drag), so the
+      // canvas height is intentionally not part of the mapping.
       const priceDiff = price - currentPrice;
       const ticks = priceDiff / tickSize;
       return viewport.panY - ticks * viewport.priceScale;
@@ -142,13 +156,22 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      // Handle retina high-DPI scaling
-      const width = canvas.parentElement?.clientWidth || 800;
-      const height = canvas.parentElement?.clientHeight || 600;
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
+      // High-DPI aware backing store: size the canvas in device pixels and draw in CSS
+      // pixels so text and 1px lines stay crisp on retina/scaled displays.
+      const cssWidth = canvas.parentElement?.clientWidth || 800;
+      const cssHeight = canvas.parentElement?.clientHeight || 600;
+      const dpr = window.devicePixelRatio || 1;
+      const pixelWidth = Math.floor(cssWidth * dpr);
+      const pixelHeight = Math.floor(cssHeight * dpr);
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
+        canvas.style.width = `${cssWidth}px`;
+        canvas.style.height = `${cssHeight}px`;
       }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const width = cssWidth;
+      const height = cssHeight;
 
       // 1. Clear background
       ctx.fillStyle = '#0c0e12';
@@ -369,6 +392,11 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         ctx.fillStyle = '#f8fafc';
         ctx.font = 'bold 9px JetBrains Mono, monospace';
         ctx.textAlign = 'right';
+        ctx.fillText(
+          `${abs.side === 'buy_absorption' ? 'BUY ABS' : 'SELL ABS'} ${abs.volume.toFixed(0)}`,
+          width - 90,
+          y + 3
+        );
       });
 
       // 5.1 Draw GEX Levels (Call Wall, Put Wall, Zero Gamma)
@@ -481,6 +509,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     showDeltaNumbers,
     tickSize,
     viewport,
+    gexProfile,
     priceToY,
     yToPrice,
   ]);
@@ -496,6 +525,32 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         onWheel={handleWheel}
         className="w-full h-full cursor-crosshair block"
       />
+
+      {/* Legend for the markers that are drawn on top of the ladder */}
+      <div className="absolute top-2 left-2 flex items-center gap-2 text-[9px] font-mono pointer-events-none">
+        <span className="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">
+          BUY ABSORPTION
+        </span>
+        <span className="px-1.5 py-0.5 rounded bg-pink-500/20 text-pink-300 border border-pink-500/30">
+          SELL ABSORPTION
+        </span>
+        <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+          CALL WALL / PUT WALL / ZERO GAMMA
+        </span>
+      </div>
+
+      {/* Auto-follow toggle: drag the chart to disable, press to re-enable */}
+      <button
+        onClick={() => setAutoFollow((v) => !v)}
+        title="Keep the newest bar pinned to the right edge"
+        className={`absolute top-2 right-20 px-2 py-0.5 rounded text-[9px] font-mono border ${
+          autoFollow
+            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+            : 'bg-slate-700/40 text-slate-300 border-slate-600'
+        }`}
+      >
+        {autoFollow ? 'FOLLOW ON' : 'FOLLOW OFF'}
+      </button>
     </div>
   );
 };

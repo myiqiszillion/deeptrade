@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { OrderbookSnapshot, RestingOrder } from '../../types';
 import { wsClient } from '../../services/websocket';
 import { X, Lock } from 'lucide-react';
@@ -22,7 +22,30 @@ export const DOMScalper: React.FC<DOMScalperProps> = ({
 }) => {
   const [orderSize, setOrderSize] = useState<number>(0.5);
 
-  // Keyboard Hotkeys
+  const handleBuyMarket = useCallback(() => {
+    if (isLockedOut) return;
+    wsClient.placeOrder('BUY', orderSize, undefined, 'MARKET');
+  }, [isLockedOut, orderSize]);
+
+  const handleSellMarket = useCallback(() => {
+    if (isLockedOut) return;
+    wsClient.placeOrder('SELL', orderSize, undefined, 'MARKET');
+  }, [isLockedOut, orderSize]);
+
+  const handleFlatten = useCallback(() => {
+    wsClient.placeOrder('FLATTEN', orderSize);
+  }, [orderSize]);
+
+  const handleReverse = useCallback(() => {
+    if (isLockedOut) return;
+    wsClient.placeOrder('FLATTEN', orderSize);
+    setTimeout(() => {
+      wsClient.placeOrder('SELL', orderSize);
+    }, 50);
+  }, [isLockedOut, orderSize]);
+
+  // Keyboard hotkeys — registered after the handlers so the listener always closes over
+  // the current order size and lock state.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Ignore if user is typing in input
@@ -41,29 +64,7 @@ export const DOMScalper: React.FC<DOMScalperProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [orderSize, isLockedOut]);
-
-  const handleBuyMarket = () => {
-    if (isLockedOut) return;
-    wsClient.placeOrder('BUY', orderSize, undefined, 'MARKET');
-  };
-
-  const handleSellMarket = () => {
-    if (isLockedOut) return;
-    wsClient.placeOrder('SELL', orderSize, undefined, 'MARKET');
-  };
-
-  const handleFlatten = () => {
-    wsClient.placeOrder('FLATTEN', orderSize);
-  };
-
-  const handleReverse = () => {
-    if (isLockedOut) return;
-    wsClient.placeOrder('FLATTEN', orderSize);
-    setTimeout(() => {
-      wsClient.placeOrder('SELL', orderSize);
-    }, 50);
-  };
+  }, [handleBuyMarket, handleSellMarket, handleFlatten, handleReverse]);
 
   const handlePriceClick = (price: number, side: 'BUY' | 'SELL') => {
     wsClient.placeOrder(side, orderSize, price, 'LIMIT');

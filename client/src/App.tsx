@@ -41,7 +41,6 @@ import {
   WifiOff,
   Shield,
   Flame,
-  ChevronDown,
 } from 'lucide-react';
 
 const POPULAR_FUTURES = [
@@ -66,7 +65,7 @@ export const App: React.FC = () => {
   const [orderbook, setOrderbook] = useState<OrderbookSnapshot>({
     bids: [],
     asks: [],
-    timestamp: Date.now(),
+    timestamp: 0,
     lastUpdateId: 0,
   });
   const [volumeProfile, setVolumeProfile] = useState<VolumeProfileData>({
@@ -503,6 +502,7 @@ export const App: React.FC = () => {
               showImbalances={showImbalances}
               showDeltaNumbers={showDeltaNumbers}
               tickSize={instrument?.tickSize || 0.25}
+              symbol={symbol}
             />
           </div>
 

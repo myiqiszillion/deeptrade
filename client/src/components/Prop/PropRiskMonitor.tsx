@@ -1,7 +1,7 @@
 import React from 'react';
 import { PropAccountConfig, PropAccountState, TrailingMode } from '../../types';
 import { wsClient } from '../../services/websocket';
-import { ShieldCheck, AlertTriangle, Lock, Award, Target, Flame } from 'lucide-react';
+import { ShieldCheck, Lock, Award, Target } from 'lucide-react';
 
 interface PropRiskMonitorProps {
   state?: PropAccountState;

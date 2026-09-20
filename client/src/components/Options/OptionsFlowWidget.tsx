@@ -1,6 +1,6 @@
 import React from 'react';
 import { OptionsFlowTrade } from '../../types';
-import { Activity, Flame } from 'lucide-react';
+import { Flame } from 'lucide-react';
 
 interface OptionsFlowWidgetProps {
   flowTrades: OptionsFlowTrade[];

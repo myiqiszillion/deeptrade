@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
+import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import WebSocket from 'ws';
@@ -11,6 +12,18 @@ const WS_URL = `ws://localhost:${TEST_PORT}`;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Guard against silently testing a stale server left over from a previous run.
+function assertPortFree(port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tester = net.createServer();
+    tester.once('error', (err: NodeJS.ErrnoException) => {
+      reject(new Error(`Port ${port} is already in use (${err.code}). Kill the leftover verify_p0 server and retry.`));
+    });
+    tester.once('listening', () => tester.close(() => resolve()));
+    tester.listen(port, '127.0.0.1');
+  });
 }
 
 async function startServer(): Promise<ChildProcess> {
@@ -42,7 +55,8 @@ async function startServer(): Promise<ChildProcess> {
 
     proc.stdout?.on('data', (data) => {
       const str = data.toString();
-      if (str.includes(`Ready at ws://localhost:${TEST_PORT}`) || str.includes(`Starting on port ${TEST_PORT}`)) {
+      // Only the final "Ready at ..." line proves the server actually bound the port.
+      if (str.includes(`Ready at ws://localhost:${TEST_PORT}`)) {
         if (!started) {
           started = true;
           clearTimeout(timeout);
@@ -96,6 +110,7 @@ async function runVerifyP0() {
   let ws: WebSocket | null = null;
 
   try {
+    await assertPortFree(TEST_PORT);
     serverProc = await startServer();
     ws = new WebSocket(WS_URL);
 
