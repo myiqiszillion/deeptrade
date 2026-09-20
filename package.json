@@ -1,0 +1,24 @@
+{
+  "name": "deepchart",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev:server": "pnpm --filter @deepchart/server dev",
+    "dev:client": "pnpm --filter client dev",
+    "dev": "concurrently -n \"SERVER,CLIENT\" -c \"blue,green\" \"pnpm run dev:server\" \"pnpm run dev:client\"",
+    "build": "pnpm --filter @deepchart/server build && pnpm --filter client build",
+    "typecheck": "pnpm --filter @deepchart/server exec tsc --noEmit && pnpm --filter client exec tsc -p tsconfig.app.json --noEmit",
+    "lint": "pnpm --filter client lint",
+    "verify": "pnpm --filter @deepchart/server exec tsx src/verify_e2e.ts",
+    "verify:p0": "pnpm --filter @deepchart/server exec tsx src/verify_p0.ts"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "packageManager": "pnpm@12.4.2"
+}

@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output (regenerate with `pnpm build`)
+dist/
+client/dist/
+server/dist/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs & OS noise
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
