@@ -172,6 +172,7 @@ export type WSClientMessage =
   | { type: 'UPDATE_COPIER'; slaves: SlaveAccount[] }
   | { type: 'SET_PROP_TRAILING_MODE'; mode: TrailingMode }
   | { type: 'RESET_PROP_ACCOUNT' }
+  | { type: 'CLEAR_JOURNAL' }
   | { type: 'SET_PROP_CONFIG'; config: Partial<PropAccountConfig> };
 
 export type WSServerMessage =
@@ -202,6 +203,7 @@ export type WSServerMessage =
   | { type: 'ABSORPTION'; alert: AbsorptionAlert }
   | { type: 'TRADE_COPIED'; slaveId: string; symbol: string; size: number; price: number; latencyMs: number }
   | { type: 'JOURNAL_UPDATE'; trade: JournalTrade }
+  | { type: 'JOURNAL_CLEARED' }
   | { type: 'GEX_UPDATE'; profile: GEXProfile }
   | { type: 'OPTIONS_FLOW'; trade: OptionsFlowTrade }
   | { type: 'PROP_STATE_UPDATE'; state: PropAccountState }

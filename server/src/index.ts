@@ -568,6 +568,10 @@ wss.on('connection', (ws: WebSocket) => {
             void copier.copyOrder(currentSymbol, msg.action, size, execPrice);
           }
         }
+      } else if (msg.type === 'CLEAR_JOURNAL') {
+        journal.reset();
+        console.log('[DeepChart Server] Journal cleared by client request.');
+        broadcast({ type: 'JOURNAL_CLEARED' });
       } else if (msg.type === 'SET_PROP_TRAILING_MODE') {
         propRisk.setTrailingMode(msg.mode);
         broadcast({ type: 'PROP_STATE_UPDATE', state: propRisk.getState() });

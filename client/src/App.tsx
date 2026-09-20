@@ -264,6 +264,9 @@ export const App: React.FC = () => {
           return [trade, ...prev];
         });
       },
+      onJournalCleared: () => {
+        setTrades([]);
+      },
       onTradeCopied: (copied) => {
         setSlaves((prev) =>
           prev.map((s) =>

@@ -1,6 +1,7 @@
 import React from 'react';
 import { JournalTrade } from '../../types';
-import { BookOpen, X, TrendingUp, TrendingDown, Award, Activity } from 'lucide-react';
+import { wsClient } from '../../services/websocket';
+import { BookOpen, X, TrendingUp, TrendingDown, Award, Activity, Trash2 } from 'lucide-react';
 
 interface TradingJournalModalProps {
   isOpen: boolean;
@@ -33,9 +34,20 @@ export const TradingJournalModal: React.FC<TradingJournalModalProps> = ({
             <BookOpen size={16} className="text-amber-400" />
             <span>AUTOMATED ORDERFLOW TRADING JOURNAL & EXECUTION STATS</span>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-white">
-            <X size={16} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => wsClient.clearJournal()}
+              disabled={trades.length === 0}
+              className="px-2 py-1 rounded bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/40 text-[11px] font-semibold flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Delete every journal entry (server history included)"
+            >
+              <Trash2 size={12} />
+              CLEAR ALL
+            </button>
+            <button onClick={onClose} className="text-slate-400 hover:text-white">
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
         {/* Performance Metric Cards */}

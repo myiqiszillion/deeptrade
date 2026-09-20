@@ -49,6 +49,7 @@ export interface WSListeners {
   onAbsorption?: (alert: AbsorptionAlert) => void;
   onTradeCopied?: (data: { slaveId: string; symbol: string; size: number; price: number; latencyMs: number }) => void;
   onJournalUpdate?: (trade: JournalTrade) => void;
+  onJournalCleared?: () => void;
   onGexUpdate?: (profile: GEXProfile) => void;
   onOptionsFlow?: (trade: OptionsFlowTrade) => void;
   onPropStateUpdate?: (state: PropAccountState) => void;
@@ -131,6 +132,9 @@ export class DeepChartWSClient {
               break;
             case 'JOURNAL_UPDATE':
               this.listeners.onJournalUpdate?.(msg.trade);
+              break;
+            case 'JOURNAL_CLEARED':
+              this.listeners.onJournalCleared?.();
               break;
             case 'GEX_UPDATE':
               this.listeners.onGexUpdate?.(msg.profile);
@@ -248,6 +252,11 @@ export class DeepChartWSClient {
   /** Clear a prop-firm lockout (daily loss / drawdown breach). */
   public resetPropAccount() {
     this.send({ type: 'RESET_PROP_ACCOUNT' });
+  }
+
+  /** Wipe the automated journal (server-side history included). */
+  public clearJournal() {
+    this.send({ type: 'CLEAR_JOURNAL' });
   }
 
   public disconnect() {

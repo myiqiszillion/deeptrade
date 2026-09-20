@@ -105,7 +105,7 @@ function killServerTree(proc: ChildProcess | null) {
 
 async function runVerifyP0() {
   console.log('======================================================');
-  console.log('🧪 RUNNING DEEPCHART P0 VERIFICATION SUITE (10 TESTS)');
+  console.log('🧪 RUNNING DEEPCHART P0 VERIFICATION SUITE (11 TESTS)');
   console.log('======================================================\n');
 
   let serverProc: ChildProcess | null = null;
@@ -499,8 +499,34 @@ async function runVerifyP0() {
     console.log(`Unknown symbol ignored; server re-synced the client to ${resync.symbol}`);
     console.log('✅ TEST 10 PASSED: malformed payloads are rejected without corrupting state.');
 
+    // ==========================================
+    // TEST 11: CLEAR_JOURNAL frees the contract budget (behavioural, not just an ack)
+    // ==========================================
+    console.log('\n--- TEST 11: CLEAR_JOURNAL wipes journal + contract budget ---');
+    // TEST 8 shrank the trailing drawdown to trigger a breach; restore a realistic value
+    // first, otherwise any adverse tick would re-breach the account mid-test.
+    ws.send(JSON.stringify({ type: 'SET_PROP_CONFIG', config: { maxTrailingDrawdown: 2500 } }));
+    await waitForMessage((m) => m.type === 'PROP_STATE_UPDATE' && m.state.trailingBufferRemaining >= 2499);
+
+    ws.send(JSON.stringify({ type: 'DOM_ORDER', action: 'BUY', size: 1, orderType: 'MARKET', orderId: 'clear_1' }));
+    await waitForMessage((m) => m.type === 'ORDER_ACK' && m.action === 'FILLED' && m.orderId === 'clear_1');
+    await waitForMessage((m) => m.type === 'PROP_STATE_UPDATE' && m.state.openContractsCount === 1);
+    console.log('Position opened: openContractsCount = 1');
+
+    ws.send(JSON.stringify({ type: 'CLEAR_JOURNAL' }));
+    await waitForMessage((m) => m.type === 'JOURNAL_CLEARED');
+    await waitForMessage((m) => m.type === 'PROP_STATE_UPDATE' && m.state.openContractsCount === 0);
+    console.log('Journal cleared: openContractsCount back to 0');
+
+    // TEST 2 still has one resting order at 1000, so the budget is: filled(0) + pending(1).
+    // Sending 4 lots must be accepted (0 + 1 + 4 = 5 <= cap); if CLEAR_JOURNAL had not
+    // released the earlier position it would be 1 + 1 + 4 = 6 > cap and be rejected.
+    ws.send(JSON.stringify({ type: 'DOM_ORDER', action: 'BUY', size: 4, orderType: 'MARKET', orderId: 'clear_2' }));
+    await waitForMessage((m) => m.type === 'ORDER_ACK' && m.action === 'FILLED' && m.orderId === 'clear_2');
+    console.log('✅ TEST 11 PASSED: a cleared journal no longer consumes contract budget.');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 10 P0 TEST CASES PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 11 P0 TEST CASES PASSED SUCCESSFULLY!');
     console.log('======================================================\n');
   } finally {
     if (ws && ws.readyState === WebSocket.OPEN) {
