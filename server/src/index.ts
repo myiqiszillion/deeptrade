@@ -4,12 +4,14 @@ import { extname, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { BacktestReplayEngine } from './backtestEngine.js';
-import { BinanceFuturesFeed, DataFeedCallbacks } from './dataFeeds/binanceFeed.js';
+import { DataFeedCallbacks } from './dataFeeds/binanceFeed.js';
 import { FootprintEngine } from './footprintEngine.js';
 import { FUTURES_INSTRUMENTS, FuturesInstrument } from './futuresConfig.js';
 import { GEXEngine } from './gexEngine.js';
 import { CboeOptionsProvider } from './dataFeeds/cboeOptionsFeed.js';
 import { fetchBinanceAggTrades } from './dataFeeds/historyFeed.js';
+import { createMarketDataFeed } from './marketData/registry.js';
+import { FeedStatusEvent, MarketDataFeed, MarketDepthEvent, MarketTrade } from './marketData/types.js';
 import { OrderbookManager } from './orderbook.js';
 import { ProfileEngine } from './profileEngine.js';
 import { MAX_SESSIONS, TradingSession } from './session.js';
@@ -153,9 +155,13 @@ function createSession(socket: WebSocket): TradingSession {
   return session;
 }
 
-let currentFeedType: 'binance' | 'none' = 'none';
-let feedStatus: 'LIVE' | 'UNAVAILABLE' = 'UNAVAILABLE';
-let activeFeed: { stop: () => void } | null = null;
+// Market-data feed state (provider-agnostic; the vendor is chosen in marketData/registry.ts).
+let activeFeed: MarketDataFeed | null = null;
+let activeProvider = 'none';
+let feedStatus: 'UNAVAILABLE' | 'LIVE' = 'UNAVAILABLE';
+let feedReason: string | undefined = 'no feed connected yet';
+let lastTradeTs = 0;
+let lastDepthTs = 0;
 
 // Setup HTTP + WebSocket server on ONE port so a free host only needs to expose 8080:
 // the built client is served as static files, /healthz reports status, and the WS upgrade
@@ -214,7 +220,12 @@ const httpServer = createServer(async (req, res) => {
         sessions: sessions.size,
         symbol: currentSymbol,
         timeframe: currentTimeframe,
-        feed: currentFeedType,
+        feed: activeProvider,
+        feedStatus,
+        feedReason,
+        lastTradeTs,
+        lastDepthTs,
+        futuresProvider: process.env.FUTURES_PROVIDER || 'none',
         historySource,
         gexSource: currentInstrument.underlyingIndex ? gex.getProfile(currentInstrument.underlyingIndex)?.dataSource : undefined,
       })
@@ -386,13 +397,13 @@ const callbacks: DataFeedCallbacks = {
 };
 
 // Switch Symbol & Reinitialize Instrument
-function switchInstrument(symbol: string, source: 'binance' | 'simulator' | 'cme' = 'cme') {
+async function switchInstrument(symbol: string): Promise<void> {
   currentSymbol = symbol;
   currentInstrument = FUTURES_INSTRUMENTS[symbol] || FUTURES_INSTRUMENTS.ES;
 
   // Stop the previous feed BEFORE rebuilding engines: a straggler depth frame from the old
   // instrument would otherwise contaminate the new (empty) order book.
-  startFeed(source);
+  await startFeed();
 
   orderbook = new OrderbookManager(50);
   footprint = new FootprintEngine(currentInstrument.tickSize, 60 * 1000, 3.0, 1.0);
@@ -413,36 +424,91 @@ function switchInstrument(symbol: string, source: 'binance' | 'simulator' | 'cme
   void backfillHistory();
 }
 
-// Start Data Feed.
-// Only REAL sources are wired here. DeepChart deliberately ships no synthetic ticks,
-// depth or volume: if an instrument has no licensed/keyless real feed, it simply reports
-// "unavailable" instead of showing fabricated market data.
-function startFeed(_source: 'binance' | 'simulator' | 'cme' = 'binance') {
-  if (activeFeed) {
-    activeFeed.stop();
-    activeFeed = null;
-  }
+// Start Data Feed through the MarketDataFeed abstraction.
+//
+// Lifecycle is strict: the previous feed is fully disconnected (listeners dead) BEFORE a new
+// adapter is created, so a late frame from the old instrument can never reach the new book.
+// Only validated real events can move the status to LIVE — a successful connection is not data.
+async function startFeed(): Promise<void> {
+  await stopFeed();
 
-  if (currentSymbol === 'BTCUSDT') {
-    const feed = new BinanceFuturesFeed(currentSymbol, callbacks);
-    feed.start();
-    activeFeed = feed;
-    currentFeedType = 'binance';
-    feedStatus = 'LIVE';
-    console.log(`[DeepChart Server] Binance feed connected for ${currentSymbol} (real trades + depth)`);
-    return;
-  }
+  lastTradeTs = 0;
+  lastDepthTs = 0;
 
-  // Futures / indices need a licensed real-time vendor (Databento, Rithmic, Tradovate, IBKR…).
-  currentFeedType = 'none';
-  feedStatus = 'UNAVAILABLE';
-  console.log(
-    `[DeepChart Server] No real feed configured for ${currentSymbol}. ` +
-      'DeepChart will not fabricate ticks or depth — plug a licensed feed to stream this instrument.'
-  );
+  const { feed, provider } = createMarketDataFeed(currentSymbol, currentInstrument, {
+    onTrade: (trade: MarketTrade) => {
+      lastTradeTs = Date.now();
+      if (feedStatus !== 'LIVE') setFeedStatus('LIVE');
+      // Boundary translation into the existing engine contract (engines stay untouched).
+      callbacks.onTick({
+        id: trade.id ?? `md_${currentSymbol}_${trade.ts}`,
+        timestamp: trade.ts,
+        price: trade.price,
+        size: trade.size,
+        side: trade.side === 'BUY' ? 'buy' : 'sell',
+        isBuyerMaker: trade.side !== 'BUY',
+      });
+    },
+    onDepth: (event: MarketDepthEvent) => {
+      lastDepthTs = Date.now();
+      if (event.kind === 'snapshot') {
+        callbacks.onOrderbookSnapshot(
+          event.bids.map((l) => [l.price, l.size] as [number, number]),
+          event.asks.map((l) => [l.price, l.size] as [number, number]),
+          event.updateId ?? event.ts
+        );
+      } else if (event.side === 'bid') {
+        callbacks.onOrderbookDelta([[event.price, event.size]], [], event.updateId ?? event.ts);
+      } else {
+        callbacks.onOrderbookDelta([], [[event.price, event.size]], event.updateId ?? event.ts);
+      }
+    },
+    onStatus: (status: FeedStatusEvent) => {
+      if (status.provider !== provider) return;
+      feedReason = status.reason;
+      setFeedStatus(status.state === 'LIVE' ? 'LIVE' : 'UNAVAILABLE');
+    },
+    onError: (error: Error) => {
+      console.warn(`[Feed:${provider}] ${currentSymbol}: ${error.message}`);
+      setFeedStatus('UNAVAILABLE');
+    },
+  });
+
+  activeFeed = feed;
+  activeProvider = provider;
+  feedReason = provider === 'none' ? 'no licensed realtime vendor configured for futures' : 'connecting';
+  console.log(`[DeepChart Server] Feed provider '${provider}' starting for ${currentSymbol}`);
+
+  try {
+    await feed.connect();
+  } catch (err) {
+    feedReason = (err as Error).message;
+    setFeedStatus('UNAVAILABLE');
+    console.warn(`[Feed:${provider}] ${currentSymbol} failed to connect: ${feedReason}`);
+  }
 }
 
-startFeed();
+/** Stop and release the active feed. Resolves only after listeners are dead. */
+async function stopFeed(): Promise<void> {
+  const previous = activeFeed;
+  activeFeed = null;
+  if (!previous) return;
+  try {
+    await previous.disconnect();
+  } catch (err) {
+    console.warn(`[Feed:${previous.provider}] disconnect failed: ${(err as Error).message}`);
+  }
+}
+
+/** Publish a status change and re-snapshot clients so the UI reflects availability at once. */
+function setFeedStatus(next: 'UNAVAILABLE' | 'LIVE'): void {
+  if (next === feedStatus) return;
+  feedStatus = next;
+  console.log(`[Feed] ${currentSymbol}: ${feedStatus}${feedReason ? ` (${feedReason})` : ''}`);
+  for (const session of sessions.values()) session.send(buildInitState(session));
+}
+
+void startFeed();
 
 // Seed the chart with real history as soon as the server is up (fire-and-forget).
 void backfillHistory();
@@ -603,13 +669,13 @@ wss.on('connection', (ws: WebSocket) => {
             session.send(buildInitState(session));
             return;
           }
-          switchInstrument(msg.symbol, msg.source || currentFeedType);
+          await switchInstrument(msg.symbol);
           // Give the requesting client a fresh snapshot for the new contract.
           session.send(buildInitState(session));
           broadcastOpenOrders(session);
-        } else if (msg.source && msg.source !== currentFeedType) {
-          startFeed(msg.source);
         }
+        // Feed source selection is server-side (FUTURES_PROVIDER / symbol) — the client's
+        // `source` field is accepted but no longer able to switch vendors.
 
         // Timeframe change: rebuild the footprint engine with the requested bar duration.
         if (msg.timeframe && msg.timeframe !== currentTimeframe && TIMEFRAMES[msg.timeframe]) {

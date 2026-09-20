@@ -1,4 +1,4 @@
-import { spawn, ChildProcess } from 'child_process';
+﻿import { spawn, ChildProcess } from 'child_process';
 import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -77,7 +77,7 @@ async function startServer(): Promise<ChildProcess> {
         clearTimeout(timeout);
         reject(
           new Error(
-            `Test server exited before becoming ready (code ${code}). Port ${TEST_PORT} is probably already in use — ` +
+            `Test server exited before becoming ready (code ${code}). Port ${TEST_PORT} is probably already in use â€” ` +
               'kill the previous verify_p0 server and run again.'
           )
         );
@@ -105,7 +105,7 @@ function killServerTree(proc: ChildProcess | null) {
 
 async function runVerifyP0() {
   console.log('======================================================');
-  console.log('🧪 RUNNING DEEPCHART P0 VERIFICATION SUITE (13 TESTS)');
+  console.log('ðŸ§ª RUNNING DEEPCHART P0 VERIFICATION SUITE (13 TESTS)');
   console.log('======================================================\n');
 
   let serverProc: ChildProcess | null = null;
@@ -120,7 +120,7 @@ async function runVerifyP0() {
       ws!.on('open', () => resolve());
       ws!.on('error', reject);
     });
-    console.log(`✅ Connected to test server at ${WS_URL}\n`);
+    console.log(`âœ… Connected to test server at ${WS_URL}\n`);
 
     const receivedMessages: any[] = [];
     ws.on('message', (data) => {
@@ -164,9 +164,9 @@ async function runVerifyP0() {
     await sleep(2000);
 
     // ==========================================
-    // TEST 1: Replay không ăn đuôi (Buffer isolation)
+    // TEST 1: Replay khÃ´ng Äƒn Ä‘uÃ´i (Buffer isolation)
     // ==========================================
-    console.log('\n--- TEST 1: Replay không ăn đuôi (Buffer Isolation) ---');
+    console.log('\n--- TEST 1: Replay khÃ´ng Äƒn Ä‘uÃ´i (Buffer Isolation) ---');
     // Start replay at 1x so the assertion can prove the playhead actually advances
     ws.send(JSON.stringify({ type: 'REPLAY_CONTROL', action: 'START', speed: 1 }));
     
@@ -197,7 +197,7 @@ async function runVerifyP0() {
       throw new Error(`TEST 1 FAILED: replay reports isPlaying but the playhead did not advance (${idx1} -> ${idx2}).`);
     }
     console.log(`Playhead advanced ${idx1} -> ${idx2} (isPlaying: ${stillPlaying}), buffer frozen at ${ticks1} ticks.`);
-    console.log('✅ TEST 1 PASSED: Buffer length remains constant during replay (no tail eating).');
+    console.log('âœ… TEST 1 PASSED: Buffer length remains constant during replay (no tail eating).');
 
     // Pause replay
     ws.send(JSON.stringify({ type: 'REPLAY_CONTROL', action: 'PAUSE' }));
@@ -236,7 +236,7 @@ async function runVerifyP0() {
     if (journalAfter > journalBefore) {
       throw new Error(`TEST 2 FAILED: Far limit order was unexpectedly filled!`);
     }
-    console.log('✅ TEST 2 PASSED: LIMIT order correctly rests, broadcasts OPEN_ORDERS, and does not fill prematurely.');
+    console.log('âœ… TEST 2 PASSED: LIMIT order correctly rests, broadcasts OPEN_ORDERS, and does not fill prematurely.');
 
     // ==========================================
     // TEST 3: LIMIT Marketable (Instant Hit)
@@ -270,7 +270,7 @@ async function runVerifyP0() {
       (m) => m.type === 'JOURNAL_UPDATE' && m.trade.status === 'CLOSED' && m.trade.symbol === initMsg.symbol
     );
     console.log(`TEST 3 cleanup: flattened ${closedTrade.trade.id}, realized pnl = ${closedTrade.trade.pnl}`);
-    console.log('✅ TEST 3 PASSED: Marketable LIMIT fills upon tick crossing.');
+    console.log('âœ… TEST 3 PASSED: Marketable LIMIT fills upon tick crossing.');
 
     // ==========================================
     // TEST 4: CANCEL by ID & CANCEL ALL
@@ -321,7 +321,7 @@ async function runVerifyP0() {
     await waitForMessage((m) => m.type === 'ORDER_ACK' && m.action === 'CANCELLED');
     const emptyOrders = await waitForMessage((m) => m.type === 'OPEN_ORDERS' && m.orders.length === 0);
     console.log(`CANCEL ALL executed. Open orders count: ${emptyOrders.orders.length}`);
-    console.log('✅ TEST 4 PASSED: Both CANCEL by ID and CANCEL ALL successfully update OPEN_ORDERS.');
+    console.log('âœ… TEST 4 PASSED: Both CANCEL by ID and CANCEL ALL successfully update OPEN_ORDERS.');
 
     // ==========================================
     // TEST 5: Contract Cap & Reject
@@ -339,7 +339,7 @@ async function runVerifyP0() {
 
     const rejectMsg = await waitForMessage((m) => m.type === 'ORDER_REJECT' && m.orderId === 'test_cap_reject');
     console.log(`Received ORDER_REJECT as expected: "${rejectMsg.reason}"`);
-    console.log('✅ TEST 5 PASSED: Exceeding contract limit triggers ORDER_REJECT.');
+    console.log('âœ… TEST 5 PASSED: Exceeding contract limit triggers ORDER_REJECT.');
 
     // ==========================================
     // TEST 6: Notional Value (pointValue applied)
@@ -362,9 +362,9 @@ async function runVerifyP0() {
         `Observed a real whale: ${seenWhale.trade.size} @ ${seenWhale.trade.price} = $${seenWhale.trade.valueUsd}`
       );
     } else {
-      console.log('No whale printed during this run — threshold contract verified without fabricating one.');
+      console.log('No whale printed during this run â€” threshold contract verified without fabricating one.');
     }
-    console.log('✅ TEST 6 PASSED: notional threshold is instrument-derived (pointValue-aware) and enforced on real ticks.');
+    console.log('âœ… TEST 6 PASSED: notional threshold is instrument-derived (pointValue-aware) and enforced on real ticks.');
 
     // ==========================================
     // TEST 7: SET_SPEED and STEP
@@ -387,7 +387,7 @@ async function runVerifyP0() {
       (m) => m.type === 'REPLAY_STATE' && m.progress.currentIndex === idxBefore + 1
     );
     console.log(`STEP verified: currentIndex advanced from ${idxBefore} to ${stepMsg.progress.currentIndex}`);
-    console.log('✅ TEST 7 PASSED: SET_SPEED and STEP work correctly in replay protocol.');
+    console.log('âœ… TEST 7 PASSED: SET_SPEED and STEP work correctly in replay protocol.');
 
     // ==========================================
     // TEST 8: Lockout Dev Hook & Breach Isolation
@@ -461,7 +461,7 @@ async function runVerifyP0() {
       (m) => m.type === 'PROP_STATE_UPDATE' && m.state.isLockedOut === false
     );
     console.log(`RESET_PROP_ACCOUNT verified: isLockedOut = ${resetState.state.isLockedOut}, dailyLossRemaining = ${resetState.state.dailyLossRemaining}`);
-    console.log('✅ TEST 8 PASSED: Lockout clears resting orders, fires once, and rejects subsequent orders.');
+    console.log('âœ… TEST 8 PASSED: Lockout clears resting orders, fires once, and rejects subsequent orders.');
 
     // ==========================================
     // TEST 9: Instrument + timeframe switch returns a fresh INIT_STATE
@@ -481,7 +481,7 @@ async function runVerifyP0() {
     if (!switched.bars || !switched.orderbook) {
       throw new Error('TEST 9 FAILED: INIT_STATE after a switch is missing market state.');
     }
-    console.log('✅ TEST 9 PASSED: symbol + timeframe switch returns a coherent snapshot.');
+    console.log('âœ… TEST 9 PASSED: symbol + timeframe switch returns a coherent snapshot.');
 
     // ==========================================
     // TEST 10: Runtime payload validation (untrusted WebSocket input)
@@ -490,11 +490,11 @@ async function runVerifyP0() {
     // Run the payload probes on the LIVE instrument so the size/price validators are what
     // reject them (a feedless symbol is rejected earlier by the real-only guard).
     ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'BTCUSDT', timeframe: '1m', source: 'binance' }));
-    await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'BTCUSDT');
+    await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'BTCUSDT' && m.feedStatus === 'LIVE');
     await waitForMessage((m) => m.type === 'TICK', 15000);
 
     // The futures whole-contract rule must be probed on a futures symbol; because futures have
-    // no real feed here, the real-only guard rejects it first — assert the rejection + reason.
+    // no real feed here, the real-only guard rejects it first â€” assert the rejection + reason.
     ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'ES', timeframe: '1m' }));
     await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'ES');
     ws.send(JSON.stringify({ type: 'DOM_ORDER', action: 'BUY', size: 0.5, orderType: 'MARKET', orderId: 'bad_fraction' }));
@@ -503,7 +503,7 @@ async function runVerifyP0() {
 
     // Then probe the asset-class-independent validators on the LIVE instrument.
     ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'BTCUSDT', timeframe: '1m', source: 'binance' }));
-    await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'BTCUSDT');
+    await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'BTCUSDT' && m.feedStatus === 'LIVE');
     await waitForMessage((m) => m.type === 'TICK', 15000);
 
     ws.send(JSON.stringify({ type: 'DOM_ORDER', action: 'BUY', size: 0, orderType: 'MARKET', orderId: 'bad_zero' }));
@@ -521,7 +521,7 @@ async function runVerifyP0() {
     ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'NOT_A_SYMBOL', source: 'cme', timeframe: '1m' }));
     const resync = await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'NQ');
     console.log(`Unknown symbol ignored; server re-synced the client to ${resync.symbol}`);
-    console.log('✅ TEST 10 PASSED: malformed payloads are rejected without corrupting state.');
+    console.log('âœ… TEST 10 PASSED: malformed payloads are rejected without corrupting state.');
 
     // ==========================================
     // TEST 11: CLEAR_JOURNAL frees the contract budget (behavioural, not just an ack)
@@ -529,7 +529,7 @@ async function runVerifyP0() {
     console.log('\n--- TEST 11: CLEAR_JOURNAL wipes journal + contract budget ---');
     // Real-only architecture: run the account tests on the instrument that has a live feed.
     ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'BTCUSDT', timeframe: '1m', source: 'binance' }));
-    await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'BTCUSDT');
+    await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'BTCUSDT' && m.feedStatus === 'LIVE');
     await waitForMessage((m) => m.type === 'TICK', 15000);
     // TEST 8 shrank the trailing drawdown to trigger a breach; restore a realistic value
     // first, otherwise any adverse tick would re-breach the account mid-test.
@@ -551,10 +551,10 @@ async function runVerifyP0() {
     // released the earlier position it would be 1 + 1 + 4 = 6 > cap and be rejected.
     ws.send(JSON.stringify({ type: 'DOM_ORDER', action: 'BUY', size: 4, orderType: 'MARKET', orderId: 'clear_2' }));
     await waitForMessage((m) => m.type === 'ORDER_ACK' && m.action === 'FILLED' && m.orderId === 'clear_2');
-    console.log('✅ TEST 11 PASSED: a cleared journal no longer consumes contract budget.');
+    console.log('âœ… TEST 11 PASSED: a cleared journal no longer consumes contract budget.');
 
     // ==========================================
-    // TEST 12: Session isolation — the core requirement for a public server
+    // TEST 12: Session isolation â€” the core requirement for a public server
     // ==========================================
     console.log('\n--- TEST 12: per-session isolation (2 clients) ---');
     ws.send(JSON.stringify({ type: 'RESET_PROP_ACCOUNT' }));
@@ -588,7 +588,7 @@ async function runVerifyP0() {
     }
     console.log(`Client B received ${marketTicks} market ticks but 0 account events from client A.`);
     ws2.close();
-    console.log('✅ TEST 12 PASSED: accounts are isolated while market data stays shared.');
+    console.log('âœ… TEST 12 PASSED: accounts are isolated while market data stays shared.');
 
     // ==========================================
     // TEST 13: real-only availability (no fabricated data for feedless instruments)
@@ -621,10 +621,10 @@ async function runVerifyP0() {
     console.log(
       `ES reported ${esState.feedStatus} with ${esState.bars.length} bars; 0 ticks / 0 book updates in 2.5s.`
     );
-    console.log('✅ TEST 13 PASSED: nothing is fabricated for an instrument without a real feed.');
+    console.log('âœ… TEST 13 PASSED: nothing is fabricated for an instrument without a real feed.');
 
     console.log('\n======================================================');
-    console.log('🎉 ALL 13 P0 TEST CASES PASSED SUCCESSFULLY!');
+    console.log('ðŸŽ‰ ALL 13 P0 TEST CASES PASSED SUCCESSFULLY!');
     console.log('======================================================\n');
   } finally {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -649,6 +649,7 @@ runVerifyP0()
     setTimeout(() => process.exit(0), 250);
   })
   .catch((err) => {
-    console.error('\n❌ VERIFY P0 SUITE FAILED:', err);
+    console.error('\nâŒ VERIFY P0 SUITE FAILED:', err);
     process.exit(1);
   });
+
