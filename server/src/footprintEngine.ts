@@ -1,4 +1,5 @@
 import { FootprintBar, FootprintPriceLevel, Tick } from './types.js';
+import { normalizeToTick } from './priceMath.js';
 
 export class FootprintEngine {
   private tickSize: number;
@@ -31,7 +32,9 @@ export class FootprintEngine {
   }
 
   private normalizePrice(price: number): number {
-    return Math.round(price / this.tickSize) * this.tickSize;
+    // Snapping to the tick's decimal precision prevents float residue such as
+    // 5850.1000000000004 from becoming a level key.
+    return normalizeToTick(price, this.tickSize);
   }
 
   public processTick(tick: Tick): { currentBar: FootprintBar; closedBar: FootprintBar | null } {

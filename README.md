@@ -90,7 +90,7 @@ pnpm dev
 | `pnpm verify` | Smoke test E2E protocol (cần server đang chạy ở `:8080`) |
 | `pnpm verify:p0` | **Bộ 8 test P0 tự dựng server riêng ở `:8089`** (replay, lệnh chờ, huỷ lệnh, cap, notional, STEP/SET_SPEED, breach/reset) |
 
-Cấu hình qua biến môi trường (xem `.env.example`): `PORT`, `VITE_WS_URL`, `DEMO` (seed dữ liệu mẫu), `DEV_HOOKS` (cho phép `SET_PROP_CONFIG` khi test), `TEST_PORT`.
+Cấu hình qua biến môi trường (xem `.env.example`): `PORT`, `HOST` (mặc định `127.0.0.1` — chỉ mở ra LAN khi bạn đặt `0.0.0.0` và hiểu rằng **hiện chưa có auth**), `VITE_WS_URL`, `DEMO` (seed dữ liệu mẫu), `DEV_HOOKS` (cho phép `SET_PROP_CONFIG` khi test), `TEST_PORT`.
 
 ### Giao thức WebSocket (tóm tắt)
 - **Client → Server**: `SUBSCRIBE` (symbol + timeframe), `DOM_ORDER` (MARKET/LIMIT/CANCEL/FLATTEN, kèm `orderId` khi huỷ từng lệnh), `REPLAY_CONTROL` (START/PAUSE/SEEK/SET_SPEED/STEP), `UPDATE_COPIER`, `SET_PROP_TRAILING_MODE`, `RESET_PROP_ACCOUNT`, `SET_PROP_CONFIG` (chỉ khi `DEV_HOOKS=1`).

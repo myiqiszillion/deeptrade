@@ -7,6 +7,7 @@ interface DOMScalperProps {
   orderbook: OrderbookSnapshot;
   currentPrice: number;
   symbol: string;
+  isFutures: boolean;
   openOrders: RestingOrder[];
   isLockedOut: boolean;
   onCancelOrder: (orderId: string) => void;
@@ -16,11 +17,17 @@ export const DOMScalper: React.FC<DOMScalperProps> = ({
   orderbook,
   currentPrice,
   symbol,
+  isFutures,
   openOrders,
   isLockedOut,
   onCancelOrder,
 }) => {
-  const [orderSize, setOrderSize] = useState<number>(0.5);
+  const [rawSize, setRawSize] = useState<number>(1);
+
+  // Futures trade in whole contracts while crypto is fractional; keeping the selection
+  // valid per asset class avoids the server rejecting every order after a symbol switch.
+  const sizePresets = isFutures ? [1, 2, 3, 5, 10] : [0.1, 0.5, 1, 2, 5];
+  const orderSize = sizePresets.includes(rawSize) ? rawSize : sizePresets[0];
 
   const handleBuyMarket = useCallback(() => {
     if (isLockedOut) return;
@@ -146,10 +153,10 @@ export const DOMScalper: React.FC<DOMScalperProps> = ({
         <div className="flex items-center justify-between pt-1">
           <span className="text-slate-400 text-[11px]">Size:</span>
           <div className="flex gap-1">
-            {[0.1, 0.5, 1.0, 2.0, 5.0].map((s) => (
+            {sizePresets.map((s) => (
               <button
                 key={s}
-                onClick={() => setOrderSize(s)}
+                onClick={() => setRawSize(s)}
                 className={`px-2 py-0.5 rounded text-[10px] ${
                   orderSize === s ? 'bg-amber-500 text-black font-bold' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                 }`}

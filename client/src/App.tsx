@@ -570,6 +570,7 @@ export const App: React.FC = () => {
             orderbook={orderbook}
             currentPrice={currentPrice}
             symbol={symbol}
+            isFutures={symbol !== 'BTCUSDT'}
             openOrders={openOrders}
             isLockedOut={propState?.isLockedOut === true}
             onCancelOrder={handleCancelOrder}

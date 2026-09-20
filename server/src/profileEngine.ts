@@ -1,4 +1,5 @@
 import { TPOBracket, TPOProfileData, VolumeProfileData, VolumeProfileLevel, Tick } from './types.js';
+import { normalizeToTick } from './priceMath.js';
 
 export class ProfileEngine {
   private tickSize: number;
@@ -20,7 +21,7 @@ export class ProfileEngine {
   }
 
   private normalizePrice(price: number): number {
-    return Math.round(price / this.tickSize) * this.tickSize;
+    return normalizeToTick(price, this.tickSize);
   }
 
   public processTick(tick: Tick) {

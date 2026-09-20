@@ -105,7 +105,7 @@ function killServerTree(proc: ChildProcess | null) {
 
 async function runVerifyP0() {
   console.log('======================================================');
-  console.log('🧪 RUNNING DEEPCHART P0 VERIFICATION SUITE (9 TESTS)');
+  console.log('🧪 RUNNING DEEPCHART P0 VERIFICATION SUITE (10 TESTS)');
   console.log('======================================================\n');
 
   let serverProc: ChildProcess | null = null;
@@ -473,8 +473,34 @@ async function runVerifyP0() {
     }
     console.log('✅ TEST 9 PASSED: symbol + timeframe switch returns a coherent snapshot.');
 
+    // ==========================================
+    // TEST 10: Runtime payload validation (untrusted WebSocket input)
+    // ==========================================
+    console.log('\n--- TEST 10: Reject malformed order payloads ---');
+
+    ws.send(JSON.stringify({ type: 'DOM_ORDER', action: 'BUY', size: 0.5, orderType: 'MARKET', orderId: 'bad_fraction' }));
+    const fracReject = await waitForMessage((m) => m.type === 'ORDER_REJECT' && m.orderId === 'bad_fraction');
+    console.log(`Fractional futures size rejected: "${fracReject.reason}"`);
+
+    ws.send(JSON.stringify({ type: 'DOM_ORDER', action: 'BUY', size: 0, orderType: 'MARKET', orderId: 'bad_zero' }));
+    const zeroReject = await waitForMessage((m) => m.type === 'ORDER_REJECT' && m.orderId === 'bad_zero');
+    console.log(`Zero size rejected: "${zeroReject.reason}"`);
+
+    ws.send(JSON.stringify({ type: 'DOM_ORDER', action: 'BUY', size: '2', orderType: 'MARKET', orderId: 'bad_string' }));
+    const strReject = await waitForMessage((m) => m.type === 'ORDER_REJECT' && m.orderId === 'bad_string');
+    console.log(`Non-numeric size rejected: "${strReject.reason}"`);
+
+    ws.send(JSON.stringify({ type: 'DOM_ORDER', action: 'BUY', size: 1, orderType: 'LIMIT', price: 'oops', orderId: 'bad_price' }));
+    const priceReject = await waitForMessage((m) => m.type === 'ORDER_REJECT' && m.orderId === 'bad_price');
+    console.log(`Non-numeric LIMIT price rejected: "${priceReject.reason}"`);
+
+    ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'NOT_A_SYMBOL', source: 'cme', timeframe: '1m' }));
+    const resync = await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'NQ');
+    console.log(`Unknown symbol ignored; server re-synced the client to ${resync.symbol}`);
+    console.log('✅ TEST 10 PASSED: malformed payloads are rejected without corrupting state.');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 9 P0 TEST CASES PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 10 P0 TEST CASES PASSED SUCCESSFULLY!');
     console.log('======================================================\n');
   } finally {
     if (ws && ws.readyState === WebSocket.OPEN) {

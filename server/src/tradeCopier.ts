@@ -1,5 +1,11 @@
 import { SlaveAccount } from './types.js';
 
+/** Risk multipliers must stay in a sane band: negative or huge values would copy nonsense sizes. */
+function clampMultiplier(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(10, Math.max(0, Math.round(value * 100) / 100));
+}
+
 export class TradeCopierEngine {
   private slaves: Map<string, SlaveAccount> = new Map();
   private onCopiedCallback: ((slaveId: string, symbol: string, size: number, price: number, latencyMs: number) => void) | null = null;
@@ -30,11 +36,11 @@ export class TradeCopierEngine {
   }
 
   public addSlave(slave: SlaveAccount) {
-    this.slaves.set(slave.id, slave);
+    this.slaves.set(slave.id, { ...slave, multiplier: clampMultiplier(slave.multiplier) });
   }
 
   public updateSlave(slave: SlaveAccount) {
-    this.slaves.set(slave.id, slave);
+    this.slaves.set(slave.id, { ...slave, multiplier: clampMultiplier(slave.multiplier) });
   }
 
   public getSlaves(): SlaveAccount[] {

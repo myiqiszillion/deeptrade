@@ -13,6 +13,7 @@ import { PropRiskEngine } from './propRiskEngine.js';
 import { TapeEngine } from './tapeEngine.js';
 import { TradeCopierEngine } from './tradeCopier.js';
 import {
+  JournalTrade,
   OrderbookSnapshot,
   RestingOrder,
   Tick,
@@ -108,11 +109,33 @@ function settleClosedTrades(exitPrice: number) {
   return closed;
 }
 
+/**
+ * Close every open trade regardless of instrument (account reset). Positions left open on
+ * other symbols are valued at their last seen price, falling back to the supplied price.
+ */
+function flattenEveryOpenTrade(fallbackPrice: number): JournalTrade[] {
+  const closed: JournalTrade[] = [];
+  for (const t of journal.getTrades()) {
+    if (t.status !== 'OPEN') continue;
+    const exitPrice = lastPriceBySymbol.get(t.symbol) ?? fallbackPrice;
+    const c = journal.closeTrade(t.id, exitPrice);
+    if (c) closed.push(c);
+  }
+  for (const c of closed) {
+    propRisk.recordClosedTrade(c.pnl ?? 0);
+    broadcast({ type: 'JOURNAL_UPDATE', trade: c });
+  }
+  return closed;
+}
+
 let currentFeedType: 'binance' | 'simulator' | 'cme' = 'cme';
 let activeFeed: { stop: () => void } | null = null;
 
-// Setup WebSocket Server
-const wss = new WebSocketServer({ port: PORT });
+// Setup WebSocket Server.
+// Defaults to loopback so a dev machine on a shared network does not expose order entry
+// to everyone. Set HOST=0.0.0.0 explicitly to accept remote clients (no auth yet!).
+const HOST = process.env.HOST || '127.0.0.1';
+const wss = new WebSocketServer({ port: PORT, host: HOST });
 
 function broadcast(msg: WSServerMessage) {
   const json = JSON.stringify(msg);
@@ -442,6 +465,13 @@ wss.on('connection', (ws: WebSocket) => {
 
       if (msg.type === 'SUBSCRIBE') {
         if (msg.symbol && msg.symbol !== currentSymbol) {
+          if (!FUTURES_INSTRUMENTS[msg.symbol]) {
+            console.warn(`[DeepChart Server] Ignoring SUBSCRIBE for unknown symbol '${msg.symbol}'`);
+            // Re-sync the caller with the real server state so the UI cannot get stuck on
+            // an instrument the server does not know.
+            ws.send(JSON.stringify(buildInitState()));
+            return;
+          }
           switchInstrument(msg.symbol, msg.source || currentFeedType);
           // Give the requesting client a fresh snapshot for the new contract.
           ws.send(JSON.stringify(buildInitState()));
@@ -487,16 +517,32 @@ wss.on('connection', (ws: WebSocket) => {
           settleClosedTrades(msg.price && msg.price > 0 ? msg.price : midPrice);
           broadcast({ type: 'PROP_STATE_UPDATE', state: propRisk.getState() });
         } else if (msg.action === 'BUY' || msg.action === 'SELL') {
-          const validation = propRisk.validateOrder(currentSymbol, msg.size, getPendingContracts());
+          // --- Runtime input validation: WebSocket payloads are untrusted ---
+          const size = msg.size;
+          if (typeof size !== 'number' || !Number.isFinite(size) || size <= 0) {
+            broadcast({ type: 'ORDER_REJECT', reason: 'Order size must be a positive number', orderId: msg.orderId });
+            return;
+          }
+          if (currentInstrument.category !== 'CRYPTO' && !Number.isInteger(size)) {
+            broadcast({
+              type: 'ORDER_REJECT',
+              reason: 'Futures orders must use whole contract sizes',
+              orderId: msg.orderId,
+              size,
+            });
+            return;
+          }
+
+          const validation = propRisk.validateOrder(currentSymbol, size, getPendingContracts());
           if (!validation.allowed) {
             console.warn(`[Prop Firm Safeguard] Order rejected: ${validation.reason}`);
-            broadcast({ type: 'ORDER_REJECT', reason: validation.reason || 'Order rejected by prop risk', orderId: msg.orderId, size: msg.size });
+            broadcast({ type: 'ORDER_REJECT', reason: validation.reason || 'Order rejected by prop risk', orderId: msg.orderId, size });
             return;
           }
 
           const side = msg.action === 'BUY' ? 'LONG' : 'SHORT';
           if (msg.orderType === 'LIMIT') {
-            if (!msg.price || typeof msg.price !== 'number') {
+            if (typeof msg.price !== 'number' || !Number.isFinite(msg.price) || msg.price <= 0) {
               broadcast({ type: 'ORDER_REJECT', reason: 'LIMIT order requires a valid price', orderId: msg.orderId });
               return;
             }
@@ -506,26 +552,34 @@ wss.on('connection', (ws: WebSocket) => {
               symbol: currentSymbol,
               side,
               price: msg.price,
-              size: msg.size,
+              size,
               createdAt: Date.now(),
             };
             restingOrders.push(newOrder);
-            broadcast({ type: 'ORDER_ACK', action: 'PLACED', orderId, price: msg.price, size: msg.size });
+            broadcast({ type: 'ORDER_ACK', action: 'PLACED', orderId, price: msg.price, size });
             broadcastOpenOrders();
           } else {
             // MARKET
             const currentPrice = orderbook.getBestAsk() || currentInstrument.basePrice;
             const execPrice = (msg.action === 'BUY' ? orderbook.getBestAsk() : orderbook.getBestBid()) || currentPrice;
-            const trade = journal.openTrade(currentSymbol, side, execPrice, msg.size, 'DOM 1-Click Execution', 'Prop Firm Scalp');
-            broadcast({ type: 'ORDER_ACK', action: 'FILLED', orderId: msg.orderId, price: execPrice, size: msg.size });
+            const trade = journal.openTrade(currentSymbol, side, execPrice, size, 'DOM 1-Click Execution', 'Prop Firm Scalp');
+            broadcast({ type: 'ORDER_ACK', action: 'FILLED', orderId: msg.orderId, price: execPrice, size });
             broadcast({ type: 'JOURNAL_UPDATE', trade });
-            void copier.copyOrder(currentSymbol, msg.action, msg.size, execPrice);
+            void copier.copyOrder(currentSymbol, msg.action, size, execPrice);
           }
         }
       } else if (msg.type === 'SET_PROP_TRAILING_MODE') {
         propRisk.setTrailingMode(msg.mode);
         broadcast({ type: 'PROP_STATE_UPDATE', state: propRisk.getState() });
       } else if (msg.type === 'RESET_PROP_ACCOUNT') {
+        // Flatten FIRST, then reset: a pre-existing position would otherwise keep feeding
+        // PnL into the freshly reset balance.
+        clearRestingOrders('account reset');
+        const bestBid = orderbook.getBestBid();
+        const bestAsk = orderbook.getBestAsk();
+        const resetExit =
+          bestBid !== null && bestAsk !== null ? (bestBid + bestAsk) / 2 : currentInstrument.basePrice;
+        flattenEveryOpenTrade(resetExit);
         propRisk.resetAccount();
         broadcast({ type: 'PROP_STATE_UPDATE', state: propRisk.getState() });
       } else if (msg.type === 'SET_PROP_CONFIG') {
@@ -561,4 +615,4 @@ wss.on('connection', (ws: WebSocket) => {
   });
 });
 
-console.log(`[DeepChart Server - Prop Firm Edition] Ready at ws://localhost:${PORT}`);
+console.log(`[DeepChart Server - Prop Firm Edition] Ready at ws://localhost:${PORT} (bound to ${HOST})`);

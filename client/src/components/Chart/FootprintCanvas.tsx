@@ -399,6 +399,36 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         );
       });
 
+      // 5.1 Draw Deep Trades (whales) as filled diamonds in the gutter, left of the axis
+      deepTrades.forEach((dt) => {
+        const y = priceToY(dt.price, height);
+        // Kept clear of the price labels drawn at width-60 so neither is obscured.
+        const x = width - 66;
+        const r = 6;
+
+        ctx.fillStyle = dt.side === 'buy' ? '#22c55e' : '#ef4444';
+        ctx.beginPath();
+        ctx.moveTo(x, y - r);
+        ctx.lineTo(x + r, y);
+        ctx.lineTo(x, y + r);
+        ctx.lineTo(x - r, y);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = '#0c0e12';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        ctx.fillStyle = '#e2e8f0';
+        ctx.font = 'bold 9px JetBrains Mono, monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(
+          `${dt.side === 'buy' ? 'BUY' : 'SELL'} ${dt.size} ($${(dt.valueUsd / 1_000_000).toFixed(2)}M)`,
+          width - 76,
+          y + 3
+        );
+      });
+
       // 5.1 Draw GEX Levels (Call Wall, Put Wall, Zero Gamma)
       if (gexProfile) {
         ctx.save();
@@ -536,6 +566,9 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         </span>
         <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
           CALL WALL / PUT WALL / ZERO GAMMA
+        </span>
+        <span className="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+          &#9670; WHALE (DEEP TRADE)
         </span>
       </div>
 
