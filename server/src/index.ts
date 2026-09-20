@@ -5,8 +5,6 @@ import { fileURLToPath } from 'url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { BacktestReplayEngine } from './backtestEngine.js';
 import { BinanceFuturesFeed, DataFeedCallbacks } from './dataFeeds/binanceFeed.js';
-import { CMEFuturesFeed } from './dataFeeds/cmeFuturesFeed.js';
-import { SimulatorFeed } from './dataFeeds/simulatorFeed.js';
 import { FootprintEngine } from './footprintEngine.js';
 import { FUTURES_INSTRUMENTS, FuturesInstrument } from './futuresConfig.js';
 import { GEXEngine } from './gexEngine.js';
@@ -27,8 +25,11 @@ import {
 import { VWAPEngine } from './vwapEngine.js';
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
-let currentSymbol = 'ES';
-let currentInstrument: FuturesInstrument = FUTURES_INSTRUMENTS.ES;
+// Default to the instrument that actually has a real, key-less feed. Futures can be added
+// by plugging a licensed vendor — until then they report "feed unavailable" instead of
+// showing fabricated data.
+let currentSymbol = 'BTCUSDT';
+let currentInstrument: FuturesInstrument = FUTURES_INSTRUMENTS.BTCUSDT;
 
 // Deep-trade (whale) notional threshold scales with the instrument so that a single
 // 1-lot ES trade (~$292k notional) is not flagged as a whale.
@@ -162,7 +163,8 @@ function createSession(socket: WebSocket): TradingSession {
   return session;
 }
 
-let currentFeedType: 'binance' | 'simulator' | 'cme' = 'cme';
+let currentFeedType: 'binance' | 'none' = 'none';
+let feedStatus: 'LIVE' | 'UNAVAILABLE' = 'UNAVAILABLE';
 let activeFeed: { stop: () => void } | null = null;
 
 // Setup HTTP + WebSocket server on ONE port so a free host only needs to expose 8080:
@@ -419,33 +421,36 @@ function switchInstrument(symbol: string, source: 'binance' | 'simulator' | 'cme
   void backfillHistory();
 }
 
-// Start Data Feed
-function startFeed(source: 'binance' | 'simulator' | 'cme') {
+// Start Data Feed.
+// Only REAL sources are wired here. DeepChart deliberately ships no synthetic ticks,
+// depth or volume: if an instrument has no licensed/keyless real feed, it simply reports
+// "unavailable" instead of showing fabricated market data.
+function startFeed(_source: 'binance' | 'simulator' | 'cme' = 'binance') {
   if (activeFeed) {
     activeFeed.stop();
     activeFeed = null;
   }
 
-  currentFeedType = source;
-  if (source === 'binance' || currentSymbol === 'BTCUSDT') {
+  if (currentSymbol === 'BTCUSDT') {
     const feed = new BinanceFuturesFeed(currentSymbol, callbacks);
     feed.start();
     activeFeed = feed;
-    console.log(`[DeepChart Server] Connected to Binance Feed for ${currentSymbol}`);
-  } else if (source === 'cme') {
-    const feed = new CMEFuturesFeed(currentSymbol, callbacks);
-    feed.start();
-    activeFeed = feed;
-    console.log(`[DeepChart Server] CME Globex Feed started for ${currentSymbol} (${currentInstrument.name})`);
-  } else {
-    const feed = new SimulatorFeed(currentInstrument.basePrice, currentInstrument.tickSize, callbacks);
-    feed.start();
-    activeFeed = feed;
-    console.log(`[DeepChart Server] Simulator Feed started for ${currentSymbol}`);
+    currentFeedType = 'binance';
+    feedStatus = 'LIVE';
+    console.log(`[DeepChart Server] Binance feed connected for ${currentSymbol} (real trades + depth)`);
+    return;
   }
+
+  // Futures / indices need a licensed real-time vendor (Databento, Rithmic, Tradovate, IBKR…).
+  currentFeedType = 'none';
+  feedStatus = 'UNAVAILABLE';
+  console.log(
+    `[DeepChart Server] No real feed configured for ${currentSymbol}. ` +
+      'DeepChart will not fabricate ticks or depth — plug a licensed feed to stream this instrument.'
+  );
 }
 
-startFeed('cme');
+startFeed();
 
 // Seed the chart with real history as soon as the server is up (fire-and-forget).
 void backfillHistory();
@@ -469,25 +474,22 @@ setInterval(() => {
 }, 500);
 
 /**
- * Refresh Gamma Exposure for the active instrument.
- *
- * Prefers the REAL CBOE delayed option chain (free, key-less) and falls back to the
- * synthetic model when no chain is available — offline dev, an index CBOE does not publish,
- * or a CDN hiccup. The profile carries `dataSource` so the UI can label it honestly.
+ * Refresh Gamma Exposure for the active instrument from CBOE's free delayed chain.
+ * If the chain is unreachable we keep the previous real profile (or none) — DeepChart does
+ * not substitute a synthetic model.
  */
 async function refreshGex(force = false): Promise<void> {
   const underlying = currentInstrument.underlyingIndex;
-  if (underlying) {
-    const chain = await cboe.fetchChain(underlying, force);
-    if (chain) gex.buildFromChain(underlying, chain.spotPrice, chain.contracts);
+  if (!underlying) return;
+
+  const chain = await cboe.fetchChain(underlying, force);
+  if (!chain) {
+    console.warn(`[GEX] ${underlying}: CBOE chain unavailable — keeping the last real profile.`);
+    return;
   }
 
-  if (!underlying || !gex.getProfile(underlying)) {
-    gex.refreshAll();
-  }
-
-  const profile = underlying ? gex.getProfile(underlying) : undefined;
-  if (profile) broadcast({ type: 'GEX_UPDATE', profile });
+  const profile = gex.buildFromChain(underlying, chain.spotPrice, chain.contracts);
+  broadcast({ type: 'GEX_UPDATE', profile });
 }
 
 setInterval(() => {
@@ -497,39 +499,9 @@ setInterval(() => {
 // Warm the cache at boot so the first snapshot already carries real GEX when reachable.
 void refreshGex();
 
-// Periodically emit simulated Options Flow Whale Trades
-setInterval(() => {
-  const underlyings = ['SPX', 'SPY', 'NDX', 'QQQ'];
-  const und = underlyings[Math.floor(Math.random() * underlyings.length)];
-  const spot = und === 'SPX' ? 5860 : und === 'SPY' ? 585 : und === 'NDX' ? 20550 : 495;
-  const isCall = Math.random() > 0.45;
-  const strikeDiff = (Math.floor(Math.random() * 6) - 2) * (und === 'SPX' || und === 'NDX' ? 10 : 1);
-  const strike = spot + strikeDiff;
-  const dte = Math.random() < 0.6 ? 0 : Math.floor(Math.random() * 5) + 1;
-  const size = Math.floor(Math.random() * 400) + 50;
-  const price = Math.round((Math.random() * 15 + 2) * 100) / 100;
-  const premiumUsd = Math.round(size * price * 100);
-
-  const flowTrade = {
-    id: `flow_${Date.now()}`,
-    timestamp: Date.now(),
-    underlying: und,
-    contractType: (isCall ? 'CALL' : 'PUT') as 'CALL' | 'PUT',
-    strike,
-    expiration: dte === 0 ? '0DTE' : `${dte}DTE`,
-    dte,
-    orderType: (Math.random() > 0.5 ? 'SWEEP' : 'BLOCK') as 'SWEEP' | 'BLOCK',
-    sentiment: (isCall ? 'BULLISH' : 'BEARISH') as 'BULLISH' | 'BEARISH',
-    size,
-    price,
-    premiumUsd,
-    spotPrice: spot,
-    source: 'SIMULATED' as const,
-  };
-
-  gex.addFlowTrade(flowTrade);
-  broadcast({ type: 'OPTIONS_FLOW', trade: flowTrade });
-}, 12000);
+// Simulated options flow was removed: DeepChart only publishes flow from a real provider.
+// The scanner widget stays in the UI and simply reports that no source is configured.
+// (No synthetic flow generator: OPTIONS_FLOW is only emitted by a real provider.)
 
 /**
  * Seed the market engines with history so the chart is not empty on first load.
@@ -540,21 +512,15 @@ setInterval(() => {
  */
 async function backfillHistory(): Promise<void> {
   const symbol = currentSymbol;
-  const instrument = currentInstrument;
   let ticks: Tick[] = [];
   let source: HistorySource = 'NONE';
 
   try {
+    // Only REAL history is seeded. Crypto has public real trades; anything else would have
+    // to be reconstructed from bars, which would produce a fabricated footprint.
     if (symbol === 'BTCUSDT') {
       ticks = await fetchBinanceAggTrades(symbol, 3);
       if (ticks.length > 0) source = 'REAL_TICKS';
-    } else {
-      const yahooSymbol = YAHOO_SYMBOLS[symbol];
-      if (yahooSymbol) {
-        const bars = await fetchYahooMinuteBars(yahooSymbol);
-        ticks = reconstructTicksFromBars(bars, instrument.tickSize);
-        if (ticks.length > 0) source = 'RECONSTRUCTED_1M';
-      }
     }
 
     // Discard if the instrument changed while we were fetching.
@@ -562,7 +528,7 @@ async function backfillHistory(): Promise<void> {
 
     historySource = source;
     if (ticks.length === 0) {
-      console.log(`[History] ${symbol}: no free history available — accumulating live ticks only.`);
+      console.log(`[History] ${symbol}: no real history available — accumulating live ticks only.`);
       return;
     }
 
@@ -607,6 +573,7 @@ function buildInitState(session: TradingSession): WSServerMessage {
     slaves: session.copier.getSlaves(),
     timeframe: currentTimeframe,
     historySource,
+    feedStatus,
   };
 }
 

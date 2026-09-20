@@ -1,4 +1,4 @@
-export interface GEXStrikeLevel {
+﻿export interface GEXStrikeLevel {
   strike: number;
   callGex: number; // Millions USD per 1% move
   putGex: number;
@@ -52,110 +52,37 @@ export class GEXEngine {
   private recentFlow: OptionsFlowTrade[] = [];
 
   constructor() {
-    // Generate initial GEX profiles for major index underlyings
-    this.generateGexProfile('SPX', 5860.0);
-    this.generateGexProfile('SPY', 585.0);
-    this.generateGexProfile('NDX', 20550.0);
-    this.generateGexProfile('QQQ', 495.0);
-
-    // Seed realistic whale option sweeps
-    this.seedInitialFlow();
+    // Profiles are created exclusively from a real option chain via buildFromChain().
+    // DeepChart ships no fabricated GEX: when the chain is unreachable the panel reports
+    // "no data" instead of inventing walls.
   }
 
   public generateGexProfile(underlying: string, spotPrice: number): GEXProfile {
-    const strikeInterval = underlying === 'SPX' || underlying === 'NDX' ? 10 : 1;
-    const strikeRange = 30; // 30 strikes up and down
-    const centerStrike = Math.round(spotPrice / strikeInterval) * strikeInterval;
-
-    const levels: GEXStrikeLevel[] = [];
-    let maxCallGex = 0;
-    let callWall = centerStrike + strikeInterval * 5;
-    let maxPutGex = 0;
-    let putWall = centerStrike - strikeInterval * 5;
-    let totalNetGex = 0;
-    let total0DteGex = 0;
-
-    for (let i = -strikeRange; i <= strikeRange; i++) {
-      const strike = centerStrike + i * strikeInterval;
-      const distFromSpot = (strike - spotPrice) / spotPrice;
-
-      // Realistic Gamma Distribution (Gaussian bell-curve peaking near ATM with skew)
-      const gammaWeight = Math.exp(-Math.pow(distFromSpot * 25, 2));
-
-      // Call GEX higher above spot
-      const callWeight = distFromSpot >= -0.01 ? gammaWeight * (1 + distFromSpot * 5) : gammaWeight * 0.4;
-      const callGex = Math.round(callWeight * (80 + Math.random() * 40) * 10) / 10;
-
-      // Put GEX higher below spot (Dealer short puts -> negative gamma)
-      const putWeight = distFromSpot <= 0.01 ? gammaWeight * (1 - distFromSpot * 5) : gammaWeight * 0.4;
-      const putGex = -Math.round(putWeight * (90 + Math.random() * 45) * 10) / 10;
-
-      const netGex = Math.round((callGex + putGex) * 10) / 10;
-      const zeroDteGex = Math.round((netGex * (0.35 + Math.random() * 0.2)) * 10) / 10;
-
-      const callOI = Math.round(callGex * 150 + 500);
-      const putOI = Math.round(Math.abs(putGex) * 160 + 600);
-
-      levels.push({
-        strike,
-        callGex,
-        putGex,
-        netGex,
-        zeroDteGex,
-        callOI,
-        putOI,
-        callVol: Math.round(callOI * 0.2),
-        putVol: Math.round(putOI * 0.2),
-      });
-
-      if (callGex > maxCallGex) {
-        maxCallGex = callGex;
-        callWall = strike;
-      }
-      if (Math.abs(putGex) > maxPutGex) {
-        maxPutGex = Math.abs(putGex);
-        putWall = strike;
-      }
-
-      totalNetGex += netGex;
-      total0DteGex += zeroDteGex;
-    }
-
-    // Zero Gamma Flip Point: where cumulative gamma flips from negative to positive
-    let zeroGammaFlip = centerStrike;
-    for (let i = 0; i < levels.length - 1; i++) {
-      if (levels[i].netGex <= 0 && levels[i + 1].netGex > 0) {
-        zeroGammaFlip = levels[i].strike;
-        break;
-      }
-    }
-
-    const regime = totalNetGex >= 0 ? 'POSITIVE_GAMMA' : 'NEGATIVE_GAMMA';
-
-    const profile: GEXProfile = {
+    // Synthetic GEX generation has been removed: only real chains (buildFromChain) publish
+    // profiles. This returns an empty profile so no fabricated wall can ever be shown.
+    const empty: GEXProfile = {
       underlying,
       spotPrice,
-      callWall,
-      putWall,
-      zeroGammaFlip,
-      totalNetGex: Math.round(totalNetGex * 10) / 10,
-      total0DteGex: Math.round(total0DteGex * 10) / 10,
-      regime,
-      levels,
+      callWall: spotPrice,
+      putWall: spotPrice,
+      zeroGammaFlip: spotPrice,
+      totalNetGex: 0,
+      total0DteGex: 0,
+      regime: 'POSITIVE_GAMMA',
+      levels: [],
       timestamp: Date.now(),
       dataSource: 'SIMULATED',
     };
-
-    this.currentProfiles.set(underlying, profile);
-    return profile;
+    this.currentProfiles.set(underlying, empty);
+    return empty;
   }
 
   /**
    * Build a GEX profile from a REAL option chain (CBOE delayed quotes).
    *
    * Standard dealer-gamma convention: dealers are assumed long call gamma and short put
-   * gamma, so net GEX = Σ(call gamma·OI) − Σ(put gamma·OI), converted to dollars per 1%
-   * underlying move via:  gamma × OI × 100 (contract multiplier) × spot² × 0.01
+   * gamma, so net GEX = Î£(call gammaÂ·OI) âˆ’ Î£(put gammaÂ·OI), converted to dollars per 1%
+   * underlying move via:  gamma Ã— OI Ã— 100 (contract multiplier) Ã— spotÂ² Ã— 0.01
    * Values are expressed in millions to match the units the UI already renders.
    */
   public buildFromChain(
