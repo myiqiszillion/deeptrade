@@ -11,6 +11,7 @@ import { FootprintEngine } from './footprintEngine.js';
 import { FUTURES_INSTRUMENTS, FuturesInstrument } from './futuresConfig.js';
 import { GEXEngine } from './gexEngine.js';
 import { CboeOptionsProvider } from './dataFeeds/cboeOptionsFeed.js';
+import { fetchBinanceAggTrades, fetchYahooMinuteBars, reconstructTicksFromBars } from './dataFeeds/historyFeed.js';
 import { OrderbookManager } from './orderbook.js';
 import { ProfileEngine } from './profileEngine.js';
 import { MAX_SESSIONS, TradingSession } from './session.js';
@@ -45,6 +46,19 @@ let sessionDate = new Date().toISOString().slice(0, 10);
 const round2 = (n: number) => Math.round(n * 100) / 100;
 // Per-connection trading state: markets are global, accounts are not.
 const sessions = new Map<WebSocket, TradingSession>();
+
+// Yahoo symbols used to backfill real 1-minute history for futures/index instruments.
+const YAHOO_SYMBOLS: Record<string, string> = {
+  ES: 'ES=F',
+  NQ: 'NQ=F',
+  YM: 'YM=F',
+  RTY: 'RTY=F',
+  GC: 'GC=F',
+  CL: 'CL=F',
+  NG: 'NG=F',
+};
+type HistorySource = 'NONE' | 'REAL_TICKS' | 'RECONSTRUCTED_1M';
+let historySource: HistorySource = 'NONE';
 let lastOrderbookUpdate = 0;
 let lastBarUpdate = 0;
 let lastSpeedOfTapeUpdate = 0;
@@ -209,6 +223,7 @@ const httpServer = createServer(async (req, res) => {
         symbol: currentSymbol,
         timeframe: currentTimeframe,
         feed: currentFeedType,
+        historySource,
         gexSource: currentInstrument.underlyingIndex ? gex.getProfile(currentInstrument.underlyingIndex)?.dataSource : undefined,
       })
     );
@@ -396,13 +411,12 @@ function switchInstrument(symbol: string, source: 'binance' | 'simulator' | 'cme
 
   startFeed(source);
 
-  // If instrument has underlying, update GEX
+  // Refresh GEX (real CBOE chain when reachable) and re-seed history for the new contract.
   if (currentInstrument.underlyingIndex) {
-    const p = gex.getProfile(currentInstrument.underlyingIndex);
-    if (p) {
-      broadcast({ type: 'GEX_UPDATE', profile: p });
-    }
+    void refreshGex();
   }
+  historySource = 'NONE';
+  void backfillHistory();
 }
 
 // Start Data Feed
@@ -432,6 +446,9 @@ function startFeed(source: 'binance' | 'simulator' | 'cme') {
 }
 
 startFeed('cme');
+
+// Seed the chart with real history as soon as the server is up (fire-and-forget).
+void backfillHistory();
 
 // Setup Backtest Replay Callback
 backtest.setCallback((tick: Tick) => {
@@ -514,6 +531,56 @@ setInterval(() => {
   broadcast({ type: 'OPTIONS_FLOW', trade: flowTrade });
 }, 12000);
 
+/**
+ * Seed the market engines with history so the chart is not empty on first load.
+ *
+ * Crypto -> REAL Binance trades. Futures/index -> REAL 1-minute bars expanded into a
+ * reconstructed intra-bar path (true tick history is licensed). If no source is reachable
+ * the chart simply accumulates live ticks and the UI says so.
+ */
+async function backfillHistory(): Promise<void> {
+  const symbol = currentSymbol;
+  const instrument = currentInstrument;
+  let ticks: Tick[] = [];
+  let source: HistorySource = 'NONE';
+
+  try {
+    if (symbol === 'BTCUSDT') {
+      ticks = await fetchBinanceAggTrades(symbol, 3);
+      if (ticks.length > 0) source = 'REAL_TICKS';
+    } else {
+      const yahooSymbol = YAHOO_SYMBOLS[symbol];
+      if (yahooSymbol) {
+        const bars = await fetchYahooMinuteBars(yahooSymbol, '1d');
+        ticks = reconstructTicksFromBars(bars, instrument.tickSize);
+        if (ticks.length > 0) source = 'RECONSTRUCTED_1M';
+      }
+    }
+
+    // Discard if the instrument changed while we were fetching.
+    if (symbol !== currentSymbol) return;
+
+    historySource = source;
+    if (ticks.length === 0) {
+      console.log(`[History] ${symbol}: no free history available — accumulating live ticks only.`);
+      return;
+    }
+
+    for (const tick of ticks) {
+      backtest.recordTick(tick);
+      footprint.processTick(tick);
+      profile.processTick(tick);
+      vwap.processTick(tick);
+      lastPriceBySymbol.set(symbol, tick.price);
+    }
+
+    console.log(`[History] ${symbol}: seeded ${ticks.length} ticks (${source})`);
+    for (const session of sessions.values()) session.send(buildInitState(session));
+  } catch (err) {
+    console.warn(`[History] backfill failed for ${symbol}: ${(err as Error).message}`);
+  }
+}
+
 // Build the full client snapshot. Used on connect and again whenever the client
 // switches instrument, so the chart never mixes bars from two contracts.
 function buildInitState(session: TradingSession): WSServerMessage {
@@ -535,6 +602,7 @@ function buildInitState(session: TradingSession): WSServerMessage {
     deepTradeThresholdUsd: computeDeepTradeThresholdUsd(),
     slaves: session.copier.getSlaves(),
     timeframe: currentTimeframe,
+    historySource,
   };
 }
 

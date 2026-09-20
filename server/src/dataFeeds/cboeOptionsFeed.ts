@@ -34,7 +34,7 @@ export interface CboeChainSnapshot {
 
 const TTL_MS = parseInt(process.env.CBOE_TTL_MS || '600000', 10); // delayed feed -> 10 min cache
 const MAX_DTE = parseInt(process.env.CBOE_MAX_DTE || '60', 10); // near-term chains drive GEX
-const FETCH_TIMEOUT_MS = 15000;
+const FETCH_TIMEOUT_MS = 25000;
 
 function daysUntil(expiration: string, today = new Date()): number {
   const exp = new Date(`${expiration}T23:59:59Z`);

@@ -115,6 +115,7 @@ export const App: React.FC = () => {
   const [notices, setNotices] = useState<{ id: number; kind: 'ok' | 'error'; text: string }[]>([]);
   const [breachAlert, setBreachAlert] = useState<string | undefined>();
   const [deepTradeThresholdUsd, setDeepTradeThresholdUsd] = useState<number | undefined>();
+  const [historySource, setHistorySource] = useState<'NONE' | 'REAL_TICKS' | 'RECONSTRUCTED_1M'>('NONE');
 
   // High-frequency tick buffering: ticks arrive every 30-120ms. Buffering them and
   // flushing to React state at ~8Hz keeps the Time & Sales tape lossless while cutting
@@ -179,6 +180,7 @@ export const App: React.FC = () => {
         setInstrument(data.instrument);
         if (typeof data.deepTradeThresholdUsd === 'number') setDeepTradeThresholdUsd(data.deepTradeThresholdUsd);
         if (data.slaves) setSlaves(data.slaves);
+        if (data.historySource) setHistorySource(data.historySource);
         if (data.timeframe) {
           timeframeRef.current = data.timeframe;
           setTimeframe(data.timeframe);
@@ -482,6 +484,23 @@ export const App: React.FC = () => {
             <BookOpen size={13} />
             <span>Journal</span>
           </button>
+
+          {/* History provenance: real ticks (crypto), reconstructed 1m bars (futures), or live-only */}
+          <div className="pl-1">
+            {historySource === 'REAL_TICKS' ? (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300" title="Chart seeded with real historical trades (Binance)">
+                HIST: REAL TICKS
+              </span>
+            ) : historySource === 'RECONSTRUCTED_1M' ? (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300" title="Seeded from real 1-minute bars; intra-bar tick path is reconstructed">
+                HIST: 1M BARS
+              </span>
+            ) : (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700/60 text-slate-300" title="No free history reachable — the chart accumulates live ticks only">
+                HIST: LIVE ONLY
+              </span>
+            )}
+          </div>
 
           {/* WS Connection Status */}
           <div className="pl-1">

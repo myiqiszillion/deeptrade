@@ -39,6 +39,7 @@ export interface WSListeners {
     deepTradeThresholdUsd?: number;
     slaves?: SlaveAccount[];
     timeframe?: string;
+    historySource?: 'NONE' | 'REAL_TICKS' | 'RECONSTRUCTED_1M';
   }) => void;
   onTick?: (tick: Tick) => void;
   onBarUpdate?: (bar: FootprintBar) => void;

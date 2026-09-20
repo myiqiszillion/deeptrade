@@ -193,6 +193,8 @@ export type WSServerMessage =
       deepTradeThresholdUsd?: number;
       slaves?: SlaveAccount[];
       timeframe?: string;
+      /** How the chart history was seeded: real ticks, reconstructed 1m bars, or live-only. */
+      historySource?: 'NONE' | 'REAL_TICKS' | 'RECONSTRUCTED_1M';
     }
   | { type: 'TICK'; tick: Tick }
   | { type: 'BAR_UPDATE'; bar: FootprintBar }

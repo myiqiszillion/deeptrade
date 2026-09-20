@@ -303,6 +303,7 @@ export type WSServerMessage =
       deepTradeThresholdUsd?: number;
       slaves?: SlaveAccount[];
       timeframe?: string;
+      historySource?: 'NONE' | 'REAL_TICKS' | 'RECONSTRUCTED_1M';
     }
   | { type: 'TICK'; tick: Tick }
   | { type: 'BAR_UPDATE'; bar: FootprintBar }
