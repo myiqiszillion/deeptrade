@@ -280,7 +280,9 @@ export type WSClientMessage =
     }
   | { type: 'UPDATE_COPIER'; slaves: SlaveAccount[] }
   | { type: 'SET_PROP_TRAILING_MODE'; mode: TrailingMode }
-  | { type: 'RESET_PROP_ACCOUNT' };
+  | { type: 'RESET_PROP_ACCOUNT' }
+  /** Only honoured when the server runs with DEV_HOOKS=1 (testing). */
+  | { type: 'SET_PROP_CONFIG'; config: Partial<PropAccountConfig> };
 
 export type WSServerMessage =
   | {

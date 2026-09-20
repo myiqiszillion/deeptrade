@@ -10,7 +10,8 @@
     "typecheck": "pnpm --filter @deepchart/server exec tsc --noEmit && pnpm --filter client exec tsc -p tsconfig.app.json --noEmit",
     "lint": "pnpm --filter client lint",
     "verify": "pnpm --filter @deepchart/server exec tsx src/verify_e2e.ts",
-    "verify:p0": "pnpm --filter @deepchart/server exec tsx src/verify_p0.ts"
+    "verify:p0": "pnpm --filter @deepchart/server exec tsx src/verify_p0.ts",
+    "verify:types": "node scripts/check-protocol-drift.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

@@ -53,6 +53,9 @@ const TIMEFRAMES: Record<string, number> = {
   '5m': 300000,
 };
 let currentTimeframe = '1m';
+
+// Last traded price per instrument so equity can value positions left open on other symbols.
+const lastPriceBySymbol = new Map<string, number>();
 let cachedBook: OrderbookSnapshot | null = null;
 let cachedBookTime = 0;
 
@@ -217,13 +220,22 @@ const callbacks: DataFeedCallbacks = {
 
       // 8. Update Open Journal Trades & Prop Risk - ONLY when !isReplay
       journal.updatePriceForOpenTrades(currentSymbol, tick.price);
+      lastPriceBySymbol.set(currentSymbol, tick.price);
 
+      // Equity must include positions on *every* instrument the account holds, using each
+      // trade's own point value and last seen price. Counting only the visible contract
+      // would freeze the PnL of any position left open on another symbol.
       let totalUnrealized = 0;
       let openContracts = 0;
-      for (const t of journal.getTrades().filter((tr) => tr.status === 'OPEN' && tr.symbol === currentSymbol)) {
-        const pointDiff = t.side === 'LONG' ? tick.price - t.entryPrice : t.entryPrice - tick.price;
-        totalUnrealized += pointDiff * currentInstrument.pointValue * t.size;
-        openContracts += t.size;
+      for (const t of journal.getTrades()) {
+        if (t.status !== 'OPEN') continue;
+        const lastPx = lastPriceBySymbol.get(t.symbol);
+        if (lastPx === undefined) continue; // no price observed yet for that contract
+        const pointValue = FUTURES_INSTRUMENTS[t.symbol]?.pointValue ?? currentInstrument.pointValue;
+        const pointDiff = t.side === 'LONG' ? lastPx - t.entryPrice : t.entryPrice - lastPx;
+        totalUnrealized += pointDiff * pointValue * t.size;
+        // Contract limits are enforced per instrument, so only the active symbol counts.
+        if (t.symbol === currentSymbol) openContracts += t.size;
       }
 
       propRisk.updateEquity(totalUnrealized, openContracts);
