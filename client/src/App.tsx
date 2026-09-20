@@ -26,6 +26,7 @@ import { DOMScalper } from './components/DOM/DOMScalper';
 import { ProfileOverlay } from './components/Profile/ProfileOverlay';
 import { SpeedOfTapeWidget } from './components/Tape/SpeedOfTapeWidget';
 import { TickReplayWidget } from './components/Backtest/TickReplayWidget';
+import { OnboardingCard } from './components/Help/OnboardingCard';
 import { TradeCopierModal } from './components/Copier/TradeCopierModal';
 import { TradingJournalModal } from './components/Journal/TradingJournalModal';
 import { GEXPanel } from './components/Options/GEXPanel';
@@ -485,23 +486,6 @@ export const App: React.FC = () => {
             <span>Journal</span>
           </button>
 
-          {/* History provenance: real ticks (crypto), reconstructed 1m bars (futures), or live-only */}
-          <div className="pl-1">
-            {historySource === 'REAL_TICKS' ? (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300" title="Chart seeded with real historical trades (Binance)">
-                HIST: REAL TICKS
-              </span>
-            ) : historySource === 'RECONSTRUCTED_1M' ? (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300" title="Seeded from real 1-minute bars; intra-bar tick path is reconstructed">
-                HIST: 1M BARS
-              </span>
-            ) : (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700/60 text-slate-300" title="No free history reachable — the chart accumulates live ticks only">
-                HIST: LIVE ONLY
-              </span>
-            )}
-          </div>
-
           {/* WS Connection Status */}
           <div className="pl-1">
             {isConnected ? (
@@ -610,8 +594,17 @@ export const App: React.FC = () => {
         )}
       </div>
 
-      {/* Bottom Footer: Backtest Every Tick */}
-      <TickReplayWidget progress={replayProgress} />
+      {/* Bottom Footer: Backtest Every Tick + data provenance */}
+      <TickReplayWidget
+        progress={replayProgress}
+        symbol={symbol}
+        isCrypto={symbol === 'BTCUSDT'}
+        historySource={historySource}
+        gexSource={gexProfile?.dataSource}
+      />
+
+      {/* First-run primer (dismissible, remembered locally) */}
+      <OnboardingCard symbol={symbol} historySource={historySource} />
 
       {/* Modals */}
       <TradeCopierModal

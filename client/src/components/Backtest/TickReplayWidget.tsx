@@ -1,13 +1,24 @@
 import React, { useState } from 'react';
 import { wsClient } from '../../services/websocket';
 import { ReplayProgress } from '../../types';
+import { DataStatusStrip } from '../Status/DataStatusStrip';
 import { Play, Pause, FastForward, StepForward, RotateCcw } from 'lucide-react';
 
 interface TickReplayWidgetProps {
   progress?: ReplayProgress;
+  symbol: string;
+  isCrypto: boolean;
+  historySource: 'NONE' | 'REAL_TICKS' | 'RECONSTRUCTED_1M';
+  gexSource?: 'SIMULATED' | 'LIVE' | 'CBOE_DELAYED';
 }
 
-export const TickReplayWidget: React.FC<TickReplayWidgetProps> = ({ progress }) => {
+export const TickReplayWidget: React.FC<TickReplayWidgetProps> = ({
+  progress,
+  symbol,
+  isCrypto,
+  historySource,
+  gexSource,
+}) => {
   const [localSpeed, setLocalSpeed] = useState<number>(1);
 
   // The server is the single source of truth for replay state.
@@ -110,9 +121,7 @@ export const TickReplayWidget: React.FC<TickReplayWidgetProps> = ({ progress }) 
         </div>
       </div>
 
-      <span className="text-[10px] text-slate-500 text-right leading-tight hidden xl:block">
-        Educational use only · simulated executions · options data delayed (CBOE) · not investment advice
-      </span>
+      <DataStatusStrip symbol={symbol} isCrypto={isCrypto} historySource={historySource} gexSource={gexSource} />
     </div>
   );
 };
