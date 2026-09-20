@@ -405,6 +405,17 @@ async function switchInstrument(symbol: string): Promise<void> {
   // instrument would otherwise contaminate the new (empty) order book.
   await startFeed();
 
+  // Readiness gate: when a live vendor is attached, wait for its first VALIDATED event so the
+  // snapshot returned to the caller already carries feedStatus=LIVE. The timeout fails
+  // honestly (status stays UNAVAILABLE) — readiness is never faked with a synthetic tick.
+  if (activeFeed && typeof activeFeed.waitForLive === 'function') {
+    try {
+      await activeFeed.waitForLive(parseInt(process.env.FEED_LIVE_TIMEOUT_MS || '15000', 10));
+    } catch (err) {
+      console.warn(`[Feed:${activeProvider}] ${currentSymbol}: ${(err as Error).message}`);
+    }
+  }
+
   orderbook = new OrderbookManager(50);
   footprint = new FootprintEngine(currentInstrument.tickSize, 60 * 1000, 3.0, 1.0);
   profile = new ProfileEngine(currentInstrument.tickSize);

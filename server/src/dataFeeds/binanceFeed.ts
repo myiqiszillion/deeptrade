@@ -14,6 +14,8 @@ export class BinanceFuturesFeed {
   private callbacks: DataFeedCallbacks;
   private isRunning = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  /** True once teardown was requested: late callbacks are expected and must stay silent. */
+  private intentionalStop = false;
 
   constructor(symbol: string, callbacks: DataFeedCallbacks) {
     this.symbol = symbol.toLowerCase();
@@ -22,21 +24,63 @@ export class BinanceFuturesFeed {
 
   public start() {
     this.isRunning = true;
+    this.intentionalStop = false;
     this.connectTradeStream();
     this.connectDepthStream();
   }
 
-  public stop() {
+  public async stop(): Promise<void> {
     this.isRunning = false;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    if (this.wsTrade) {
-      this.wsTrade.close();
-      this.wsTrade = null;
+    // Mark the teardown as intentional so late error/close callbacks are treated as expected
+    // (they still must not reconnect or mutate state) and are not logged as feed failures.
+    this.intentionalStop = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
-    if (this.wsDepth) {
-      this.wsDepth.close();
-      this.wsDepth = null;
+
+    const sockets = [this.wsTrade, this.wsDepth].filter((socket): socket is WebSocket => socket !== null);
+    this.wsTrade = null;
+    this.wsDepth = null;
+
+    for (const socket of sockets) {
+      // Detach first: a socket that is still CONNECTING can otherwise emit error/close after
+      // teardown and resurrect the previous generation. A no-op error listener is then attached
+      // so teardown can never surface as an uncaught 'error' event.
+      socket.removeAllListeners();
+      socket.on('error', () => {
+        /* expected during intentional teardown */
+      });
+      try {
+        if (socket.readyState === WebSocket.CONNECTING) {
+          // ws throws/emits "closed before the connection was established" on close() while
+          // CONNECTING; terminate() is the supported way to abort a pending connection.
+          socket.terminate();
+        } else if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CLOSING) {
+          socket.close();
+        }
+      } catch {
+        /* already settled */
+      }
     }
+
+    // Bounded settlement: resolve as soon as every socket is closed. The bound exists only so
+    // teardown can never hang — it is NOT a readiness delay.
+    await Promise.race([
+      Promise.all(
+        sockets.map(
+          (socket) =>
+            new Promise<void>((resolve) => {
+              if (socket.readyState === WebSocket.CLOSED) {
+                resolve();
+                return;
+              }
+              socket.once('close', () => resolve());
+            })
+        )
+      ),
+      new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+    ]);
   }
 
   private connectTradeStream() {

@@ -71,4 +71,10 @@ export interface MarketDataFeed {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   isConnected(): boolean;
+  /**
+   * Resolve once at least one REAL validated market event has arrived for the current
+   * generation. Must reject on timeout rather than pretend readiness. Optional: providers
+   * that cannot stream yet simply omit it.
+   */
+  waitForLive?(timeoutMs?: number): Promise<void>;
 }
