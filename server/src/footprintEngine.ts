@@ -6,21 +6,26 @@ export class FootprintEngine {
   private barDurationMs: number;
   private imbalanceRatio: number;
   private minImbalanceVol: number;
+  private stackedImbalanceLevels: number;
   private currentBar: FootprintBar | null = null;
   private closedBars: FootprintBar[] = [];
   private currentCVD = 0;
   private maxStoredBars = 100;
+  private recentTickIds = new Set<string>();
+  private tickIdQueue: string[] = [];
 
   constructor(
     tickSize = 0.5,
     barDurationMs = 60 * 1000, // 1 minute default
     imbalanceRatio = 3.0, // 300% institutional standard
-    minImbalanceVol = 1.0
+    minImbalanceVol = 1.0,
+    stackedImbalanceLevels = 3
   ) {
     this.tickSize = tickSize;
     this.barDurationMs = barDurationMs;
     this.imbalanceRatio = imbalanceRatio;
     this.minImbalanceVol = minImbalanceVol;
+    this.stackedImbalanceLevels = stackedImbalanceLevels;
   }
 
   public setTickSize(tickSize: number) {
@@ -31,6 +36,10 @@ export class FootprintEngine {
     this.barDurationMs = durationMs;
   }
 
+  public setStackedImbalanceLevels(levels: number) {
+    this.stackedImbalanceLevels = levels;
+  }
+
   private normalizePrice(price: number): number {
     // Snapping to the tick's decimal precision prevents float residue such as
     // 5850.1000000000004 from becoming a level key.
@@ -38,6 +47,19 @@ export class FootprintEngine {
   }
 
   public processTick(tick: Tick): { currentBar: FootprintBar; closedBar: FootprintBar | null } {
+    // Deduplication check: drop duplicate ticks by ID
+    if (tick.id) {
+      if (this.recentTickIds.has(tick.id)) {
+        return { currentBar: this.currentBar!, closedBar: null };
+      }
+      this.recentTickIds.add(tick.id);
+      this.tickIdQueue.push(tick.id);
+      if (this.tickIdQueue.length > 2000) {
+        const evicted = this.tickIdQueue.shift();
+        if (evicted) this.recentTickIds.delete(evicted);
+      }
+    }
+
     const normPrice = this.normalizePrice(tick.price);
     const tickTime = tick.timestamp;
     const barStartTime = Math.floor(tickTime / this.barDurationMs) * this.barDurationMs;
@@ -56,7 +78,8 @@ export class FootprintEngine {
         }
       }
 
-      const openPrice = this.currentBar ? this.currentBar.close : normPrice;
+      // Open price is strictly the first tick of this bar, NOT the previous bar's close
+      const openPrice = normPrice;
       this.currentBar = {
         id: `bar_${barStartTime}`,
         time: barStartTime,
@@ -96,22 +119,31 @@ export class FootprintEngine {
         delta: 0,
         bidImbalance: false,
         askImbalance: false,
+        stackedBidImbalance: false,
+        stackedAskImbalance: false,
       };
     }
 
     const level = bar.levels[normPrice];
-    const isSell = tick.isBuyerMaker; // buyer was maker => market sell executed at bid
-    const isBuy = !tick.isBuyerMaker; // buyer was taker => market buy executed at ask
+
+    // Aggressor classification:
+    // Buy market order (taker) -> executed at ask
+    // Sell market order (taker) -> executed at bid
+    // Unknown side -> volume is counted in totalVol, but neither buy nor sell volume (delta is preserved)
+    const isBuy = tick.side === 'buy' || tick.isBuyerMaker === false;
+    const isSell = tick.side === 'sell' || tick.isBuyerMaker === true;
 
     if (isBuy) {
       level.askVol += tick.size;
       bar.buyVolume += tick.size;
-    } else {
+    } else if (isSell) {
       level.bidVol += tick.size;
       bar.sellVolume += tick.size;
+    } else {
+      level.unknownVol = (level.unknownVol || 0) + tick.size;
     }
 
-    level.totalVol = level.bidVol + level.askVol;
+    level.totalVol = level.bidVol + level.askVol + (level.unknownVol || 0);
     level.delta = level.askVol - level.bidVol;
 
     bar.volume += tick.size;
@@ -139,14 +171,22 @@ export class FootprintEngine {
       bar.levels[currentPoc].isPOC = true;
     }
 
-    // Calculate Diagonal Imbalances
+    // Calculate Diagonal & Stacked Imbalances
     this.calculateDiagonalImbalances(bar);
 
-    // Unfinished auction checks
-    const highLevel = bar.levels[bar.high];
-    const lowLevel = bar.levels[bar.low];
-    bar.unfinishedHigh = highLevel ? highLevel.askVol > 0 : false;
-    bar.unfinishedLow = lowLevel ? lowLevel.bidVol > 0 : false;
+    // Unfinished auction checks:
+    // Only meaningful when the bar has established a range (high !== low).
+    // An unfinished high occurs when buyers were still buying the offer at the bar's extreme high (askVol > 0).
+    // An unfinished low occurs when sellers were still hitting the bid at the bar's extreme low (bidVol > 0).
+    if (bar.high !== bar.low) {
+      const highLevel = bar.levels[bar.high];
+      const lowLevel = bar.levels[bar.low];
+      bar.unfinishedHigh = highLevel ? highLevel.askVol > 0 : false;
+      bar.unfinishedLow = lowLevel ? lowLevel.bidVol > 0 : false;
+    } else {
+      bar.unfinishedHigh = false;
+      bar.unfinishedLow = false;
+    }
 
     return { currentBar: bar, closedBar };
   }
@@ -156,12 +196,19 @@ export class FootprintEngine {
       .map(Number)
       .sort((a, b) => a - b);
 
+    // FIRST PASS: Reset imbalances on all levels so subsequent checks don't overwrite
+    for (const price of sortedPrices) {
+      const level = bar.levels[price];
+      level.bidImbalance = false;
+      level.askImbalance = false;
+      level.stackedBidImbalance = false;
+      level.stackedAskImbalance = false;
+    }
+
+    // SECOND PASS: Calculate diagonal imbalances
     for (let i = 0; i < sortedPrices.length; i++) {
       const price = sortedPrices[i];
       const level = bar.levels[price];
-
-      level.bidImbalance = false;
-      level.askImbalance = false;
 
       // Diagonal: compare Bid at price P with Ask at price P + tickSize
       const nextHigherPrice = sortedPrices[i + 1];
@@ -183,6 +230,46 @@ export class FootprintEngine {
         ) {
           higherLevel.askImbalance = true;
         }
+      }
+    }
+
+    // THIRD PASS: Calculate stacked imbalances (>= N consecutive levels)
+    let consecutiveBids = 0;
+    let consecutiveAsks = 0;
+
+    for (let i = 0; i < sortedPrices.length; i++) {
+      const level = bar.levels[sortedPrices[i]];
+      if (level.bidImbalance) {
+        consecutiveBids++;
+      } else {
+        if (consecutiveBids >= this.stackedImbalanceLevels) {
+          for (let j = i - consecutiveBids; j < i; j++) {
+            bar.levels[sortedPrices[j]].stackedBidImbalance = true;
+          }
+        }
+        consecutiveBids = 0;
+      }
+
+      if (level.askImbalance) {
+        consecutiveAsks++;
+      } else {
+        if (consecutiveAsks >= this.stackedImbalanceLevels) {
+          for (let j = i - consecutiveAsks; j < i; j++) {
+            bar.levels[sortedPrices[j]].stackedAskImbalance = true;
+          }
+        }
+        consecutiveAsks = 0;
+      }
+    }
+
+    if (consecutiveBids >= this.stackedImbalanceLevels) {
+      for (let j = sortedPrices.length - consecutiveBids; j < sortedPrices.length; j++) {
+        bar.levels[sortedPrices[j]].stackedBidImbalance = true;
+      }
+    }
+    if (consecutiveAsks >= this.stackedImbalanceLevels) {
+      for (let j = sortedPrices.length - consecutiveAsks; j < sortedPrices.length; j++) {
+        bar.levels[sortedPrices[j]].stackedAskImbalance = true;
       }
     }
   }

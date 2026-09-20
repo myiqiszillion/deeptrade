@@ -5,18 +5,12 @@ import {
   FuturesInstrument,
   GEXProfile,
   HistoricalBar,
-  JournalTrade,
   OptionsFlowTrade,
   OrderbookSnapshot,
-  PropAccountConfig,
-  PropAccountState,
   ReplayProgress,
-  RestingOrder,
-  SlaveAccount,
   SpeedOfTapeData,
   TPOProfileData,
   Tick,
-  TrailingMode,
   VolumeProfileData,
   VWAPPoint,
   WSClientMessage,
@@ -35,10 +29,7 @@ export interface WSListeners {
     cvdHistory: { time: number; cvd: number }[];
     gexProfile?: GEXProfile;
     optionsFlow?: OptionsFlowTrade[];
-    propState?: PropAccountState;
-    propConfig?: PropAccountConfig;
     deepTradeThresholdUsd?: number;
-    slaves?: SlaveAccount[];
     timeframe?: string;
     historySource?: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
     historyBars?: HistoricalBar[];
@@ -51,16 +42,10 @@ export interface WSListeners {
   onSpeedOfTape?: (tape: SpeedOfTapeData) => void;
   onDeepTrade?: (trade: DeepTrade) => void;
   onAbsorption?: (alert: AbsorptionAlert) => void;
-  onTradeCopied?: (data: { slaveId: string; symbol: string; size: number; price: number; latencyMs: number }) => void;
-  onJournalUpdate?: (trade: JournalTrade) => void;
-  onJournalCleared?: () => void;
+  onProfileUpdate?: (data: { volumeProfile: VolumeProfileData; tpo?: TPOProfileData }) => void;
+  onVwapUpdate?: (point: VWAPPoint) => void;
   onGexUpdate?: (profile: GEXProfile) => void;
   onOptionsFlow?: (trade: OptionsFlowTrade) => void;
-  onPropStateUpdate?: (state: PropAccountState) => void;
-  onPropBreachAlert?: (data: { breachType: 'DAILY_LOSS' | 'MAX_DRAWDOWN'; message: string }) => void;
-  onOpenOrders?: (data: { symbol: string; orders: RestingOrder[] }) => void;
-  onOrderAck?: (data: { action: 'PLACED' | 'FILLED' | 'CANCELLED'; orderId?: string; price?: number; size?: number }) => void;
-  onOrderReject?: (data: { reason: string; orderId?: string; size?: number }) => void;
   onReplayState?: (progress: ReplayProgress) => void;
   onConnectionChange?: (connected: boolean) => void;
 }
@@ -98,8 +83,8 @@ export class DeepChartWSClient {
     this.intentionalClose = false;
     if (this.ws) {
       // Detach handlers from the previous socket first: otherwise its close event would
-      // schedule a reconnect and leave two live connections (double messages / double
-      // journal entries). React StrictMode double-mounts effects in dev, so this matters.
+      // schedule a reconnect and leave two live connections. React StrictMode double-mounts
+      // effects in dev, so this matters.
       this.ws.onopen = null;
       this.ws.onmessage = null;
       this.ws.onclose = null;
@@ -144,35 +129,17 @@ export class DeepChartWSClient {
             case 'ABSORPTION':
               this.listeners.onAbsorption?.(msg.alert);
               break;
-            case 'TRADE_COPIED':
-              this.listeners.onTradeCopied?.(msg);
+            case 'PROFILE_UPDATE':
+              this.listeners.onProfileUpdate?.({ volumeProfile: msg.volumeProfile, tpo: msg.tpo });
               break;
-            case 'JOURNAL_UPDATE':
-              this.listeners.onJournalUpdate?.(msg.trade);
-              break;
-            case 'JOURNAL_CLEARED':
-              this.listeners.onJournalCleared?.();
+            case 'VWAP_UPDATE':
+              this.listeners.onVwapUpdate?.(msg.point);
               break;
             case 'GEX_UPDATE':
               this.listeners.onGexUpdate?.(msg.profile);
               break;
             case 'OPTIONS_FLOW':
               this.listeners.onOptionsFlow?.(msg.trade);
-              break;
-            case 'PROP_STATE_UPDATE':
-              this.listeners.onPropStateUpdate?.(msg.state);
-              break;
-            case 'PROP_BREACH_ALERT':
-              this.listeners.onPropBreachAlert?.(msg);
-              break;
-            case 'OPEN_ORDERS':
-              this.listeners.onOpenOrders?.(msg);
-              break;
-            case 'ORDER_ACK':
-              this.listeners.onOrderAck?.(msg);
-              break;
-            case 'ORDER_REJECT':
-              this.listeners.onOrderReject?.(msg);
               break;
             case 'REPLAY_STATE':
               this.listeners.onReplayState?.(msg.progress);
@@ -208,29 +175,12 @@ export class DeepChartWSClient {
     }
   }
 
-  public placeOrder(action: 'BUY' | 'SELL' | 'FLATTEN', size: number, price?: number, orderType: 'MARKET' | 'LIMIT' = 'MARKET') {
-    this.send({
-      type: 'DOM_ORDER',
-      action,
-      size,
-      price,
-      orderType,
-    });
-  }
-
   public subscribe(symbol: string, source?: 'binance' | 'simulator' | 'cme', timeframe?: string) {
     this.send({
       type: 'SUBSCRIBE',
       symbol,
       timeframe: timeframe || '1m',
       source,
-    });
-  }
-
-  public setPropTrailingMode(mode: TrailingMode) {
-    this.send({
-      type: 'SET_PROP_TRAILING_MODE',
-      mode,
     });
   }
 
@@ -243,37 +193,9 @@ export class DeepChartWSClient {
     });
   }
 
-  public updateCopier(slaves: SlaveAccount[]) {
-    this.send({
-      type: 'UPDATE_COPIER',
-      slaves,
-    });
-  }
-
-  /** Cancel a single resting order by id, or every resting order when id is omitted. */
-  public cancelOrder(orderId?: string) {
-    this.send({
-      type: 'DOM_ORDER',
-      action: 'CANCEL',
-      size: 0,
-      orderType: 'LIMIT',
-      orderId,
-    });
-  }
-
   /** Advance the replay playhead by exactly one tick. */
   public stepReplay() {
     this.send({ type: 'REPLAY_CONTROL', action: 'STEP' });
-  }
-
-  /** Clear a prop-firm lockout (daily loss / drawdown breach). */
-  public resetPropAccount() {
-    this.send({ type: 'RESET_PROP_ACCOUNT' });
-  }
-
-  /** Wipe the automated journal (server-side history included). */
-  public clearJournal() {
-    this.send({ type: 'CLEAR_JOURNAL' });
   }
 
   public disconnect() {
@@ -291,3 +213,4 @@ export class DeepChartWSClient {
 }
 
 export const wsClient = new DeepChartWSClient();
+

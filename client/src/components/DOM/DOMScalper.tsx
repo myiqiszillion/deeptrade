@@ -1,82 +1,21 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { OrderbookSnapshot, RestingOrder } from '../../types';
-import { wsClient } from '../../services/websocket';
-import { X, Lock } from 'lucide-react';
+import React from 'react';
+import { OrderbookSnapshot } from '../../types';
+import { formatPrice } from '../../services/priceFormat';
 
-interface DOMScalperProps {
+interface DOMLadderProps {
   orderbook: OrderbookSnapshot;
   currentPrice: number;
   symbol: string;
   isFutures: boolean;
-  openOrders: RestingOrder[];
-  isLockedOut: boolean;
-  onCancelOrder: (orderId: string) => void;
+  tickSize?: number;
 }
 
-export const DOMScalper: React.FC<DOMScalperProps> = ({
+export const DOMLadder: React.FC<DOMLadderProps> = ({
   orderbook,
   currentPrice,
   symbol,
-  isFutures,
-  openOrders,
-  isLockedOut,
-  onCancelOrder,
+  tickSize,
 }) => {
-  const [rawSize, setRawSize] = useState<number>(1);
-
-  // Futures trade in whole contracts while crypto is fractional; keeping the selection
-  // valid per asset class avoids the server rejecting every order after a symbol switch.
-  const sizePresets = isFutures ? [1, 2, 3, 5, 10] : [0.1, 0.5, 1, 2, 5];
-  const orderSize = sizePresets.includes(rawSize) ? rawSize : sizePresets[0];
-
-  const handleBuyMarket = useCallback(() => {
-    if (isLockedOut) return;
-    wsClient.placeOrder('BUY', orderSize, undefined, 'MARKET');
-  }, [isLockedOut, orderSize]);
-
-  const handleSellMarket = useCallback(() => {
-    if (isLockedOut) return;
-    wsClient.placeOrder('SELL', orderSize, undefined, 'MARKET');
-  }, [isLockedOut, orderSize]);
-
-  const handleFlatten = useCallback(() => {
-    wsClient.placeOrder('FLATTEN', orderSize);
-  }, [orderSize]);
-
-  const handleReverse = useCallback(() => {
-    if (isLockedOut) return;
-    wsClient.placeOrder('FLATTEN', orderSize);
-    setTimeout(() => {
-      wsClient.placeOrder('SELL', orderSize);
-    }, 50);
-  }, [isLockedOut, orderSize]);
-
-  // Keyboard hotkeys — registered after the handlers so the listener always closes over
-  // the current order size and lock state.
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if user is typing in input
-      if ((e.target as HTMLElement).tagName === 'INPUT') return;
-
-      if (e.key === 'a' || e.key === 'A') {
-        handleBuyMarket();
-      } else if (e.key === 's' || e.key === 'S') {
-        handleSellMarket();
-      } else if (e.key === 'd' || e.key === 'D') {
-        handleFlatten();
-      } else if (e.key === 'w' || e.key === 'W') {
-        handleReverse();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleBuyMarket, handleSellMarket, handleFlatten, handleReverse]);
-
-  const handlePriceClick = (price: number, side: 'BUY' | 'SELL') => {
-    wsClient.placeOrder(side, orderSize, price, 'LIMIT');
-  };
-
   // Build unified DOM ladder
   const asks = [...orderbook.asks].reverse(); // Asks sorted high to low down to best ask
   const bids = [...orderbook.bids]; // Bids sorted highest first
@@ -87,125 +26,25 @@ export const DOMScalper: React.FC<DOMScalperProps> = ({
     ...orderbook.asks.map((a) => a.size)
   );
 
+  const bestBid = bids[0]?.price ?? null;
+  const bestAsk = asks[asks.length - 1]?.price ?? null;
+  const spread = bestBid !== null && bestAsk !== null ? Math.max(0, bestAsk - bestBid) : null;
+
   return (
     <div className="w-80 h-full border-l border-brand-border bg-brand-surface flex flex-col select-none font-mono text-xs">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-brand-border px-3 py-2 bg-brand-surfaceHover">
-        <span className="font-bold text-slate-200">ADVANCED DOM LADDER</span>
-        {isLockedOut ? (
-          <span className="text-[10px] px-1.5 py-0.5 bg-rose-500/20 text-rose-400 rounded font-bold flex items-center gap-1">
-            <Lock size={10} /> LOCKED OUT
-          </span>
-        ) : (
-          <span
-            className="text-[10px] px-1.5 py-0.5 bg-emerald-500/20 text-emerald-400 rounded"
-            title={symbol === 'BTCUSDT' ? 'Live Binance depth stream' : 'Simulated CME depth generator'}
-          >
-            {symbol === 'BTCUSDT' ? 'Live L2' : 'Simulated L2'}
-          </span>
-        )}
-      </div>
-
-      {/* Scalper Action Buttons */}
-      <div className="p-2 border-b border-brand-border bg-brand-bg/40 space-y-2">
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            onClick={handleBuyMarket}
-            disabled={isLockedOut}
-            className="py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded shadow flex flex-col items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <span>BUY MKT [A]</span>
-            <span className="text-[10px] font-normal opacity-80">{orderSize} {symbol}</span>
-          </button>
-          <button
-            onClick={handleSellMarket}
-            disabled={isLockedOut}
-            className="py-2 px-3 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded shadow flex flex-col items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <span>SELL MKT [S]</span>
-            <span className="text-[10px] font-normal opacity-80">{orderSize} {symbol}</span>
-          </button>
-        </div>
-
-        <div className="grid grid-cols-3 gap-1.5">
-          <button
-            onClick={handleFlatten}
-            className="py-1 px-2 bg-amber-600/30 hover:bg-amber-600/50 text-amber-300 font-semibold rounded border border-amber-500/30 text-[11px]"
-          >
-            FLATTEN [D]
-          </button>
-          <button
-            onClick={handleReverse}
-            disabled={isLockedOut}
-            className="py-1 px-2 bg-purple-600/30 hover:bg-purple-600/50 text-purple-300 font-semibold rounded border border-purple-500/30 text-[11px] disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            REVERSE [W]
-          </button>
-          <button
-            onClick={() => wsClient.cancelOrder()}
-            className="py-1 px-2 bg-slate-700/50 hover:bg-slate-700 text-slate-300 font-semibold rounded text-[11px]"
-          >
-            CANCEL ALL
-          </button>
-        </div>
-
-        {/* Size Selection */}
-        <div className="flex items-center justify-between pt-1">
-          <span className="text-slate-400 text-[11px]">Size:</span>
-          <div className="flex gap-1">
-            {sizePresets.map((s) => (
-              <button
-                key={s}
-                onClick={() => setRawSize(s)}
-                className={`px-2 py-0.5 rounded text-[10px] ${
-                  orderSize === s ? 'bg-amber-500 text-black font-bold' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                }`}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Working Orders (resting LIMIT queue) */}
-      <div className="border-b border-brand-border bg-brand-bg/30">
-        <div className="flex items-center justify-between px-3 py-1 text-[10px] font-bold text-slate-400">
-          <span>WORKING ORDERS ({openOrders.length})</span>
-          {openOrders.length > 0 && (
-            <button onClick={() => wsClient.cancelOrder()} className="text-rose-400 hover:text-rose-300 font-semibold">
-              CANCEL ALL
-            </button>
-          )}
-        </div>
-        {openOrders.length === 0 ? (
-          <div className="px-3 pb-2 text-[10px] text-slate-600">
-            {isLockedOut ? 'Trading halted — orders cleared by prop risk rules.' : 'Click a ladder price to rest a LIMIT order.'}
-          </div>
-        ) : (
-          <div className="max-h-24 overflow-y-auto divide-y divide-brand-border/30">
-            {openOrders.map((o) => (
-              <div key={o.id} className="flex items-center justify-between px-3 py-1 text-[10px]">
-                <span className={o.side === 'LONG' ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
-                  {o.side === 'LONG' ? 'BUY' : 'SELL'}
-                </span>
-                <span className="text-slate-200">{o.price.toFixed(1)}</span>
-                <span className="text-slate-400">×{o.size}</span>
-                <button
-                  onClick={() => onCancelOrder(o.id)}
-                  title="Cancel this order"
-                  className="text-slate-500 hover:text-rose-400"
-                >
-                  <X size={11} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        <span className="font-bold text-slate-200">DOM LADDER (VIEW ONLY)</span>
+        <span
+          className="text-[10px] px-1.5 py-0.5 bg-emerald-500/20 text-emerald-400 rounded font-semibold"
+          title={symbol === 'BTCUSDT' ? 'Live Binance depth stream' : 'Market depth stream'}
+        >
+          {symbol === 'BTCUSDT' ? 'Live L2' : 'Market L2'}
+        </span>
       </div>
 
       {/* Column Headers */}
-      <div className="grid grid-cols-3 text-center py-1 border-b border-brand-border bg-brand-surfaceHover text-[10px] text-slate-400 font-semibold">
+      <div className="grid grid-cols-3 text-center py-1.5 border-b border-brand-border bg-brand-surfaceHover text-[10px] text-slate-400 font-semibold">
         <div>BID SIZE (P&S)</div>
         <div>PRICE</div>
         <div>ASK SIZE (P&S)</div>
@@ -221,14 +60,13 @@ export const DOMScalper: React.FC<DOMScalperProps> = ({
           return (
             <div
               key={ask.price}
-              onClick={() => handlePriceClick(ask.price, 'SELL')}
-              className="grid grid-cols-3 text-center py-0.5 hover:bg-rose-500/10 cursor-pointer relative"
+              className="grid grid-cols-3 text-center py-0.5 hover:bg-rose-500/10 relative"
             >
               {/* Left blank */}
               <div />
 
               {/* Price */}
-              <div className="text-rose-400 font-bold z-10">{ask.price.toFixed(1)}</div>
+              <div className="text-rose-400 font-bold z-10">{formatPrice(ask.price, tickSize)}</div>
 
               {/* Ask Size & Pulling/Stacking */}
               <div className="relative flex items-center justify-end px-2 z-10 gap-1.5">
@@ -250,8 +88,14 @@ export const DOMScalper: React.FC<DOMScalperProps> = ({
         })}
 
         {/* Current Spread Bar */}
-        <div className="py-1 px-3 bg-amber-500/15 text-center text-amber-400 font-bold border-y border-amber-500/30 text-xs">
-          CURRENT: {currentPrice.toFixed(1)}
+        <div className="py-1 px-3 bg-amber-500/15 text-center text-amber-400 font-bold border-y border-amber-500/30 text-xs flex items-center justify-between">
+          <span className="text-[10px] font-normal text-amber-400/80">
+            {spread !== null ? `SPREAD: ${formatPrice(spread, tickSize)}` : 'SPREAD: —'}
+          </span>
+          <span>CURRENT: {formatPrice(currentPrice, tickSize)}</span>
+          <span className="text-[10px] font-normal text-amber-400/80">
+            {bids.length + asks.length} LVLS
+          </span>
         </div>
 
         {/* Bids (Green side) */}
@@ -262,8 +106,7 @@ export const DOMScalper: React.FC<DOMScalperProps> = ({
           return (
             <div
               key={bid.price}
-              onClick={() => handlePriceClick(bid.price, 'BUY')}
-              className="grid grid-cols-3 text-center py-0.5 hover:bg-emerald-500/10 cursor-pointer relative"
+              className="grid grid-cols-3 text-center py-0.5 hover:bg-emerald-500/10 relative"
             >
               {/* Bid Size & Pulling/Stacking */}
               <div className="relative flex items-center justify-start px-2 z-10 gap-1.5">
@@ -276,7 +119,7 @@ export const DOMScalper: React.FC<DOMScalperProps> = ({
               </div>
 
               {/* Price */}
-              <div className="text-emerald-400 font-bold z-10">{bid.price.toFixed(1)}</div>
+              <div className="text-emerald-400 font-bold z-10">{formatPrice(bid.price, tickSize)}</div>
 
               {/* Right blank */}
               <div />
@@ -293,3 +136,5 @@ export const DOMScalper: React.FC<DOMScalperProps> = ({
     </div>
   );
 };
+
+export const DOMScalper = DOMLadder;

@@ -15,6 +15,8 @@
     "verify:tradovate": "pnpm --filter @deepchart/server exec tsx src/verify_tradovate.ts",
     "verify:chart-smoke": "node server/verify_chart_smoke.mjs",
     "verify:lifecycle": "pnpm --filter @deepchart/server exec tsx src/verify_lifecycle.ts",
+    "verify:footprint": "pnpm --filter @deepchart/server exec tsx src/verify_footprint.ts",
+    "verify:replay": "pnpm --filter @deepchart/server exec tsx src/verify_replay.ts",
     "verify:types": "node scripts/check-protocol-drift.mjs"
   },
   "devDependencies": {

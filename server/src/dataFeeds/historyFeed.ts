@@ -1,4 +1,4 @@
-﻿import { Tick } from '../types.js';
+import { Tick } from '../types.js';
 
 /**
  * REAL historical trades for seeding the orderflow engines at boot.
@@ -35,7 +35,7 @@ export async function fetchBinanceAggTrades(symbol: string, pages = 3): Promise<
   let endTime: number | undefined;
 
   for (let page = 0; page < pages; page++) {
-    const url = `https://api.binance.com/api/v3/aggTrades?symbol=${symbol.toUpperCase()}&limit=1000${
+    const url = `https://fapi.binance.com/fapi/v1/aggTrades?symbol=${symbol.toUpperCase()}&limit=1000${
       endTime ? `&endTime=${endTime}` : ''
     }`;
     const rows = (await getJson(url)) as Record<string, unknown>[] | null;

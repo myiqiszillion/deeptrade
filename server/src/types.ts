@@ -1,8 +1,7 @@
 import { FuturesInstrument } from './futuresConfig.js';
 import { GEXProfile, OptionsFlowTrade } from './gexEngine.js';
-import { PropAccountConfig, PropAccountState, TrailingMode } from './propRiskEngine.js';
 
-export type OrderSide = 'buy' | 'sell';
+export type OrderSide = 'buy' | 'sell' | 'unknown';
 
 export interface Tick {
   id: string;
@@ -10,7 +9,7 @@ export interface Tick {
   price: number;
   size: number;
   side: OrderSide;
-  isBuyerMaker: boolean; // true = sell market order (buyer was maker), false = buy market order
+  isBuyerMaker?: boolean; // true = sell market order (buyer was maker), false = buy market order, undefined = unknown
 }
 
 export interface OrderbookLevel {
@@ -31,10 +30,13 @@ export interface FootprintPriceLevel {
   price: number;
   bidVol: number; // Volume sold at bid (market sell)
   askVol: number; // Volume bought at ask (market buy)
+  unknownVol?: number; // Volume where aggressor was undecidable
   totalVol: number;
   delta: number;
   bidImbalance: boolean; // Diagonal imbalance: bidVol significantly > askVol at price+1
   askImbalance: boolean; // Diagonal imbalance: askVol significantly > bidVol at price-1
+  stackedBidImbalance?: boolean;
+  stackedAskImbalance?: boolean;
   isPOC?: boolean;
 }
 
@@ -149,53 +151,9 @@ export interface AbsorptionAlert {
   description: string;
 }
 
-export interface SlaveAccount {
-  id: string;
-  name: string;
-  multiplier: number;
-  enabled: boolean;
-  status: 'connected' | 'idle' | 'error';
-  lastCopiedOrder?: string;
-  latencyMs?: number;
-}
-
-export interface JournalTrade {
-  id: string;
-  symbol: string;
-  timestamp: number;
-  exitTimestamp?: number;
-  side: 'LONG' | 'SHORT';
-  entryPrice: number;
-  exitPrice?: number;
-  size: number;
-  pnl?: number;
-  pnlPercent?: number;
-  fee: number;
-  status: 'OPEN' | 'CLOSED';
-  mae: number; // Maximum Adverse Excursion
-  mfe: number; // Maximum Favorable Excursion
-  notes: string;
-  imbalanceContext?: string;
-}
-
-export interface RestingOrder {
-  id: string;
-  symbol: string;
-  side: 'LONG' | 'SHORT';
-  price: number;
-  size: number;
-  createdAt: number;
-}
-
 export type WSClientMessage =
   | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source: 'binance' | 'simulator' | 'cme' }
-  | { type: 'DOM_ORDER'; action: 'BUY' | 'SELL' | 'CANCEL' | 'FLATTEN'; price?: number; size: number; orderType: 'MARKET' | 'LIMIT'; orderId?: string }
-  | { type: 'REPLAY_CONTROL'; action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP'; speed?: number; timestamp?: number }
-  | { type: 'UPDATE_COPIER'; slaves: SlaveAccount[] }
-  | { type: 'SET_PROP_TRAILING_MODE'; mode: TrailingMode }
-  | { type: 'RESET_PROP_ACCOUNT' }
-  | { type: 'CLEAR_JOURNAL' }
-  | { type: 'SET_PROP_CONFIG'; config: Partial<PropAccountConfig> };
+  | { type: 'REPLAY_CONTROL'; action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP'; speed?: number; timestamp?: number };
 
 export type WSServerMessage =
   | {
@@ -210,10 +168,7 @@ export type WSServerMessage =
       cvdHistory: { time: number; cvd: number }[];
       gexProfile?: GEXProfile;
       optionsFlow?: OptionsFlowTrade[];
-      propState?: PropAccountState;
-      propConfig?: PropAccountConfig;
       deepTradeThresholdUsd?: number;
-      slaves?: SlaveAccount[];
       timeframe?: string;
       /** How the chart history was seeded: real ticks, real vendor bars, or live-only. */
       historySource?: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
@@ -236,14 +191,9 @@ export type WSServerMessage =
   | { type: 'SPEED_OF_TAPE'; tape: SpeedOfTapeData }
   | { type: 'DEEP_TRADE'; trade: DeepTrade }
   | { type: 'ABSORPTION'; alert: AbsorptionAlert }
-  | { type: 'TRADE_COPIED'; slaveId: string; symbol: string; size: number; price: number; latencyMs: number }
-  | { type: 'JOURNAL_UPDATE'; trade: JournalTrade }
-  | { type: 'JOURNAL_CLEARED' }
+  | { type: 'PROFILE_UPDATE'; volumeProfile: VolumeProfileData; tpo?: TPOProfileData }
+  | { type: 'VWAP_UPDATE'; point: VWAPPoint }
   | { type: 'GEX_UPDATE'; profile: GEXProfile }
   | { type: 'OPTIONS_FLOW'; trade: OptionsFlowTrade }
-  | { type: 'PROP_STATE_UPDATE'; state: PropAccountState }
-  | { type: 'PROP_BREACH_ALERT'; breachType: 'DAILY_LOSS' | 'MAX_DRAWDOWN'; message: string }
-  | { type: 'OPEN_ORDERS'; symbol: string; orders: RestingOrder[] }
-  | { type: 'ORDER_ACK'; action: 'PLACED' | 'FILLED' | 'CANCELLED'; orderId?: string; price?: number; size?: number }
-  | { type: 'ORDER_REJECT'; reason: string; orderId?: string; size?: number }
   | { type: 'REPLAY_STATE'; progress: { isPlaying: boolean; currentIndex: number; totalTicks: number; speed: number; currentTime?: number } };
+

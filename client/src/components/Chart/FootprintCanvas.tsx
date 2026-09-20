@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { AbsorptionAlert, DeepTrade, FootprintBar, GEXProfile, HistoricalBar, VWAPPoint } from '../../types';
+import { AbsorptionAlert, ChartViewport, DeepTrade, FootprintBar, GEXProfile, HistoricalBar, VWAPPoint } from '../../types';
 import { historyBeforeLive } from '../../services/chartHistory';
+import { formatPrice } from '../../services/priceFormat';
 
 interface FootprintCanvasProps {
   bars: FootprintBar[];
@@ -21,6 +22,11 @@ interface FootprintCanvasProps {
   tickSize?: number;
   symbol?: string;
   isLive?: boolean;
+  chartMode?: 'footprint' | 'candles';
+  viewport?: ChartViewport;
+  onViewportChange?: (vp: ChartViewport) => void;
+  crosshairX?: number | null;
+  onCrosshairChange?: (x: number | null) => void;
 }
 
 export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
@@ -37,6 +43,11 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   tickSize = 0.5,
   symbol,
   isLive = false,
+  chartMode = 'footprint',
+  viewport: propsViewport,
+  onViewportChange,
+  crosshairX,
+  onCrosshairChange,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -44,13 +55,26 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   const [autoFollow, setAutoFollow] = useState(true);
 
   // Viewport / Camera state
-  const [viewport, setViewport] = useState({
+  const [internalViewport, setInternalViewport] = useState<ChartViewport>({
     panX: 0,
     panY: 0,
     barWidth: 80, // pixels per bar
     barSpacing: 20,
     priceScale: 6, // pixels per tick
   });
+
+  const viewport = propsViewport ?? internalViewport;
+  const updateViewport = useCallback(
+    (updater: (prev: ChartViewport) => ChartViewport) => {
+      if (onViewportChange) {
+        const next = updater(viewport);
+        onViewportChange(next);
+      } else {
+        setInternalViewport(updater);
+      }
+    },
+    [onViewportChange, viewport]
+  );
 
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
@@ -62,8 +86,8 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     if (!canvas) return;
     const cssWidth = canvas.parentElement?.clientWidth || 800;
     const cssHeight = canvas.parentElement?.clientHeight || 600;
-    setViewport((prev) => ({ ...prev, panY: cssHeight / 2, panX: cssWidth - 80 }));
-  }, [symbol]);
+    updateViewport((prev) => ({ ...prev, panY: cssHeight / 2, panX: cssWidth - 80 }));
+  }, [symbol, updateViewport]);
 
   // Auto-follow: pin the newest bar near the right edge while enabled.
   useEffect(() => {
@@ -72,11 +96,11 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     if (!canvas) return;
     const cssWidth = canvas.parentElement?.clientWidth || 800;
     const totalWidth = bars.length * (viewport.barWidth + viewport.barSpacing);
-    setViewport((prev) => {
-      const nextPanX = cssWidth - totalWidth - 80;
-      return nextPanX === prev.panX ? prev : { ...prev, panX: nextPanX };
-    });
-  }, [bars.length, autoFollow, viewport.barWidth, viewport.barSpacing]);
+    const nextPanX = cssWidth - totalWidth - 80;
+    if (nextPanX !== viewport.panX) {
+      updateViewport((prev) => ({ ...prev, panX: nextPanX }));
+    }
+  }, [bars.length, autoFollow, viewport.barWidth, viewport.barSpacing, viewport.panX, updateViewport]);
 
   // Mouse handlers for pan & zoom
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -93,17 +117,22 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
+    const curX = e.clientX - rect.left;
+    const curY = e.clientY - rect.top;
     mousePosRef.current = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+      x: curX,
+      y: curY,
     };
+    if (onCrosshairChange) {
+      onCrosshairChange(curX < canvas.clientWidth - 65 ? curX : null);
+    }
 
     if (isDraggingRef.current) {
       const dx = e.clientX - dragStartRef.current.x;
       const dy = e.clientY - dragStartRef.current.y;
       // Manual panning takes over from auto-follow until the user re-enables it.
       if (autoFollow) setAutoFollow(false);
-      setViewport((prev) => ({
+      updateViewport((prev) => ({
         ...prev,
         panX: dragStartRef.current.panX + dx,
         panY: dragStartRef.current.panY + dy,
@@ -115,19 +144,27 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     isDraggingRef.current = false;
   };
 
+  const handleMouseLeave = () => {
+    isDraggingRef.current = false;
+    mousePosRef.current = null;
+    if (onCrosshairChange) {
+      onCrosshairChange(null);
+    }
+  };
+
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
     if (e.shiftKey) {
       // Zoom Y (price scale)
       const factor = e.deltaY < 0 ? 1.1 : 0.9;
-      setViewport((prev) => ({
+      updateViewport((prev) => ({
         ...prev,
         priceScale: Math.max(2, Math.min(25, prev.priceScale * factor)),
       }));
     } else {
       // Zoom X (bar width)
       const factor = e.deltaY < 0 ? 1.1 : 0.9;
-      setViewport((prev) => ({
+      updateViewport((prev) => ({
         ...prev,
         barWidth: Math.max(40, Math.min(180, prev.barWidth * factor)),
       }));
@@ -206,7 +243,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         ctx.stroke();
 
         // Price label on right margin
-        ctx.fillText(p.toFixed(1), width - 60, y + 3);
+        ctx.fillText(formatPrice(p, tickSize), width - 60, y + 3);
       }
 
       // 3. Draw VWAP and Bands
@@ -329,7 +366,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         ctx.restore();
       }
 
-      // 5. Draw Footprint Bars
+      // 5. Draw Footprint Bars / Candlesticks
       const levelHeight = viewport.priceScale;
 
       bars.forEach((bar, barIndex) => {
@@ -351,74 +388,96 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         ctx.lineTo(barX + viewport.barWidth / 2, lowY);
         ctx.stroke();
 
-        // Candle Body Outline
+        // Candle Body Outline / Fill
         const openY = priceToY(bar.open, height);
         const closeY = priceToY(bar.close, height);
         const bodyTop = Math.min(openY, closeY);
         const bodyHeight = Math.max(2, Math.abs(closeY - openY));
-        ctx.strokeStyle = candleColor;
-        ctx.strokeRect(barX + 2, bodyTop, viewport.barWidth - 4, bodyHeight);
 
-        // Footprint Price Levels (Clusters)
-        const cellWidth = (viewport.barWidth - 4) / 2;
-        const sortedPrices = Object.keys(bar.levels)
-          .map(Number)
-          .sort((a, b) => b - a); // Top down
+        if (chartMode === 'candles') {
+          // Solid Candlestick Body
+          ctx.fillStyle = candleColor;
+          ctx.fillRect(barX + 4, bodyTop, viewport.barWidth - 8, bodyHeight);
+          ctx.strokeStyle = candleColor;
+          ctx.strokeRect(barX + 4, bodyTop, viewport.barWidth - 8, bodyHeight);
 
-        sortedPrices.forEach((price) => {
-          const level = bar.levels[price];
-          const y = priceToY(price, height) - levelHeight / 2;
-
-          // Bid Cell (Left) - Market Sells
-          const bidIntensity = Math.min(1, level.bidVol / (bar.volume * 0.1 || 1));
-          ctx.fillStyle = level.bidImbalance && showImbalances
-            ? 'rgba(239, 68, 68, 0.45)' // Highlighted Sell Imbalance
-            : `rgba(246, 70, 93, ${0.1 + bidIntensity * 0.4})`;
-          ctx.fillRect(barX + 2, y, cellWidth, levelHeight - 1);
-
-          // Ask Cell (Right) - Market Buys
-          const askIntensity = Math.min(1, level.askVol / (bar.volume * 0.1 || 1));
-          ctx.fillStyle = level.askImbalance && showImbalances
-            ? 'rgba(16, 185, 129, 0.45)' // Highlighted Buy Imbalance
-            : `rgba(0, 192, 135, ${0.1 + askIntensity * 0.4})`;
-          ctx.fillRect(barX + 2 + cellWidth, y, cellWidth, levelHeight - 1);
-
-          // Imbalance Accent Border
-          if (showImbalances) {
-            if (level.bidImbalance) {
-              ctx.strokeStyle = '#f59e0b';
-              ctx.lineWidth = 1.5;
-              ctx.strokeRect(barX + 2, y, cellWidth, levelHeight - 1);
-            }
-            if (level.askImbalance) {
-              ctx.strokeStyle = '#10b981';
-              ctx.lineWidth = 1.5;
-              ctx.strokeRect(barX + 2 + cellWidth, y, cellWidth, levelHeight - 1);
-            }
-          }
-
-          // POC Marker (Gold Outline)
-          if (level.isPOC) {
+          // POC Marker Line
+          const pocPrice = Object.keys(bar.levels).find((p) => bar.levels[Number(p)]?.isPOC);
+          if (pocPrice) {
+            const pocY = priceToY(Number(pocPrice), height);
             ctx.strokeStyle = '#f0b90b';
             ctx.lineWidth = 1.5;
-            ctx.strokeRect(barX + 2, y, viewport.barWidth - 4, levelHeight - 1);
+            ctx.beginPath();
+            ctx.moveTo(barX + 2, pocY);
+            ctx.lineTo(barX + viewport.barWidth - 2, pocY);
+            ctx.stroke();
           }
+        } else {
+          // Footprint Body Outline
+          ctx.strokeStyle = candleColor;
+          ctx.strokeRect(barX + 2, bodyTop, viewport.barWidth - 4, bodyHeight);
 
-          // Numbers inside cells (if barWidth is large enough)
-          if (viewport.barWidth >= 70 && levelHeight >= 11) {
-            ctx.font = `${Math.min(9, levelHeight - 2)}px JetBrains Mono, monospace`;
-            
-            // Bid Text
-            ctx.fillStyle = level.bidImbalance ? '#fca5a5' : '#e2e8f0';
-            ctx.textAlign = 'right';
-            ctx.fillText(level.bidVol.toFixed(1), barX + cellWidth - 2, y + levelHeight - 3);
+          // Footprint Price Levels (Clusters)
+          const cellWidth = (viewport.barWidth - 4) / 2;
+          const sortedPrices = Object.keys(bar.levels)
+            .map(Number)
+            .sort((a, b) => b - a); // Top down
 
-            // Ask Text
-            ctx.fillStyle = level.askImbalance ? '#6ee7b7' : '#e2e8f0';
-            ctx.textAlign = 'left';
-            ctx.fillText(level.askVol.toFixed(1), barX + cellWidth + 4, y + levelHeight - 3);
-          }
-        });
+          sortedPrices.forEach((price) => {
+            const level = bar.levels[price];
+            const y = priceToY(price, height) - levelHeight / 2;
+
+            // Bid Cell (Left) - Market Sells
+            const bidIntensity = Math.min(1, level.bidVol / (bar.volume * 0.1 || 1));
+            ctx.fillStyle = level.bidImbalance && showImbalances
+              ? 'rgba(239, 68, 68, 0.45)' // Highlighted Sell Imbalance
+              : `rgba(246, 70, 93, ${0.1 + bidIntensity * 0.4})`;
+            ctx.fillRect(barX + 2, y, cellWidth, levelHeight - 1);
+
+            // Ask Cell (Right) - Market Buys
+            const askIntensity = Math.min(1, level.askVol / (bar.volume * 0.1 || 1));
+            ctx.fillStyle = level.askImbalance && showImbalances
+              ? 'rgba(16, 185, 129, 0.45)' // Highlighted Buy Imbalance
+              : `rgba(0, 192, 135, ${0.1 + askIntensity * 0.4})`;
+            ctx.fillRect(barX + 2 + cellWidth, y, cellWidth, levelHeight - 1);
+
+            // Imbalance Accent Border
+            if (showImbalances) {
+              if (level.bidImbalance) {
+                ctx.strokeStyle = '#f59e0b';
+                ctx.lineWidth = 1.5;
+                ctx.strokeRect(barX + 2, y, cellWidth, levelHeight - 1);
+              }
+              if (level.askImbalance) {
+                ctx.strokeStyle = '#10b981';
+                ctx.lineWidth = 1.5;
+                ctx.strokeRect(barX + 2 + cellWidth, y, cellWidth, levelHeight - 1);
+              }
+            }
+
+            // POC Marker (Gold Outline)
+            if (level.isPOC) {
+              ctx.strokeStyle = '#f0b90b';
+              ctx.lineWidth = 1.5;
+              ctx.strokeRect(barX + 2, y, viewport.barWidth - 4, levelHeight - 1);
+            }
+
+            // Numbers inside cells (if barWidth is large enough)
+            if (viewport.barWidth >= 70 && levelHeight >= 11) {
+              ctx.font = `${Math.min(9, levelHeight - 2)}px JetBrains Mono, monospace`;
+              
+              // Bid Text
+              ctx.fillStyle = level.bidImbalance ? '#fca5a5' : '#e2e8f0';
+              ctx.textAlign = 'right';
+              ctx.fillText(level.bidVol.toFixed(1), barX + cellWidth - 2, y + levelHeight - 3);
+
+              // Ask Text
+              ctx.fillStyle = level.askImbalance ? '#6ee7b7' : '#e2e8f0';
+              ctx.textAlign = 'left';
+              ctx.fillText(level.askVol.toFixed(1), barX + cellWidth + 4, y + levelHeight - 3);
+            }
+          });
+        }
 
         // Unfinished Auction indicators
         if (bar.unfinishedHigh) {
@@ -561,7 +620,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
       ctx.fillStyle = '#0c0e12';
       ctx.font = 'bold 10px JetBrains Mono, monospace';
       ctx.textAlign = 'left';
-      ctx.fillText(currentPrice.toFixed(1), width - 60, curY + 4);
+      ctx.fillText(formatPrice(currentPrice, tickSize), width - 60, curY + 4);
       if (!isLive) {
         ctx.fillStyle = '#94a3b8';
         ctx.font = '10px monospace';
@@ -569,34 +628,36 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
       }
 
       // 7. Crosshair
-      if (mousePosRef.current) {
-        const { x, y } = mousePosRef.current;
-        if (x < width - 65 && y < height) {
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-          ctx.lineWidth = 1;
-          ctx.setLineDash([2, 2]);
+      const activeX = crosshairX ?? mousePosRef.current?.x;
+      const activeY = mousePosRef.current?.y;
 
-          // Vertical
-          ctx.beginPath();
-          ctx.moveTo(x, 0);
-          ctx.lineTo(x, height);
-          ctx.stroke();
+      if (activeX !== null && activeX !== undefined && activeX < width - 65) {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 2]);
 
-          // Horizontal
+        // Vertical
+        ctx.beginPath();
+        ctx.moveTo(activeX, 0);
+        ctx.lineTo(activeX, height);
+        ctx.stroke();
+
+        // Horizontal & Price Label
+        if (activeY !== undefined && activeY < height) {
           ctx.beginPath();
-          ctx.moveTo(0, y);
-          ctx.lineTo(width - 65, y);
+          ctx.moveTo(0, activeY);
+          ctx.lineTo(width - 65, activeY);
           ctx.stroke();
-          ctx.setLineDash([]);
 
           // Hover Price Label
-          const hoverPrice = yToPrice(y);
+          const hoverPrice = yToPrice(activeY);
           ctx.fillStyle = '#334155';
-          ctx.fillRect(width - 65, y - 9, 65, 18);
+          ctx.fillRect(width - 65, activeY - 9, 65, 18);
           ctx.fillStyle = '#f1f5f9';
           ctx.font = '9px JetBrains Mono, monospace';
-          ctx.fillText(hoverPrice.toFixed(1), width - 60, y + 4);
+          ctx.fillText(formatPrice(hoverPrice, tickSize), width - 60, activeY + 4);
         }
+        ctx.setLineDash([]);
       }
 
       animationId = requestAnimationFrame(render);
@@ -620,6 +681,8 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     gexProfile,
     priceToY,
     yToPrice,
+    chartMode,
+    crosshairX,
   ]);
 
   return (
@@ -629,7 +692,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
+        onMouseLeave={handleMouseLeave}
         onWheel={handleWheel}
         className="w-full h-full cursor-crosshair block"
       />

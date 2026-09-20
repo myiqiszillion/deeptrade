@@ -1,21 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { wsClient } from './services/websocket';
-import { formatPrice } from './services/priceFormat';
 import {
   AbsorptionAlert,
+  ChartViewport,
   DeepTrade,
   FootprintBar,
   FuturesInstrument,
   GEXProfile,
   HistoricalBar,
-  JournalTrade,
   OptionsFlowTrade,
   OrderbookSnapshot,
-  PropAccountConfig,
-  PropAccountState,
   ReplayProgress,
-  RestingOrder,
-  SlaveAccount,
   SpeedOfTapeData,
   TPOProfileData,
   Tick,
@@ -29,17 +24,13 @@ import { ProfileOverlay } from './components/Profile/ProfileOverlay';
 import { SpeedOfTapeWidget } from './components/Tape/SpeedOfTapeWidget';
 import { TickReplayWidget } from './components/Backtest/TickReplayWidget';
 import { OnboardingCard } from './components/Help/OnboardingCard';
-import { TradeCopierModal } from './components/Copier/TradeCopierModal';
-import { TradingJournalModal } from './components/Journal/TradingJournalModal';
 import { GEXPanel } from './components/Options/GEXPanel';
 import { OptionsFlowWidget } from './components/Options/OptionsFlowWidget';
-import { PropRiskMonitor } from './components/Prop/PropRiskMonitor';
+import { formatPrice } from './services/priceFormat';
 import {
   Activity,
   Layers,
   BarChart2,
-  Copy,
-  BookOpen,
   Wifi,
   WifiOff,
   Shield,
@@ -57,6 +48,36 @@ const POPULAR_FUTURES = [
   { symbol: 'BTCUSDT', name: 'Bitcoin Perpetual' },
 ];
 
+const SETTINGS_STORAGE_KEY = 'deepchart_free_settings_v1';
+
+interface SavedSettings {
+  symbol?: string;
+  timeframe?: string;
+  chartMode?: 'footprint' | 'candles';
+  showDOM?: boolean;
+  showProfile?: boolean;
+  showTape?: boolean;
+  showGEX?: boolean;
+  showOptionsFlow?: boolean;
+  showVWAP?: boolean;
+  showImbalances?: boolean;
+  showDeltaNumbers?: boolean;
+}
+
+function loadSavedSettings(): SavedSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return {};
+}
+
+function saveSettings(settings: SavedSettings) {
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch {}
+}
+
 /** Insert or replace a footprint bar, keeping the series ordered by bar open time. */
 function mergeBar(bars: FootprintBar[], bar: FootprintBar): FootprintBar[] {
   const next = bars.some((b) => b.id === bar.id) ? bars.map((b) => (b.id === bar.id ? bar : b)) : [...bars, bar];
@@ -64,10 +85,23 @@ function mergeBar(bars: FootprintBar[], bar: FootprintBar): FootprintBar[] {
 }
 
 export const App: React.FC = () => {
+  const [savedSettings] = useState<SavedSettings>(loadSavedSettings);
+
   const [isConnected, setIsConnected] = useState(false);
-  const [symbol, setSymbol] = useState('ES');
+  const [symbol, setSymbol] = useState(savedSettings.symbol || 'BTCUSDT');
   const [instrument, setInstrument] = useState<FuturesInstrument | undefined>();
-  const [currentPrice, setCurrentPrice] = useState<number>(5850.0);
+  const [currentPrice, setCurrentPrice] = useState<number>(65000.0);
+  const [chartMode, setChartMode] = useState<'footprint' | 'candles'>(savedSettings.chartMode || 'footprint');
+
+  // Synchronized Viewport & Crosshair across Chart & CVD
+  const [viewport, setViewport] = useState<ChartViewport>({
+    panX: 0,
+    panY: 300,
+    barWidth: 80,
+    barSpacing: 20,
+    priceScale: 6,
+  });
+  const [crosshairX, setCrosshairX] = useState<number | null>(null);
 
   // Core Data State
   const [bars, setBars] = useState<FootprintBar[]>([]);
@@ -108,15 +142,8 @@ export const App: React.FC = () => {
   const [gexProfile, setGexProfile] = useState<GEXProfile | undefined>();
   const [optionsFlow, setOptionsFlow] = useState<OptionsFlowTrade[]>([]);
 
-  // Prop Firm State
-  const [propState, setPropState] = useState<PropAccountState | undefined>();
-  const [propConfig, setPropConfig] = useState<PropAccountConfig | undefined>();
-
-  // Order & replay protocol state
-  const [openOrders, setOpenOrders] = useState<RestingOrder[]>([]);
+  // Replay protocol state
   const [replayProgress, setReplayProgress] = useState<ReplayProgress | undefined>();
-  const [notices, setNotices] = useState<{ id: number; kind: 'ok' | 'error'; text: string }[]>([]);
-  const [breachAlert, setBreachAlert] = useState<string | undefined>();
   const [deepTradeThresholdUsd, setDeepTradeThresholdUsd] = useState<number | undefined>();
   const [historySource, setHistorySource] = useState<'NONE' | 'REAL_TICKS' | 'REAL_BARS'>('NONE');
   // REAL vendor bars from before the live session. Plain candles: no per-price footprint exists
@@ -129,33 +156,49 @@ export const App: React.FC = () => {
   // the number of full component-tree re-renders.
   const pendingTicksRef = useRef<Tick[]>([]);
   const lastPriceRef = useRef<number | null>(null);
-  const symbolRef = useRef('ES');
-  const instrumentRef = useRef<FuturesInstrument | undefined>(undefined);
-  const desiredSymbolRef = useRef('ES');
-  const timeframeRef = useRef('1m');
+  const symbolRef = useRef(savedSettings.symbol || 'BTCUSDT');
+  const desiredSymbolRef = useRef(savedSettings.symbol || 'BTCUSDT');
+  const timeframeRef = useRef(savedSettings.timeframe || '1m');
 
-  const pushNotice = (kind: 'ok' | 'error', text: string) => {
-    const id = Date.now() + Math.random();
-    setNotices((prev) => [...prev.slice(-3), { id, kind, text }]);
-    setTimeout(() => setNotices((prev) => prev.filter((n) => n.id !== id)), 3500);
-  };
+  // Features & Panels Toggles (restored from browser storage)
+  const [showDOM, setShowDOM] = useState(savedSettings.showDOM ?? true);
+  const [showProfile, setShowProfile] = useState(savedSettings.showProfile ?? true);
+  const [showTape, setShowTape] = useState(savedSettings.showTape ?? false);
+  const [showGEX, setShowGEX] = useState(savedSettings.showGEX ?? true);
+  const [showOptionsFlow, setShowOptionsFlow] = useState(savedSettings.showOptionsFlow ?? false);
+  const [showVWAP, setShowVWAP] = useState(savedSettings.showVWAP ?? true);
+  const [showImbalances, setShowImbalances] = useState(savedSettings.showImbalances ?? true);
+  const [showDeltaNumbers, setShowDeltaNumbers] = useState(savedSettings.showDeltaNumbers ?? true);
+  const [timeframe, setTimeframe] = useState(savedSettings.timeframe || '1m');
 
-  // Features & Panels Toggles
-  const [showDOM, setShowDOM] = useState(true);
-  const [showProfile, setShowProfile] = useState(true);
-  const [showTape, setShowTape] = useState(false);
-  const [showGEX, setShowGEX] = useState(true);
-  const [showOptionsFlow, setShowOptionsFlow] = useState(false);
-  const [showVWAP, setShowVWAP] = useState(true);
-  const [showImbalances, setShowImbalances] = useState(true);
-  const [showDeltaNumbers, setShowDeltaNumbers] = useState(true);
-  const [timeframe, setTimeframe] = useState('1m');
-
-  // Modals
-  const [isCopierOpen, setIsCopierOpen] = useState(false);
-  const [isJournalOpen, setIsJournalOpen] = useState(false);
-  const [trades, setTrades] = useState<JournalTrade[]>([]);
-  const [slaves, setSlaves] = useState<SlaveAccount[]>([]);
+  // Persist user preferences to localStorage
+  useEffect(() => {
+    saveSettings({
+      symbol,
+      timeframe,
+      chartMode,
+      showDOM,
+      showProfile,
+      showTape,
+      showGEX,
+      showOptionsFlow,
+      showVWAP,
+      showImbalances,
+      showDeltaNumbers,
+    });
+  }, [
+    symbol,
+    timeframe,
+    chartMode,
+    showDOM,
+    showProfile,
+    showTape,
+    showGEX,
+    showOptionsFlow,
+    showVWAP,
+    showImbalances,
+    showDeltaNumbers,
+  ]);
 
   // Connect WebSocket & Register Listeners
   useEffect(() => {
@@ -182,13 +225,10 @@ export const App: React.FC = () => {
           setRecentTicks([]);
           setDeepTrades([]);
           setAbsorptions([]);
-          setOpenOrders([]);
         }
         setSymbol(data.symbol);
         setInstrument(data.instrument);
-        instrumentRef.current = data.instrument;
         if (typeof data.deepTradeThresholdUsd === 'number') setDeepTradeThresholdUsd(data.deepTradeThresholdUsd);
-        if (data.slaves) setSlaves(data.slaves);
         setHistorySource(data.historySource ?? 'NONE');
         setHistoryBars(data.historyBars ?? []);
         if (data.feedStatus) setFeedStatus(data.feedStatus);
@@ -203,8 +243,6 @@ export const App: React.FC = () => {
         setVwapPoints(data.vwap);
         if (data.gexProfile) setGexProfile(data.gexProfile);
         if (data.optionsFlow) setOptionsFlow(data.optionsFlow);
-        if (data.propState) setPropState(data.propState);
-        if (data.propConfig) setPropConfig(data.propConfig);
         if (data.orderbook.asks[0]) {
           setCurrentPrice(data.orderbook.asks[0].price);
         }
@@ -235,63 +273,24 @@ export const App: React.FC = () => {
       onAbsorption: (abs) => {
         setAbsorptions((prev) => [abs, ...prev.slice(0, 10)]);
       },
+      onProfileUpdate: (data) => {
+        setVolumeProfile(data.volumeProfile);
+        if (data.tpo) setTpoProfile(data.tpo);
+      },
+      onVwapUpdate: (point) => {
+        setVwapPoints((prev) => {
+          const updated = [...prev, point];
+          return updated.length > 500 ? updated.slice(-500) : updated;
+        });
+      },
       onGexUpdate: (gp) => {
         setGexProfile(gp);
       },
       onOptionsFlow: (flow) => {
         setOptionsFlow((prev) => [flow, ...prev.slice(0, 50)]);
       },
-      onPropStateUpdate: (ps) => {
-        setPropState(ps);
-      },
-      onPropBreachAlert: (alert) => {
-        setBreachAlert(alert.message);
-        pushNotice('error', `PROP BREACH (${alert.breachType})`);
-      },
-      onOpenOrders: (data) => {
-        setOpenOrders(data.orders);
-      },
-      onOrderAck: (data) => {
-        if (data.action === 'PLACED') {
-          pushNotice('ok', `LIMIT resting: ${data.size} @ ${formatPrice(data.price, instrumentRef.current?.tickSize)}`);
-        } else if (data.action === 'FILLED') {
-          pushNotice('ok', `Filled: ${data.size} @ ${formatPrice(data.price, instrumentRef.current?.tickSize)}`);
-        } else {
-          pushNotice('ok', 'Order cancelled');
-        }
-      },
-      onOrderReject: (data) => {
-        pushNotice('error', `Rejected: ${data.reason}`);
-      },
       onReplayState: (progress) => {
         setReplayProgress(progress);
-      },
-      onJournalUpdate: (trade) => {
-        setTrades((prev) => {
-          const idx = prev.findIndex((t) => t.id === trade.id);
-          if (idx >= 0) {
-            const updated = [...prev];
-            updated[idx] = trade;
-            return updated;
-          }
-          return [trade, ...prev];
-        });
-      },
-      onJournalCleared: () => {
-        setTrades([]);
-      },
-      onTradeCopied: (copied) => {
-        setSlaves((prev) =>
-          prev.map((s) =>
-            s.id === copied.slaveId
-              ? {
-                  ...s,
-                  lastCopiedOrder: `${copied.size} contracts @ ${copied.price}`,
-                  latencyMs: copied.latencyMs,
-                }
-              : s
-          )
-        );
       },
     });
 
@@ -324,10 +323,6 @@ export const App: React.FC = () => {
     wsClient.subscribe(desiredSymbolRef.current, src, tf);
   };
 
-  const handleCancelOrder = (orderId: string) => {
-    wsClient.cancelOrder(orderId);
-  };
-
   return (
     <div className="relative flex flex-col w-screen h-screen bg-brand-bg text-brand-text font-sans overflow-hidden select-none">
       {/* Top Header Bar */}
@@ -341,8 +336,8 @@ export const App: React.FC = () => {
             <span className="font-extrabold text-base tracking-wider text-white">
               DEEP<span className="text-amber-400">CHART</span>
             </span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/40 text-purple-300 font-bold border border-purple-500/30">
-              PROP FIRM EDITION
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 font-bold border border-emerald-500/30">
+              FREE · ORDER FLOW
             </span>
           </div>
 
@@ -366,9 +361,35 @@ export const App: React.FC = () => {
             ))}
           </div>
 
+          {/* Chart Mode Toggle */}
+          <div className="flex items-center bg-brand-bg p-0.5 rounded border border-brand-border text-xs">
+            <button
+              onClick={() => setChartMode('footprint')}
+              className={`px-2 py-1 rounded font-semibold transition-all ${
+                chartMode === 'footprint'
+                  ? 'bg-amber-500 text-black shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Footprint Bid × Ask Clusters"
+            >
+              Footprint
+            </button>
+            <button
+              onClick={() => setChartMode('candles')}
+              className={`px-2 py-1 rounded font-semibold transition-all ${
+                chartMode === 'candles'
+                  ? 'bg-amber-500 text-black shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Standard Candlesticks with Order Flow Delta"
+            >
+              Candles
+            </button>
+          </div>
+
           {/* Current Price Badge */}
           <span className="px-2.5 py-1 rounded bg-amber-500/15 text-amber-400 font-bold font-mono text-sm border border-amber-500/30">
-            {currentPrice.toFixed(instrument ? (instrument.tickSize < 0.01 ? 3 : instrument.tickSize < 0.1 ? 2 : 1) : 2)}
+            {formatPrice(currentPrice, instrument?.tickSize)}
           </span>
         </div>
 
@@ -448,7 +469,7 @@ export const App: React.FC = () => {
             className={`px-2 py-1 rounded flex items-center gap-1 text-xs ${
               showDOM ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-800'
             }`}
-            title="Toggle DOM Scalper"
+            title="Toggle DOM Ladder"
           >
             <Layers size={14} />
             <span>DOM</span>
@@ -478,24 +499,6 @@ export const App: React.FC = () => {
 
           <div className="h-5 w-px bg-brand-border" />
 
-          {/* Trade Copier */}
-          <button
-            onClick={() => setIsCopierOpen(true)}
-            className="p-1 px-2 rounded bg-purple-600/20 text-purple-300 border border-purple-500/40 hover:bg-purple-600/30 flex items-center gap-1 text-xs font-semibold"
-          >
-            <Copy size={13} />
-            <span>Copier</span>
-          </button>
-
-          {/* Journal */}
-          <button
-            onClick={() => setIsJournalOpen(true)}
-            className="p-1 px-2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 flex items-center gap-1 text-xs font-semibold"
-          >
-            <BookOpen size={13} />
-            <span>Journal</span>
-          </button>
-
           {/* WS Connection Status */}
           <div className="pl-1">
             {isConnected ? (
@@ -510,40 +513,6 @@ export const App: React.FC = () => {
           </div>
         </div>
       </header>
-
-      {/* Prop Firm Safeguards HUD Bar */}
-      <PropRiskMonitor state={propState} config={propConfig} />
-
-      {/* Prop breach banner (kept in-app instead of a blocking window.alert) */}
-      {breachAlert && (
-        <div className="flex items-center justify-between px-4 py-1.5 bg-rose-600/90 text-white text-xs font-bold z-30">
-          <span>PROP FIRM ALERT: {breachAlert} — trading is locked until reset.</span>
-          <button
-            onClick={() => setBreachAlert(undefined)}
-            className="px-2 py-0.5 rounded bg-black/25 hover:bg-black/40 text-[10px]"
-          >
-            DISMISS
-          </button>
-        </div>
-      )}
-
-      {/* Order notices (ACK / REJECT feedback) */}
-      {notices.length > 0 && (
-        <div className="absolute top-16 right-3 z-40 space-y-1 pointer-events-none">
-          {notices.map((n) => (
-            <div
-              key={n.id}
-              className={`px-3 py-1.5 rounded shadow-lg text-[11px] font-mono border ${
-                n.kind === 'ok'
-                  ? 'bg-emerald-600/90 border-emerald-400/50 text-white'
-                  : 'bg-rose-600/90 border-rose-400/50 text-white'
-              }`}
-            >
-              {n.text}
-            </div>
-          ))}
-        </div>
-      )}
 
       {/* Main Content Workspace */}
       <div className="flex-1 flex overflow-hidden">
@@ -565,10 +534,22 @@ export const App: React.FC = () => {
               showDeltaNumbers={showDeltaNumbers}
               tickSize={instrument?.tickSize || 0.25}
               symbol={symbol}
+              chartMode={chartMode}
+              viewport={viewport}
+              onViewportChange={setViewport}
+              crosshairX={crosshairX}
+              onCrosshairChange={setCrosshairX}
             />
           </div>
 
-          <CVDPanel bars={bars} currentCVD={currentCVD} />
+          <CVDPanel
+            bars={bars}
+            currentCVD={currentCVD}
+            viewport={viewport}
+            crosshairX={crosshairX}
+            onViewportChange={setViewport}
+            onCrosshairChange={setCrosshairX}
+          />
         </div>
 
         {/* Right Side Panels */}
@@ -581,6 +562,7 @@ export const App: React.FC = () => {
             volumeProfile={volumeProfile}
             tpoProfile={tpoProfile}
             currentPrice={currentPrice}
+            tickSize={instrument?.tickSize}
           />
         )}
 
@@ -590,9 +572,7 @@ export const App: React.FC = () => {
             currentPrice={currentPrice}
             symbol={symbol}
             isFutures={symbol !== 'BTCUSDT'}
-            openOrders={openOrders}
-            isLockedOut={propState?.isLockedOut === true}
-            onCancelOrder={handleCancelOrder}
+            tickSize={instrument?.tickSize}
           />
         )}
 
@@ -603,6 +583,7 @@ export const App: React.FC = () => {
             deepTrades={deepTrades}
             symbol={symbol}
             deepTradeThresholdUsd={deepTradeThresholdUsd}
+            tickSize={instrument?.tickSize}
           />
         )}
       </div>
@@ -636,19 +617,6 @@ export const App: React.FC = () => {
 
       {/* First-run primer (dismissible, remembered locally) */}
       <OnboardingCard symbol={symbol} />
-
-      {/* Modals */}
-      <TradeCopierModal
-        isOpen={isCopierOpen}
-        onClose={() => setIsCopierOpen(false)}
-        slaves={slaves}
-      />
-
-      <TradingJournalModal
-        isOpen={isJournalOpen}
-        onClose={() => setIsJournalOpen(false)}
-        trades={trades}
-      />
     </div>
   );
 };

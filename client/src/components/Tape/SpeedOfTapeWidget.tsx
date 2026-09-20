@@ -1,5 +1,6 @@
 import React from 'react';
 import { DeepTrade, SpeedOfTapeData, Tick } from '../../types';
+import { formatPrice } from '../../services/priceFormat';
 
 interface SpeedOfTapeWidgetProps {
   tape: SpeedOfTapeData;
@@ -7,6 +8,7 @@ interface SpeedOfTapeWidgetProps {
   deepTrades: DeepTrade[];
   symbol: string;
   deepTradeThresholdUsd?: number;
+  tickSize?: number;
 }
 
 export const SpeedOfTapeWidget: React.FC<SpeedOfTapeWidgetProps> = ({
@@ -15,6 +17,7 @@ export const SpeedOfTapeWidget: React.FC<SpeedOfTapeWidgetProps> = ({
   deepTrades,
   symbol,
   deepTradeThresholdUsd,
+  tickSize,
 }) => {
   const thresholdLabel = deepTradeThresholdUsd
     ? deepTradeThresholdUsd >= 1_000_000
@@ -79,7 +82,7 @@ export const SpeedOfTapeWidget: React.FC<SpeedOfTapeWidgetProps> = ({
                 <span className={dt.side === 'buy' ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
                   {dt.side.toUpperCase()}
                 </span>
-                <span className="text-slate-200">{dt.price.toFixed(1)}</span>
+                <span className="text-slate-200">{formatPrice(dt.price, tickSize)}</span>
                 <span className="text-purple-300 font-bold">${(dt.valueUsd / 1000).toFixed(1)}K</span>
               </div>
             ))}
@@ -102,7 +105,7 @@ export const SpeedOfTapeWidget: React.FC<SpeedOfTapeWidgetProps> = ({
             >
               <span className="text-slate-500">{timeStr}</span>
               <span className={isBuy ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-semibold'}>
-                {tick.price.toFixed(1)}
+                {formatPrice(tick.price, tickSize)}
               </span>
               <span className="text-slate-300">{tick.size.toFixed(3)}</span>
             </div>

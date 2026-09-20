@@ -1,164 +1,120 @@
-# DeepChart — Prop Firm Edition: US Futures, Options Flow & GEX Terminal
+# DeepChart Free — Order Flow Charts
 
-**DeepChart Prop Firm Edition** là nền tảng Web Terminal phân tích Orderflow, Footprint, DOM Scalping, Options Flow và Gamma Exposure (GEX) chuyên biệt cho giao dịch **Quỹ cấp vốn (Prop Firm: Topstep, Apex Trader Funding, MyFundedFutures, Bulenox, FTMO)**.
+**DeepChart Free** là công cụ xem và phân tích biểu đồ **Order Flow & Market Microstructure miễn phí**, chuyên biệt cho phân tích dòng tiền và hành vi khớp lệnh tổ chức (Footprint Bid × Ask, Candlesticks with Delta, CVD, POC, Imbalances, Volume Profile, TPO Market Profile, VWAP Bands, View-Only DOM Ladder, Time & Sales, Speed of Tape, và Market Replay).
 
-> **Đọc kỹ trước khi dùng:** Toàn bộ *engine* orderflow (Footprint, Volume Profile/TPO, DOM, CVD, VWAP, absorption, Speed of Tape) được tính **thật 100% từ dòng tick** — không vẽ lại từ nến 1m. Tuy nhiên **nguồn dữ liệu** hiện tại như sau:
+> **Nguyên tắc cốt lõi:**
+> **Dữ liệu đúng → Tính toán đúng → Cập nhật ổn định → Thao tác thuận tiện → Hoàn toàn Chart-Only.**
+> Toàn bộ engine order flow được tính toán thật từ dòng tick. Hệ thống tuân thủ nghiêm ngặt nguyên tắc **Fail-Closed**: không bao giờ sinh dữ liệu giả, nến giả hoặc book giả đối với các thị trường thiếu feed (`FEED: UNAVAILABLE`).
 
-| Kênh dữ liệu | Nguồn | Ghi chú |
+---
+
+## 📊 Tính Năng Chính (Free v1)
+
+### 1. Biểu đồ Footprint & Candlestick Chuyên Sâu
+- **Footprint Bid × Ask Clusters**: Khối lượng mua/bán chủ động theo từng mức giá (delta và volume cell).
+- **Chế độ hiển thị linh hoạt**:
+  - `Footprint`: Xem chi tiết từng cụm giá bid/ask và imbalance.
+  - `Candles`: Nến chuẩn kết hợp thanh delta và POC cho cái nhìn tổng quan.
+- **Diagonal & Stacked Imbalance**:
+  - Tự động phát hiện mất cân đối chéo theo tỷ lệ (mặc định 300%).
+  - Đánh dấu **Stacked Imbalances** ($\ge 3$ mức giá liên tiếp).
+- **Point of Control (POC)**: Đánh dấu viền vàng mức giá tập trung thanh khoản lớn nhất trong nến.
+- **Unfinished Auction**: Phát hiện và đánh dấu các phiên đấu giá chưa hoàn tất ở đỉnh/đáy nến.
+- **Delta Suite**: Bar Delta, Min/Max Delta, và Cumulative Volume Delta (CVD) đồng bộ crosshair với biểu đồ chính.
+
+### 2. Volume Profile, TPO & VWAP
+- **Volume Profile (VP)**: VAH (Value Area High), VAL (Value Area Low), POC theo vùng giá trị 70%.
+- **Market Profile (TPO)**: Phân bố thời gian-giá theo ký tự bảng chữ cái và Initial Balance (IB).
+- **Session VWAP & Standard Deviation Bands**: Đường VWAP chuẩn và các dải độ lệch chuẩn $\pm 1\sigma, \pm 2\sigma$.
+- **Cập nhật Live**: Profile và VWAP cập nhật theo chu kỳ mà không cần tải lại trang.
+
+### 3. DOM Quan Sát (View-Only), Tape & Whale Tracker
+- **DOMLadder (View-Only)**: Bảng quan sát sổ lệnh L2 với độ sâu và Pulling & Stacking (P&S: nạp thêm/rút lệnh). Không hỗ trợ đặt lệnh, an toàn tuyệt đối.
+- **Speed of Tape (Time & Sales)**:
+  - Tốc độ khớp lệnh thực tế (TPS - Ticks Per Second) kèm gia tốc $\blacktriangle / \blacktriangledown$.
+  - Tỷ lệ lực mua/bán (Buy/Sell Pressure Ratio).
+  - Time & Sales stream với độ chính xác đến mili-giây.
+- **Whale & Absorption Tracker**: Tự động phát hiện các lệnh lớn (Deep Trades) và hiện tượng hấp thụ (Buy/Sell Absorption).
+
+### 4. Lịch Sử & Market Replay Độc Lập
+- **Phân tách rành mạch giữa History và Live**:
+  - Real Historical Bars: Hiển thị nến lịch sử trước phiên live; không tạo footprint giả khi nguồn chỉ có nến OHLC.
+  - Real Ticks: Xây dựng footprint đầy đủ khi có dữ liệu tick.
+- **Isolated Market Replay Engine**:
+  - Chạy trên context riêng biệt, không làm sai lệch hay sửa đổi dữ liệu live của các tab khác.
+  - Hỗ trợ Play, Pause, Step forward, Seek theo index hoặc Seek theo mốc thời gian (epoch timestamp).
+  - Tự động chặn việc ghi đè tick replay vào buffer live.
+
+### 5. Giao Diện & Trải Nghiệm Người Dùng (UX)
+- **Đồng bộ Crosshair & Viewport**: Di chuyển chuột trên biểu đồ chính hoặc CVD Panel đều hiển thị đường ngắm đồng bộ.
+- **Định dạng giá chuẩn theo từng Instrument**: ES (0.25), NQ (0.25), YM (1.0), CL (0.01), NG (0.001), BTCUSDT (0.1). Không còn lỗi cắt cụt số thập phân.
+- **Lưu cài đặt tự động trên trình duyệt (`localStorage`)**: Ghi nhớ mã giao dịch, timeframe, chế độ chart, và trạng thái bật/tắt các panel.
+
+---
+
+## 🌐 Nguồn Dữ Liệu & Khả Năng Nguồn
+
+| Thị trường | Nguồn | Trạng thái & Ghi chú |
 |---|---|---|
-| Futures CME (ES, NQ, YM, RTY, GC, CL, NG) | ✅ **THẬT** khi cắm vendor — đặt `FUTURES_PROVIDER=tradovate` | Tradovate REST auth + `md/subscribequote` (prints, best bid/offer) + `md/subscribedom` (full ladder). **Chưa cắm vendor ⇒ `FEED: UNAVAILABLE`, tuyệt đối không mô phỏng.** Databento đã khai báo nhưng từ chối đoán wire format DBN |
-| Crypto `BTCUSDT` | ✅ **LIVE** | Binance Futures `aggTrade` + `depth20`, có auto-reconnect |
-| Gamma Exposure (GEX) | ✅ **THẬT (delayed)** | Tính từ chain quyền chọn **CBOE delayed** miễn phí (gamma + open interest thật, trễ ~15 phút). UI gắn badge `CBOE DELAYED`; tự fallback về mô hình mô phỏng nếu không lấy được chain |
-| Options Flow (Sweep/Block) | ⚠️ **SIMULATED** | Sinh mỗi 12s; UI gắn badge `SIMULATED` |
-| Prop-firm risk | ✅ Tính thật từ lệnh khớp trong app | Chưa nối broker/API quỹ thật |
-| Trade Copier | ⚠️ Mô phỏng | 3 slave ảo, latency giả lập 10–35ms |
+| **BTCUSDT** (Bitcoin Perpetual) | Binance USD-M Futures | ✅ **LIVE**: WebSocket `aggTrade` & `depth20` + REST history đầy đủ |
+| **CME Futures** (ES, NQ, YM, RTY, GC, CL, NG) | Tradovate Adapter | ✅ **THẬT** khi có credential (`FUTURES_PROVIDER=tradovate`). Chưa cấu hình $\rightarrow$ `FEED: UNAVAILABLE` (fail-closed) |
+| **Gamma Exposure (GEX)** | CBOE Delayed Chain | ✅ **THẬT**: Tính từ chain quyền chọn SPX/SPY/NDX/QQQ trễ ~15 phút |
+| **Options Flow** | Scanner | Quét các lệnh sweeps và blocks giá trị lớn |
 
 ---
 
-## 🌟 Các Tính Năng Dành Riêng Cho Trader Quỹ
+## 🚀 Hướng Dẫn Cài Đặt & Khởi Chạy
 
-### 1. Bộ Hợp Đồng Tương Lai Mỹ (US Futures CME/NYMEX/COMEX)
-Hỗ trợ đầy đủ bảng thông số chuẩn (Tick size, Point value, Tick value, Micro contracts):
-- **Chỉ số Mỹ**:
-  - **ES** (E-mini S&P 500): 0.25 tick = $12.50 (MES = $1.25)
-  - **NQ** (E-mini Nasdaq 100): 0.25 tick = $5.00 (MNQ = $0.50)
-  - **YM** (E-mini Dow Jones): 1.00 tick = $5.00 (MYM = $0.50)
-  - **RTY** (E-mini Russell 2000): 0.10 tick = $5.00 (M2K = $0.50)
-- **Hàng hóa & Năng lượng**:
-  - **GC** (Vàng - Gold Futures): 0.10 tick = $10.00 (MGC = $1.00)
-  - **CL** (Dầu thô - Crude Oil): 0.01 tick = $10.00 (MCL = $1.00)
-  - **NG** (Khí tự nhiên): 0.001 tick = $10.00
-- **Crypto Futures**: BTCUSDT (Binance Futures Live).
+### Yêu cầu môi trường
+- Node.js >= 18
+- pnpm >= 9
 
-### 2. Options Flow & Gamma Exposure (GEX)
-- **Bản đồ Dealer Gamma Exposure (GEX)**:
-  - Tính toán Net GEX theo từng Strike cho **SPX, SPY, NDX, QQQ**.
-  - **Call Wall**: Strike có Call Gamma lớn nhất $\rightarrow$ Vùng cản trần (Major Resistance).
-  - **Put Wall**: Strike có Put Gamma âm lớn nhất $\rightarrow$ Vùng đỡ sàn (Major Support).
-  - **Zero Gamma Flip Point**: Điểm đảo trạng thái biến động.
-  - Phân tách riêng **0DTE GEX** (Dòng tiền quyền chọn hết hạn trong ngày).
-  - Hiển thị trực tiếp các mức Call Wall, Put Wall, Zero Gamma lên biểu đồ Footprint.
-- **Options Flow Whale Scanner**:
-  - Quét tự động các lệnh càn (Sweeps) và lệnh khối (Blocks) giá trị $> \$100,000$.
-  - Phân loại trực quan: Bullish Sweeps vs Bearish Sweeps.
-
-### 3. Bộ Giáp Quản Trị Rủi Ro Quỹ (Prop Firm Safeguards HUD)
-- **Trailing Drawdown Tracker**:
-  - Chuyển đổi linh hoạt giữa 2 chế độ:
-    - **Intraday Peak Trailing (Apex / Bulenox)**: Trailing theo đỉnh lợi nhuận chưa chốt trong phiên.
-    - **End-of-Day Trailing (Topstep / MyFundedFutures)**: Trailing chốt theo số dư cuối phiên.
-  - Cảnh báo khoảng cách tới ngưỡng vi phạm (Buffer remaining).
-- **Daily Loss Limit (DLL) Hard Stop**:
-  - Tự động đóng toàn bộ vị thế (**Auto-Flatten**) và khóa nút đặt lệnh (**Lockout**) khi chạm mức lỗ tối đa trong ngày.
-- **Contract Size Enforcer**: Chặn đặt lệnh nếu vượt quá số hợp đồng tối đa cho phép (ví dụ: tối đa 5 Minis hoặc 50 Micros).
-- **Consistency Rule (30% / 40%)**: Theo dõi tỷ lệ lợi nhuận ngày cao nhất so với tổng lợi nhuận, đảm bảo điều kiện nhận Payout.
-- **Profit Target Progress Bar**: Thanh tiến độ đạt mục tiêu lợi nhuận giai đoạn thi (Challenge Phase 1 / Phase 2).
-
-### 4. Real Footprint, DOM Scalping & Delta Suite
-- **Real Footprint (Bid x Ask Clusters)**: Khối lượng mua/bán chủ động thực tế, không fake từ nến 1m.
-- **Diagonal Imbalance Tracker (300%)**: Tự động phát hiện mất cân đối chéo, Stacked Imbalances $\ge 3$ mức giá.
-- **Advanced DOM Ladder**: Sổ lệnh L2 với **Pulling & Stacking** ($+$ nạp thêm, $-$ hủy lệnh), đặt lệnh 1-Click (`[A]`, `[S]`, `[D]`, `[W]`).
-- **Every Flavour of Delta**: Bar Delta, Min/Max Delta, Cumulative Volume Delta (CVD) soi phân kỳ.
-- **Real Volume Profile & Market Profile (TPO)**: POC, VAH, VAL (70% Volume Area), Initial Balance (IB: 1h đầu phiên).
-- **Speed of Tape & Absorption**: Đo tốc độ khớp lệnh (TPS), phát hiện cá mập hấp thụ (Limit Absorption / Iceberg).
-- **Multi-Account Trade Copier**: Copy lệnh tức thì sang các tài khoản phụ với hệ số rủi ro tùy chỉnh.
-- **Automated Journal**: Nhật ký giao dịch tự động thống kê PnL, MAE, MFE.
-
----
-
-## 🚀 Hướng Dẫn Khởi Chạy
-
-Cài dependencies (đã cấu hình pnpm workspace):
+### Cài đặt dependencies
 ```bash
 pnpm install
 ```
 
-Khởi chạy cả Server và Client:
+### Chạy môi trường phát triển (Development)
 ```bash
 pnpm dev
 ```
-- **Frontend Web Terminal**: http://localhost:5173
-- **Backend WebSocket Server**: `ws://localhost:8080`
+- **Web Terminal**: http://localhost:5173
+- **WebSocket Server**: `ws://localhost:8080`
 
-### Scripts
-| Lệnh | Tác dụng |
-|---|---|
-| `pnpm dev` | Chạy song song server (`tsx watch`) + client (`vite`) |
-| `pnpm build` | Build server (`tsc` → `dist/`) và client (`vite build`) |
-| `pnpm typecheck` | `tsc --noEmit` cho cả hai package |
-| `pnpm lint` | `oxlint` cho client (đang ở mức 0 warning) |
-| `pnpm verify` | Smoke test E2E protocol (cần server đang chạy ở `:8080`) |
-| `pnpm verify:p0` | **Bộ 13 test P0 tự dựng server riêng ở `:8089`** (replay, lệnh chờ, huỷ lệnh, cap, notional, STEP/SET_SPEED, breach/reset) |
-| `pnpm verify:feed` | Test tầng market-data (validator, fail-closed, vendor refusal) |
-| `pnpm verify:tradovate` | Test offline adapter và chart history Tradovate: protocol, tick/DOM, OHLC, timeout/hủy yêu cầu, dữ liệu sai, fail-closed |
-| `pnpm verify:chart-smoke` | Sau `pnpm build`: boot bản build và kiểm tra HTTP/WS, đổi mã/khung, history rỗng khi thiếu credential |
-| `pnpm verify:lifecycle` | 24 test vòng đời feed (chuyển symbol, chống dữ liệu cũ lọt vào phiên mới) |
-| `pnpm verify:types` | Chống drift giao thức WebSocket giữa server và client |
-
-Cấu hình qua biến môi trường (xem `.env.example`): `PORT`, `HOST` (mặc định `127.0.0.1` — chỉ mở ra LAN khi bạn đặt `0.0.0.0` và hiểu rằng **hiện chưa có auth**), `VITE_WS_URL`, `DEMO` (seed dữ liệu mẫu), `DEV_HOOKS` (cho phép `SET_PROP_CONFIG` khi test), `TEST_PORT`.
-
-Dữ liệu futures (server-side, không bao giờ lộ ra log/browser): `FUTURES_PROVIDER=none|tradovate|databento`, `TRADOVATE_ENV=demo|live`, `TRADOVATE_USERNAME`, `TRADOVATE_PASSWORD`, `TRADOVATE_APP_ID`, `TRADOVATE_APP_VERSION`, `TRADOVATE_CID`, `TRADOVATE_SEC`, `TRADOVATE_SYMBOL` (ghim tháng cụ thể, ví dụ `ESZ6`), `TRADOVATE_USE_MICRO=1` (stream MES/MNQ/M2K/MGC/MCL).
-
-> **Lưu ý về `side` của Tradovate:** vendor **không** phát cờ aggressor. DeepChart **không đoán 50/50**: side được suy ra bằng quote rule (Lee–Ready) từ chính `Bid`/`Offer` của vendor, fallback sang tick rule; nếu vẫn không xác định được thì **in ra bị loại bỏ** và số lượng được ghi rõ trong lý do trạng thái (`N print(s) dropped: aggressor undecidable`).
-
-### Dữ liệu chart futures
-- Chọn khung **1m hoặc 5m**: server yêu cầu tối đa **300 nến OHLC thật** qua Tradovate `md/getchart`, trước thời điểm bắt đầu phiên live. Số nến thực nhận tùy quyền dữ liệu và phản hồi vendor.
-- Nến lịch sử được vẽ riêng, không có ô footprint. Không tái tạo tick, POC, CVD, VWAP hoặc volume profile từ OHLC; các chỉ số orderflow chỉ dùng tick thu được.
-- Khung **1s/5s/15s** hiện tích lũy tick live, chưa có backfill futures theo giây.
-- Đổi mã/khung sẽ hủy yêu cầu history cũ; response sai subscription không được nhập vào chart. Thiếu quyền, throttle hoặc lỗi kết nối có thể để history trống; không sinh dữ liệu thay thế.
-- Badge **HISTORY: REAL BARS** cho biết có nến lịch sử; không đồng nghĩa **FEED: REALTIME**. Khi mất live, chart vẫn xem được history nhưng lệnh bị chặn theo trạng thái feed.
-- Cần tài khoản có API access và quyền market data Tradovate. Chỉ thêm code hoặc đặt `FUTURES_PROVIDER=tradovate` không cấp quyền dữ liệu. Chưa xác nhận đường dữ liệu với tài khoản vendor thật; test tự động dùng socket giả lập.
-
-Server đọc **biến môi trường của process**, không tự nạp file `.env`. Với Node hỗ trợ `--env-file`, sau khi điền file `.env` ở thư mục gốc:
-```powershell
+### Đóng gói & Chạy bản Production (1 Port duy nhất)
+Server Node.js được thiết kế để phục vụ cả WebSocket và client build tĩnh trên cùng một cổng (`8080`):
+```bash
 pnpm build
-node --env-file=.env server/dist/index.js
+node server/dist/index.js
 ```
-Chạy lệnh trong thư mục gốc dự án. Không commit `.env` hoặc chia sẻ credential; không phân phối lại dữ liệu licensed nếu chưa được vendor cho phép.
+- **Truy cập Terminal**: http://localhost:8080
+- **Health check API**: http://localhost:8080/healthz
 
-### Giao thức WebSocket (tóm tắt)
-- **Client → Server**: `SUBSCRIBE` (symbol + timeframe), `DOM_ORDER` (MARKET/LIMIT/CANCEL/FLATTEN, kèm `orderId` khi huỷ từng lệnh), `REPLAY_CONTROL` (START/PAUSE/SEEK/SET_SPEED/STEP), `UPDATE_COPIER`, `SET_PROP_TRAILING_MODE`, `RESET_PROP_ACCOUNT`, `SET_PROP_CONFIG` (chỉ khi `DEV_HOOKS=1`).
-- **Server → Client**: `INIT_STATE` (gửi lại mỗi khi đổi symbol/timeframe), `TICK`, `BAR_UPDATE`, `BAR_CLOSE`, `ORDERBOOK_UPDATE`, `SPEED_OF_TAPE`, `DEEP_TRADE`, `ABSORPTION`, `OPEN_ORDERS`, `ORDER_ACK`, `ORDER_REJECT`, `JOURNAL_UPDATE`, `TRADE_COPIED`, `GEX_UPDATE`, `OPTIONS_FLOW`, `PROP_STATE_UPDATE`, `PROP_BREACH_ALERT`, `REPLAY_STATE`.
-- Băng thông được throttle: `ORDERBOOK_UPDATE`/`BAR_UPDATE` 100ms, `SPEED_OF_TAPE`/`PROP_STATE_UPDATE` 250ms, tick phía client được buffer 120ms trước khi render.
+---
 
-### 🌍 Chạy public / free cho mọi người
+## 🧪 Bộ Kiểm Thử (Verification Suites)
 
-Thiết kế để tự host miễn phí (Render, Fly.io, Railway, VPS nhỏ, Docker…):
+DeepChart có hệ thống test toàn diện để bảo vệ tính đúng đắn của dữ liệu và engine:
 
-| Đặc điểm | Chi tiết |
+| Lệnh kiểm thử | Mục đích |
 |---|---|
-| **1 port duy nhất** | Server serve luôn client build (`client/dist`) và WebSocket trên cùng cổng ⇒ chỉ cần expose `8080` |
-| **Tài khoản riêng cho mỗi người** | Mỗi kết nối có `TradingSession` riêng (journal, prop-risk, lệnh chờ, copier). Dữ liệu thị trường thì chia sẻ chung ⇒ không ai thấy lệnh của ai |
-| **Chống lạm dụng** | `MAX_SESSIONS` (mặc định 500), `MAX_MESSAGES_PER_SEC` (40/giây/client), `MAX_PAYLOAD_BYTES` (64 KB/frame), validate payload runtime (size/price/symbol) |
-| **Health check** | `GET /healthz` → `{status, uptimeSec, sessions, symbol, feed, gexSource}` |
-| **Không cần cấu hình** | Client production tự trỏ WebSocket về `window.location.host` — deploy ở đâu cũng chạy |
+| `pnpm typecheck` | Kiểm tra TypeScript cho cả server và client (0 lỗi) |
+| `pnpm verify:types` | Chống protocol drift giữa server và client WebSocket messages |
+| `pnpm verify:footprint` | Kiểm chứng footprint: open candle, ask imbalance, stacked imbalance, unfinished auction |
+| `pnpm verify:replay` | Kiểm chứng isolated market replay: buffer, step, seek index, seek timestamp, consistency |
+| `pnpm verify:lifecycle` | 24 test kiểm tra chu kỳ sống feed, chuyển tab/mã, chống lẫn bar/depth |
+| `pnpm verify:feed` | Kiểm tra tính đúng đắn dữ liệu: fail-closed, validator, không chấp nhận feed rác |
+| `pnpm verify:tradovate` | 150 test offline adapter Tradovate (mapping, deduplication, fail-closed) |
+| `pnpm verify:p0` | 13 test bảo vệ tính toàn vẹn server (rate limit, protocol rejection) |
+| `pnpm verify:chart-smoke` | Smoke test kiểm tra HTTP server, WebSocket handshake và static assets |
 
-**Cách chạy nhanh (1 port):**
+Chạy toàn bộ kiểm thử:
 ```bash
-pnpm install
-pnpm build                 # build server (tsc) + client (vite)
-HOST=0.0.0.0 node server/dist/index.js
-# → http://<host>:8080          (web terminal)
-# → http://<host>:8080/healthz  (health)
+pnpm typecheck && pnpm verify:types && pnpm verify:footprint && pnpm verify:replay && pnpm verify:lifecycle
 ```
 
-**Docker:**
-```bash
-docker build -t deepchart .
-docker run -p 8080:8080 deepchart
-```
+---
 
-**Ví dụ Render/Fly:** build command `pnpm install && pnpm build`, start command `node server/dist/index.js`, env `HOST=0.0.0.0`, health check path `/healthz`.
-
-> ⚠️ **Chưa có authentication.** Mặc định server bind `127.0.0.1`. Nếu mở `HOST=0.0.0.0` cho công chúng, hãy đặt sau reverse proxy có rate-limit/TLS (Cloudflare, Caddy, nginx) — hoặc thêm lớp auth trước khi phát hành rộng rãi.
-
-### ⚖️ Miễn trừ trách nhiệm
-- DeepChart là công cụ **giáo dục/nghiên cứu**, **không phải lời khuyên đầu tư**.
-- Mọi lệnh trong app là **mô phỏng nội bộ** (không gửi tới broker/sàn thật).
-- Dữ liệu crypto (Binance) là thời gian thực; **dữ liệu quyền chọn CBOE là delayed ~15 phút**; futures cần feed có license, mặc định **UNAVAILABLE** (không mô phỏng).
-- Tôn trọng điều khoản của nhà cung cấp dữ liệu khi triển khai công khai.
-
-### Roadmap dữ liệu thật
-1. Hoàn thiện các vendor còn lại qua `MarketDataFeed`; Tradovate đã có quote/DOM và nến lịch sử. Không fallback sang simulator khi thiếu key.
-2. GEX/Options Flow: nối CBOE OI / ORATS / dxFeed / Tradier rồi đổi `dataSource` sang `'LIVE'` (UI tự bỏ badge `SIMULATED`).
-3. Trade Copier: thay engine mô phỏng bằng API broker thật (cần auth + quản lý rủi ro theo account).
+## 📄 Bản Quyền & Giấy Phép
+Dự án được phát hành dưới giấy phép mã nguồn mở MIT.
+Mọi phân tích order flow hoàn toàn miễn phí, độc lập và bảo vệ dữ liệu người dùng.

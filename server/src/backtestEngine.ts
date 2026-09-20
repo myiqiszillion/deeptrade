@@ -99,8 +99,24 @@ export class BacktestReplayEngine {
     return null;
   }
 
-  public seek(index: number) {
-    this.playbackIndex = Math.max(0, Math.min(this.recordedTicks.length - 1, index));
+  public seek(target: number) {
+    if (this.recordedTicks.length === 0) return;
+    if (target > 1000000000) {
+      // Treat as epoch timestamp, binary search for closest tick
+      let low = 0;
+      let high = this.recordedTicks.length - 1;
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        if (this.recordedTicks[mid].timestamp < target) {
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      this.playbackIndex = Math.max(0, Math.min(this.recordedTicks.length - 1, low));
+    } else {
+      this.playbackIndex = Math.max(0, Math.min(this.recordedTicks.length - 1, target));
+    }
     this.notifyProgress();
   }
 

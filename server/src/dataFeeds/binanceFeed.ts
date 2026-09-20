@@ -107,7 +107,7 @@ export class BinanceFuturesFeed {
 
   private connectTradeStream() {
     if (!this.isRunning) return;
-    const url = `wss://stream.binance.com:9443/ws/${this.symbol}@aggTrade`;
+    const url = `wss://fstream.binance.com/ws/${this.symbol}@aggTrade`;
     this.wsTrade = this.socketFactory(url);
     this.socketsCreated++;
     console.log(`[BinanceFeed] feed=${this.feedId} symbol=${this.symbol} event=TRADE_SOCKET_CONNECTING sockets=${this.socketsCreated}`);
@@ -122,12 +122,12 @@ export class BinanceFuturesFeed {
     this.wsTrade.on('message', (data: WebSocket.Data) => {
       try {
         const msg = JSON.parse(data.toString());
-        // Binance aggTrade format:
+        // Binance USD-M Futures aggTrade format:
         // { e: 'aggTrade', E: timestamp, s: 'BTCUSDT', a: aggTradeId, p: 'price', q: 'quantity', f: firstTradeId, l: lastTradeId, T: tradeTime, m: isBuyerMaker }
         if (msg.e === 'aggTrade') {
           const price = parseFloat(msg.p);
           const size = parseFloat(msg.q);
-          const isBuyerMaker = msg.m; // true: sell market order, false: buy market order
+          const isBuyerMaker = msg.m; // true: sell market order (buyer was maker), false: buy market order
           const tick: Tick = {
             id: String(msg.a),
             timestamp: msg.T,
@@ -167,7 +167,7 @@ export class BinanceFuturesFeed {
 
   private connectDepthStream() {
     if (!this.isRunning) return;
-    const url = `wss://stream.binance.com:9443/ws/${this.symbol}@depth20`;
+    const url = `wss://fstream.binance.com/ws/${this.symbol}@depth20@100ms`;
     this.wsDepth = this.socketFactory(url);
 
     this.wsDepth.on('open', () => {

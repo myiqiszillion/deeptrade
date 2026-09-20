@@ -1,16 +1,19 @@
 import React, { useState } from 'react';
 import { TPOProfileData, VolumeProfileData } from '../../types';
+import { formatPrice } from '../../services/priceFormat';
 
 interface ProfileOverlayProps {
   volumeProfile: VolumeProfileData;
   tpoProfile: TPOProfileData;
   currentPrice: number;
+  tickSize?: number;
 }
 
 export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
   volumeProfile,
   tpoProfile,
   currentPrice,
+  tickSize,
 }) => {
   const [activeTab, setActiveTab] = useState<'VP' | 'TPO'>('VP');
 
@@ -51,15 +54,15 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
       <div className="grid grid-cols-3 gap-1 px-3 py-2 bg-brand-bg/50 border-b border-brand-border text-slate-300 font-mono text-[11px]">
         <div>
           <span className="text-slate-500">VAH: </span>
-          <span className="text-blue-400">{activeTab === 'VP' ? volumeProfile.vah.toFixed(1) : tpoProfile.vah.toFixed(1)}</span>
+          <span className="text-blue-400">{formatPrice(activeTab === 'VP' ? volumeProfile.vah : tpoProfile.vah, tickSize)}</span>
         </div>
         <div>
           <span className="text-slate-500">POC: </span>
-          <span className="text-amber-400 font-bold">{activeTab === 'VP' ? volumeProfile.poc.toFixed(1) : tpoProfile.poc.toFixed(1)}</span>
+          <span className="text-amber-400 font-bold">{formatPrice(activeTab === 'VP' ? volumeProfile.poc : tpoProfile.poc, tickSize)}</span>
         </div>
         <div>
           <span className="text-slate-500">VAL: </span>
-          <span className="text-blue-400">{activeTab === 'VP' ? volumeProfile.val.toFixed(1) : tpoProfile.val.toFixed(1)}</span>
+          <span className="text-blue-400">{formatPrice(activeTab === 'VP' ? volumeProfile.val : tpoProfile.val, tickSize)}</span>
         </div>
       </div>
 
@@ -71,7 +74,7 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
               const isPOC = lvl.price === volumeProfile.poc;
               const isVAH = lvl.price === volumeProfile.vah;
               const isVAL = lvl.price === volumeProfile.val;
-              const isCurrent = Math.abs(lvl.price - currentPrice) < 0.5;
+              const isCurrent = Math.abs(lvl.price - currentPrice) < (tickSize ? tickSize * 2 : 0.5);
               const barPercent = Math.min(100, (lvl.volume / maxVolume) * 100);
 
               return (
@@ -92,7 +95,7 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
                   {/* Price with markers */}
                   <div className="relative z-10 flex items-center gap-1">
                     <span className={`${isPOC ? 'text-amber-400 font-bold' : isVAH || isVAL ? 'text-blue-400' : 'text-slate-300'}`}>
-                      {lvl.price.toFixed(1)}
+                      {formatPrice(lvl.price, tickSize)}
                     </span>
                     {isPOC && <span className="text-[9px] px-1 bg-amber-500/20 text-amber-400 rounded">POC</span>}
                     {isVAH && <span className="text-[9px] px-1 bg-blue-500/20 text-blue-400 rounded">VAH</span>}
@@ -116,7 +119,7 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
             {sortedTpoPrices.slice(0, 80).map((price) => {
               const letters = tpoProfile.priceLevels[price] || [];
               const isPOC = price === tpoProfile.poc;
-              const isCurrent = Math.abs(price - currentPrice) < 0.5;
+              const isCurrent = Math.abs(price - currentPrice) < (tickSize ? tickSize * 2 : 0.5);
 
               return (
                 <div
@@ -127,7 +130,7 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
                 >
                   <div className="w-14 shrink-0 flex items-center gap-1">
                     <span className={isPOC ? 'text-amber-400 font-bold' : 'text-slate-300'}>
-                      {price.toFixed(1)}
+                      {formatPrice(price, tickSize)}
                     </span>
                   </div>
 
