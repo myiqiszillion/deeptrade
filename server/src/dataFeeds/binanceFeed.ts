@@ -7,12 +7,24 @@ export interface DataFeedCallbacks {
   onOrderbookDelta: (bids: [number, number][], asks: [number, number][], updateId: number) => void;
 }
 
+/**
+ * Socket factory seam. Production passes `ws`; deterministic lifecycle tests inject a scripted
+ * socket so teardown/reconnect/close ordering can be exercised without touching the network.
+ */
+export type SocketFactory = (url: string) => WebSocket;
+
 export class BinanceFuturesFeed {
   private symbol: string;
   private wsTrade: WebSocket | null = null;
   private wsDepth: WebSocket | null = null;
   private callbacks: DataFeedCallbacks;
   private isRunning = false;
+  // Lifecycle instrumentation: correlate every socket with the feed instance that owns it.
+  private static nextId = 1;
+  private readonly feedId = BinanceFuturesFeed.nextId++;
+  private socketsCreated = 0;
+  private socketsOpened = 0;
+  private socketsClosed = 0;
   // One timer per stream: a single shared field cannot cancel both reconnects and silently
   // lost one of them, so a stopped instance could still have a pending reconnect.
   private tradeReconnectTimer: NodeJS.Timeout | null = null;
@@ -20,7 +32,11 @@ export class BinanceFuturesFeed {
   /** True once teardown was requested: late callbacks are expected and must stay silent. */
   private intentionalStop = false;
 
-  constructor(symbol: string, callbacks: DataFeedCallbacks) {
+  constructor(
+    symbol: string,
+    callbacks: DataFeedCallbacks,
+    private readonly socketFactory: SocketFactory = (url) => new WebSocket(url)
+  ) {
     this.symbol = symbol.toLowerCase();
     this.callbacks = callbacks;
   }
@@ -50,14 +66,27 @@ export class BinanceFuturesFeed {
     this.wsTrade = null;
     this.wsDepth = null;
 
+    // Arming order matters: the close watcher is attached BEFORE the socket is torn down. If it
+    // were attached afterwards, a socket that settles synchronously on close()/terminate() would
+    // miss the event and stall teardown until the safety bound. Detaching first also means a
+    // socket that is still CONNECTING cannot emit error/close into the feed after teardown, and
+    // the no-op error listener keeps an intentional abort from surfacing as an uncaught 'error'.
+    const settled = sockets.map(
+      (socket) =>
+        new Promise<void>((resolve) => {
+          socket.removeAllListeners();
+          socket.on('error', () => {
+            /* expected during intentional teardown */
+          });
+          if (socket.readyState === WebSocket.CLOSED) {
+            resolve();
+            return;
+          }
+          socket.once('close', () => resolve());
+        })
+    );
+
     for (const socket of sockets) {
-      // Detach first: a socket that is still CONNECTING can otherwise emit error/close after
-      // teardown and resurrect the previous generation. A no-op error listener is then attached
-      // so teardown can never surface as an uncaught 'error' event.
-      socket.removeAllListeners();
-      socket.on('error', () => {
-        /* expected during intentional teardown */
-      });
       try {
         if (socket.readyState === WebSocket.CONNECTING) {
           // ws throws/emits "closed before the connection was established" on close() while
@@ -73,30 +102,21 @@ export class BinanceFuturesFeed {
 
     // Bounded settlement: resolve as soon as every socket is closed. The bound exists only so
     // teardown can never hang — it is NOT a readiness delay.
-    await Promise.race([
-      Promise.all(
-        sockets.map(
-          (socket) =>
-            new Promise<void>((resolve) => {
-              if (socket.readyState === WebSocket.CLOSED) {
-                resolve();
-                return;
-              }
-              socket.once('close', () => resolve());
-            })
-        )
-      ),
-      new Promise<void>((resolve) => setTimeout(resolve, 1500)),
-    ]);
+    await Promise.race([Promise.all(settled), new Promise<void>((resolve) => setTimeout(resolve, 1500))]);
   }
 
   private connectTradeStream() {
     if (!this.isRunning) return;
     const url = `wss://stream.binance.com:9443/ws/${this.symbol}@aggTrade`;
-    this.wsTrade = new WebSocket(url);
+    this.wsTrade = this.socketFactory(url);
+    this.socketsCreated++;
+    console.log(`[BinanceFeed] feed=${this.feedId} symbol=${this.symbol} event=TRADE_SOCKET_CONNECTING sockets=${this.socketsCreated}`);
 
     this.wsTrade.on('open', () => {
-      console.log(`[BinanceFeed] Connected to aggTrade stream for ${this.symbol}`);
+      this.socketsOpened++;
+      console.log(
+        `[BinanceFeed] feed=${this.feedId} symbol=${this.symbol} event=TRADE_SOCKET_OPEN opened=${this.socketsOpened}/${this.socketsCreated}`
+      );
     });
 
     this.wsTrade.on('message', (data: WebSocket.Data) => {
@@ -128,7 +148,13 @@ export class BinanceFuturesFeed {
     });
 
     this.wsTrade.on('close', () => {
-      if (this.intentionalStop || !this.isRunning) return; // teardown: never reconnect
+      this.socketsClosed++;
+      if (this.intentionalStop || !this.isRunning) {
+        console.log(
+          `[BinanceFeed] feed=${this.feedId} symbol=${this.symbol} event=TRADE_SOCKET_CLOSE intentional closed=${this.socketsClosed}/${this.socketsCreated}`
+        );
+        return;
+      }
       console.log('[BinanceFeed] aggTrade closed, reconnecting in 3s...');
       if (this.tradeReconnectTimer) clearTimeout(this.tradeReconnectTimer);
       this.tradeReconnectTimer = setTimeout(() => {
@@ -142,7 +168,7 @@ export class BinanceFuturesFeed {
   private connectDepthStream() {
     if (!this.isRunning) return;
     const url = `wss://stream.binance.com:9443/ws/${this.symbol}@depth20`;
-    this.wsDepth = new WebSocket(url);
+    this.wsDepth = this.socketFactory(url);
 
     this.wsDepth.on('open', () => {
       console.log(`[BinanceFeed] Connected to depth20 for ${this.symbol}`);

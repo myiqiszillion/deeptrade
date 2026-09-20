@@ -157,6 +157,8 @@ function createSession(socket: WebSocket): TradingSession {
 
 // Market-data feed state (provider-agnostic; the vendor is chosen in marketData/registry.ts).
 let activeFeed: MarketDataFeed | null = null;
+/** Feed-session token: only the newest session's adapter may publish status or market events. */
+let activeFeedToken = 0;
 let activeProvider = 'none';
 let feedStatus: 'UNAVAILABLE' | 'LIVE' = 'UNAVAILABLE';
 let feedReason: string | undefined = 'no feed connected yet';
@@ -397,12 +399,35 @@ const callbacks: DataFeedCallbacks = {
 };
 
 // Switch Symbol & Reinitialize Instrument
-async function switchInstrument(symbol: string): Promise<void> {
+//
+// Ordering is the invariant here: every snapshot that leaves the server must pair the active
+// symbol with its own market state. The old feed is therefore torn down WHILE the old identity is
+// still in place (so the UNAVAILABLE snapshot its teardown publishes stays coherent), then the
+// identity flips and every engine is rebuilt synchronously, and only then does the new feed start
+// publishing status. Starting the feed right after the symbol flip published `symbol=ES` while the
+// footprint still held the previous instrument's bars (TEST 13: "ES returned N fabricated bars").
+async function applyInstrumentSwitch(symbol: string): Promise<void> {
+  // 1. Kill the old feed first: its listeners are dead before anything below runs.
+  await stopFeed();
+
+  // 2. Flip identity and rebuild every engine. This block is synchronous, so no await point exists
+  //    at which a feed status publish could observe a half-switched market state.
   currentSymbol = symbol;
   currentInstrument = FUTURES_INSTRUMENTS[symbol] || FUTURES_INSTRUMENTS.ES;
 
-  // Stop the previous feed BEFORE rebuilding engines: a straggler depth frame from the old
-  // instrument would otherwise contaminate the new (empty) order book.
+  orderbook = new OrderbookManager(50);
+  footprint = new FootprintEngine(currentInstrument.tickSize, TIMEFRAMES[currentTimeframe], 3.0, 1.0);
+  profile = new ProfileEngine(currentInstrument.tickSize);
+  vwap = new VWAPEngine();
+  tape = new TapeEngine(computeDeepTradeThresholdUsd(), 15.0);
+  cachedBook = null;
+  for (const session of sessions.values()) {
+    clearRestingOrders(session, 'switch instrument');
+    session.setPointValue(currentInstrument.pointValue);
+  }
+
+  // 3. Only now attach the new feed, so every CONNECTING/LIVE/UNAVAILABLE snapshot it publishes is
+  //    built from the rebuilt engines of this symbol.
   await startFeed();
 
   // Readiness gate: when a live vendor is attached, wait for its first VALIDATED event so the
@@ -416,23 +441,29 @@ async function switchInstrument(symbol: string): Promise<void> {
     }
   }
 
-  orderbook = new OrderbookManager(50);
-  footprint = new FootprintEngine(currentInstrument.tickSize, 60 * 1000, 3.0, 1.0);
-  profile = new ProfileEngine(currentInstrument.tickSize);
-  vwap = new VWAPEngine();
-  tape = new TapeEngine(computeDeepTradeThresholdUsd(), 15.0);
-  cachedBook = null;
-  for (const session of sessions.values()) {
-    clearRestingOrders(session, 'switch instrument');
-    session.setPointValue(currentInstrument.pointValue);
-  }
-
-  // Refresh GEX (real CBOE chain when reachable) and re-seed history for the new contract.
+  // 4. Refresh GEX (real CBOE chain when reachable) and re-seed history for the new contract.
   if (currentInstrument.underlyingIndex) {
     void refreshGex();
   }
   historySource = 'NONE';
   void backfillHistory();
+}
+
+// Serialise switches. Two overlapping switches would interleave at their await points and leave
+// whichever finished LAST as the active instrument (and could orphan a live socket), so rapid
+// SUBSCRIBE bursts are queued: each lifecycle fully settles before the next one starts.
+let switchChain: Promise<void> = Promise.resolve();
+function switchInstrument(symbol: string): Promise<void> {
+  const run = switchChain.then(
+    () => applyInstrumentSwitch(symbol),
+    () => applyInstrumentSwitch(symbol)
+  );
+  // A failed switch must not poison the queue for later requests.
+  switchChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
 }
 
 // Start Data Feed through the MarketDataFeed abstraction.
@@ -443,11 +474,17 @@ async function switchInstrument(symbol: string): Promise<void> {
 async function startFeed(): Promise<void> {
   await stopFeed();
 
+  // New session token: a torn-down adapter must never publish into the next session. Without
+  // this, a late 'disconnected' from the previous adapter flipped a freshly LIVE feed back to
+  // UNAVAILABLE, and the real-only order guard then rejected valid orders.
+  const token = ++activeFeedToken;
+
   lastTradeTs = 0;
   lastDepthTs = 0;
 
   const { feed, provider } = createMarketDataFeed(currentSymbol, currentInstrument, {
     onTrade: (trade: MarketTrade) => {
+      if (token !== activeFeedToken) return; // stale session: never reach the engines
       lastTradeTs = Date.now();
       if (feedStatus !== 'LIVE') setFeedStatus('LIVE');
       // Boundary translation into the existing engine contract (engines stay untouched).
@@ -461,6 +498,7 @@ async function startFeed(): Promise<void> {
       });
     },
     onDepth: (event: MarketDepthEvent) => {
+      if (token !== activeFeedToken) return; // stale session: never contaminate the book
       lastDepthTs = Date.now();
       if (event.kind === 'snapshot') {
         callbacks.onOrderbookSnapshot(
@@ -475,11 +513,13 @@ async function startFeed(): Promise<void> {
       }
     },
     onStatus: (status: FeedStatusEvent) => {
+      if (token !== activeFeedToken) return; // the actual race fix: stale status is ignored
       if (status.provider !== provider) return;
       feedReason = status.reason;
       setFeedStatus(status.state === 'LIVE' ? 'LIVE' : 'UNAVAILABLE');
     },
     onError: (error: Error) => {
+      if (token !== activeFeedToken) return;
       console.warn(`[Feed:${provider}] ${currentSymbol}: ${error.message}`);
       setFeedStatus('UNAVAILABLE');
     },
@@ -516,6 +556,15 @@ function setFeedStatus(next: 'UNAVAILABLE' | 'LIVE'): void {
   if (next === feedStatus) return;
   feedStatus = next;
   console.log(`[Feed] ${currentSymbol}: ${feedStatus}${feedReason ? ` (${feedReason})` : ''}`);
+  // TEMP DIAGNOSTIC (FEED_DIAG=1): prove whether a publish pairs the active symbol with its own
+  // market state, i.e. whether an instrument switch can publish a mixed snapshot.
+  if (process.env.FEED_DIAG === '1') {
+    const diagBars = footprint.getAllBars();
+    console.log(
+      `[InitState] symbol=${currentSymbol} tf=${currentTimeframe} feedStatus=${feedStatus} bars=${diagBars.length} ` +
+        `firstBar=${diagBars[0]?.time ?? 0} reason=${feedReason}`
+    );
+  }
   for (const session of sessions.values()) session.send(buildInitState(session));
 }
 
@@ -844,3 +893,4 @@ httpServer.listen(PORT, HOST, () => {
   console.log(`[DeepChart Server] Web terminal: http://localhost:${PORT} | health: http://localhost:${PORT}/healthz`);
   console.log(`[DeepChart Server] Serving client build from ${CLIENT_DIST}`);
 });
+

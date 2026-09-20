@@ -11,6 +11,8 @@
     "lint": "pnpm --filter client lint",
     "verify": "pnpm --filter @deepchart/server exec tsx src/verify_e2e.ts",
     "verify:p0": "pnpm --filter @deepchart/server exec tsx src/verify_p0.ts",
+    "verify:feed": "pnpm --filter @deepchart/server exec tsx src/verify_feed.ts",
+    "verify:lifecycle": "pnpm --filter @deepchart/server exec tsx src/verify_lifecycle.ts",
     "verify:types": "node scripts/check-protocol-drift.mjs"
   },
   "devDependencies": {

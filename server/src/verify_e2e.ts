@@ -16,24 +16,30 @@ async function run(): Promise<void> {
   let books = 0;
   let journal = false;
   let copied = false;
+  let orderSent = false;
 
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Timed out waiting for real-only smoke events')), 25000);
     ws.on('open', () => {
-      console.log('[verify] Connected');
-      setTimeout(
-        () => ws.send(JSON.stringify({ type: 'DOM_ORDER', action: 'BUY', size: 1, orderType: 'MARKET' })),
-        2000
-      );
+      console.log('[verify] Connected — subscribing BTCUSDT (the key-less real feed)');
+      // This suite must not assume the server booted on BTCUSDT: the instrument is shared, so any
+      // other client may have moved it to a feedless symbol. Subscribe explicitly instead.
+      ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'BTCUSDT', timeframe: '1m' }));
     });
     ws.on('error', reject);
     ws.on('message', (raw) => {
       const msg = JSON.parse(raw.toString());
-      if (msg.type === 'INIT_STATE') {
+      if (msg.type === 'INIT_STATE' && msg.symbol === 'BTCUSDT') {
         init = msg;
         console.log(
           `INIT_STATE ${msg.symbol} | feed ${msg.feedStatus} | history ${msg.historySource} | pointValue ${msg.instrument.pointValue}`
         );
+        // Send the order only once the real feed has genuinely reached LIVE (a validated vendor
+        // event), never on a timer — a feedless instrument must reject it, not fill it.
+        if (msg.feedStatus === 'LIVE' && !orderSent) {
+          orderSent = true;
+          ws.send(JSON.stringify({ type: 'DOM_ORDER', action: 'BUY', size: 1, orderType: 'MARKET' }));
+        }
       } else if (msg.type === 'TICK') {
         ticks++;
       } else if (msg.type === 'ORDERBOOK_UPDATE') {
