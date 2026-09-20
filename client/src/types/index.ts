@@ -71,6 +71,26 @@ export interface FootprintBar {
   isClosed: boolean;
 }
 
+/**
+ * A REAL historical bar from before the live session (e.g. Tradovate `md/getchart`).
+ *
+ * Bar aggregate only — there is deliberately no `levels` field, because a bar cannot yield a
+ * per-price bid/ask split. It is drawn as a plain candle behind the live footprint.
+ */
+export interface HistoricalBar {
+  /** Bar OPEN time, epoch milliseconds. */
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  /** Vendor aggressor split; missing is not zero and is not inferred from up/down ticks. */
+  buyVolume?: number;
+  sellVolume?: number;
+  delta?: number;
+}
+
 export interface VolumeProfileLevel {
   price: number;
   volume: number;
@@ -303,7 +323,10 @@ export type WSServerMessage =
       deepTradeThresholdUsd?: number;
       slaves?: SlaveAccount[];
       timeframe?: string;
-      historySource?: 'NONE' | 'REAL_TICKS';
+      historySource?: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
+      /** REAL vendor bars preceding the live session; plain candles, no per-price breakdown. */
+      historyBars?: HistoricalBar[];
+      feedStatus?: 'LIVE' | 'UNAVAILABLE';
     }
   | { type: 'TICK'; tick: Tick }
   | { type: 'BAR_UPDATE'; bar: FootprintBar }

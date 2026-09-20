@@ -8,7 +8,8 @@ interface TickReplayWidgetProps {
   progress?: ReplayProgress;
   symbol: string;
   isCrypto: boolean;
-  historySource: 'NONE' | 'REAL_TICKS';
+  feedStatus?: 'LIVE' | 'UNAVAILABLE';
+  historySource: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
   gexSource?: 'CBOE_DELAYED' | 'LIVE';
 }
 
@@ -16,6 +17,7 @@ export const TickReplayWidget: React.FC<TickReplayWidgetProps> = ({
   progress,
   symbol,
   isCrypto,
+  feedStatus,
   historySource,
   gexSource,
 }) => {
@@ -121,7 +123,13 @@ export const TickReplayWidget: React.FC<TickReplayWidgetProps> = ({
         </div>
       </div>
 
-      <DataStatusStrip symbol={symbol} isCrypto={isCrypto} historySource={historySource} gexSource={gexSource} />
+      <DataStatusStrip
+        symbol={symbol}
+        isCrypto={isCrypto}
+        feedStatus={feedStatus}
+        historySource={historySource}
+        gexSource={gexSource}
+      />
     </div>
   );
 };

@@ -59,6 +59,28 @@ export interface FootprintBar {
   isClosed: boolean;
 }
 
+/**
+ * A REAL historical bar that preceded the live session (e.g. Tradovate `md/getchart`).
+ *
+ * Deliberately NOT a `FootprintBar`: a bar is an aggregate and physically cannot yield a
+ * per-price bid/ask split. Keeping a separate, narrower type makes that limitation structural
+ * instead of a convention someone could forget — there is no `levels` field to fabricate.
+ */
+export interface HistoricalBar {
+  /** Bar OPEN time, epoch milliseconds. */
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  /** upVolume + downVolume, as reported by the vendor. */
+  volume: number;
+  /** Vendor aggressor split, absent when not supplied (never inferred from up/down ticks). */
+  buyVolume?: number;
+  sellVolume?: number;
+  delta?: number;
+}
+
 export interface VolumeProfileLevel {
   price: number;
   volume: number;
@@ -193,8 +215,17 @@ export type WSServerMessage =
       deepTradeThresholdUsd?: number;
       slaves?: SlaveAccount[];
       timeframe?: string;
-      /** How the chart history was seeded: real ticks, reconstructed 1m bars, or live-only. */
-      historySource?: 'NONE' | 'REAL_TICKS';
+      /** How the chart history was seeded: real ticks, real vendor bars, or live-only. */
+      historySource?: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
+      /**
+       * REAL vendor bars that preceded the live session (Tradovate `md/getchart`).
+       *
+       * Bar-level aggregates ONLY — there is deliberately no per-price breakdown, because a
+       * bar cannot yield one. Expanding these into synthetic prints would invent the footprint
+       * microstructure this terminal claims to measure, so the client draws them as plain
+       * candles and the live footprint starts where real ticks start.
+       */
+      historyBars?: HistoricalBar[];
       /** 'LIVE' when a real feed streams this instrument, 'UNAVAILABLE' when none is wired. */
       feedStatus?: 'LIVE' | 'UNAVAILABLE';
     }

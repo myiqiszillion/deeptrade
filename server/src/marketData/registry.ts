@@ -1,9 +1,11 @@
 import { FuturesInstrument } from '../futuresConfig.js';
 import { BinanceMarketDataFeed } from './binanceAdapter.js';
 import { DATABENTO_SYMBOL_MAP, DatabentoMarketDataFeed } from './databentoAdapter.js';
+import { TradovateMarketDataFeed } from './tradovateAdapter.js';
+import { readTradovateConfig } from './tradovateConfig.js';
 import { FeedHandlers, MarketDataFeed } from './types.js';
 
-export type FuturesProviderName = 'none' | 'databento';
+export type FuturesProviderName = 'none' | 'databento' | 'tradovate';
 
 /** Agent that actually owns the realtime feed for a symbol (independent of vendor choice). */
 export function preferredFeedSource(symbol: string): 'binance' | 'futures-vendor' {
@@ -31,6 +33,13 @@ export function createMarketDataFeed(
   }
 
   const provider = (process.env.FUTURES_PROVIDER || 'none').toLowerCase() as FuturesProviderName;
+
+  if (provider === 'tradovate') {
+    return {
+      feed: new TradovateMarketDataFeed(symbol, instrument, handlers, readTradovateConfig()),
+      provider: 'tradovate',
+    };
+  }
 
   if (provider === 'databento') {
     return {

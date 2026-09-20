@@ -1,11 +1,13 @@
-﻿import React from 'react';
+import React from 'react';
 
 type Tone = 'live' | 'delayed' | 'none';
 
 interface DataStatusStripProps {
   symbol: string;
   isCrypto: boolean;
-  historySource: 'NONE' | 'REAL_TICKS';
+  /** Server-reported feed state for this instrument ('LIVE' only after validated data). */
+  feedStatus?: 'LIVE' | 'UNAVAILABLE';
+  historySource: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
   gexSource?: 'CBOE_DELAYED' | 'LIVE';
 }
 
@@ -24,27 +26,42 @@ const Chip: React.FC<{ label: string; value: string; tone: Tone; title?: string 
 /**
  * Single source of truth for data provenance. DeepChart is real-only: every channel is
  * either realtime, real-but-delayed, or UNAVAILABLE. Nothing is ever simulated.
+ *
+ * FEED reports the SERVER's feed state rather than a per-instrument guess, so a licensed
+ * futures vendor streaming live data is no longer mislabelled UNAVAILABLE.
  */
-export const DataStatusStrip: React.FC<DataStatusStripProps> = ({ symbol, isCrypto, historySource, gexSource }) => (
+export const DataStatusStrip: React.FC<DataStatusStripProps> = ({
+  symbol,
+  isCrypto,
+  feedStatus,
+  historySource,
+  gexSource,
+}) => (
   <div className="flex items-center gap-1.5">
     <Chip
       label="FEED"
-      value={isCrypto ? 'REALTIME' : 'UNAVAILABLE'}
-      tone={isCrypto ? 'live' : 'none'}
+      value={feedStatus === 'LIVE' ? 'REALTIME' : 'UNAVAILABLE'}
+      tone={feedStatus === 'LIVE' ? 'live' : 'none'}
       title={
-        isCrypto
-          ? 'Real-time Binance Futures trades + depth'
-          : 'No licensed real-time vendor is configured for this instrument'
+        feedStatus === 'LIVE'
+          ? isCrypto
+            ? 'Real-time Binance Futures trades + depth'
+            : 'Real-time licensed vendor feed (validated market data)'
+          : isCrypto
+            ? 'Binance stream unavailable'
+            : 'Real-time vendor feed unavailable (configuration, entitlement or connection)'
       }
     />
     <Chip
       label="HISTORY"
-      value={historySource === 'REAL_TICKS' ? 'REAL' : 'NONE'}
-      tone={historySource === 'REAL_TICKS' ? 'delayed' : 'none'}
+      value={historySource === 'REAL_TICKS' ? 'REAL TICKS' : historySource === 'REAL_BARS' ? 'REAL BARS' : 'NONE'}
+      tone={historySource === 'NONE' ? 'none' : 'delayed'}
       title={
         historySource === 'REAL_TICKS'
-          ? 'Seeded with real historical trades'
-          : 'No real history source - the chart accumulates live ticks only'
+          ? 'Seeded with real historical trades - full footprint'
+          : historySource === 'REAL_BARS'
+            ? 'Real vendor bars before the live session - plain candles, no per-price footprint'
+            : 'No real history source - the chart accumulates live ticks only'
       }
     />
     <Chip

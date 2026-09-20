@@ -4,6 +4,7 @@ import {
   FootprintBar,
   FuturesInstrument,
   GEXProfile,
+  HistoricalBar,
   JournalTrade,
   OptionsFlowTrade,
   OrderbookSnapshot,
@@ -39,7 +40,8 @@ export interface WSListeners {
     deepTradeThresholdUsd?: number;
     slaves?: SlaveAccount[];
     timeframe?: string;
-    historySource?: 'NONE' | 'REAL_TICKS';
+    historySource?: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
+    historyBars?: HistoricalBar[];
     feedStatus?: 'LIVE' | 'UNAVAILABLE';
   }) => void;
   onTick?: (tick: Tick) => void;

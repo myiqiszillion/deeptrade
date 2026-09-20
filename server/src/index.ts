@@ -11,12 +11,16 @@ import { GEXEngine } from './gexEngine.js';
 import { CboeOptionsProvider } from './dataFeeds/cboeOptionsFeed.js';
 import { fetchBinanceAggTrades } from './dataFeeds/historyFeed.js';
 import { createMarketDataFeed } from './marketData/registry.js';
+import { resolveVendorSymbol } from './marketData/tradovateAdapter.js';
+import { readTradovateConfig } from './marketData/tradovateConfig.js';
+import { fetchTradovateHistoryBars } from './marketData/tradovateHistory.js';
 import { FeedStatusEvent, MarketDataFeed, MarketDepthEvent, MarketTrade } from './marketData/types.js';
 import { OrderbookManager } from './orderbook.js';
 import { ProfileEngine } from './profileEngine.js';
 import { MAX_SESSIONS, TradingSession } from './session.js';
 import { TapeEngine } from './tapeEngine.js';
 import {
+  HistoricalBar,
   JournalTrade,
   OrderbookSnapshot,
   RestingOrder,
@@ -50,8 +54,23 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 // Per-connection trading state: markets are global, accounts are not.
 const sessions = new Map<WebSocket, TradingSession>();
 
-type HistorySource = 'NONE' | 'REAL_TICKS';
+type HistorySource = 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
 let historySource: HistorySource = 'NONE';
+/**
+ * REAL vendor bars from before the live session. Bar aggregates only — they are shown as plain
+ * candles and are NEVER expanded into synthetic ticks, so they never enter the orderflow engines.
+ */
+let historyBars: HistoricalBar[] = [];
+let historyRequest = new AbortController();
+let historyBoundary = Date.now();
+
+function resetHistory(): void {
+  historyRequest.abort();
+  historyRequest = new AbortController();
+  historyBoundary = Date.now();
+  historyBars = [];
+  historySource = 'NONE';
+}
 let lastOrderbookUpdate = 0;
 let lastBarUpdate = 0;
 let lastSpeedOfTapeUpdate = 0;
@@ -407,6 +426,8 @@ const callbacks: DataFeedCallbacks = {
 // publishing status. Starting the feed right after the symbol flip published `symbol=ES` while the
 // footprint still held the previous instrument's bars (TEST 13: "ES returned N fabricated bars").
 async function applyInstrumentSwitch(symbol: string): Promise<void> {
+  // Invalidate history before awaiting teardown, including ES -> NQ -> ES races.
+  resetHistory();
   // 1. Kill the old feed first: its listeners are dead before anything below runs.
   await stopFeed();
 
@@ -421,6 +442,8 @@ async function applyInstrumentSwitch(symbol: string): Promise<void> {
   vwap = new VWAPEngine();
   tape = new TapeEngine(computeDeepTradeThresholdUsd(), 15.0);
   cachedBook = null;
+  // The previous contract's candles must not linger on the new contract's chart.
+  historyBars = [];
   for (const session of sessions.values()) {
     clearRestingOrders(session, 'switch instrument');
     session.setPointValue(currentInstrument.pointValue);
@@ -624,12 +647,20 @@ void refreshGex();
 /**
  * Seed the market engines with history so the chart is not empty on first load.
  *
- * Crypto -> REAL Binance trades. Futures/index -> REAL 1-minute bars expanded into a
- * reconstructed intra-bar path (true tick history is licensed). If no source is reachable
- * the chart simply accumulates live ticks and the UI says so.
+ * Crypto  -> REAL Binance trades (true tick history): the footprint is built from real ticks.
+ * Futures -> REAL Tradovate `md/getchart` bars, when the tradovate provider is configured.
+ *            Bars are bar-level aggregates, NOT ticks, so they are published on their own
+ *            channel (`historyBars`) and NEVER expanded into a synthetic intra-bar tick path:
+ *            inventing per-price prints would fabricate the exact footprint microstructure
+ *            this terminal claims to measure. Historical bars have no `levels` field.
+ *
+ * If no source is reachable the chart simply accumulates live ticks and the UI says so.
  */
 async function backfillHistory(): Promise<void> {
   const symbol = currentSymbol;
+  const timeframe = currentTimeframe;
+  const signal = historyRequest.signal;
+  const beforeTime = historyBoundary;
   let ticks: Tick[] = [];
   let source: HistorySource = 'NONE';
 
@@ -639,10 +670,31 @@ async function backfillHistory(): Promise<void> {
     if (symbol === 'BTCUSDT') {
       ticks = await fetchBinanceAggTrades(symbol, 3);
       if (ticks.length > 0) source = 'REAL_TICKS';
+    } else if ((process.env.FUTURES_PROVIDER || '').toLowerCase() === 'tradovate') {
+      // REAL bars straight from the vendor. They stay bar-shaped: see the note above the function.
+      // MinuteBar cannot represent sub-minute history; do not expand 1m bars into fake seconds.
+      if (TIMEFRAMES[timeframe] < 60000) return;
+      const config = readTradovateConfig();
+      const bars = await fetchTradovateHistoryBars(
+        resolveVendorSymbol(symbol, FUTURES_INSTRUMENTS[symbol] || FUTURES_INSTRUMENTS.ES, config),
+        config,
+        { barMinutes: TIMEFRAMES[timeframe] / 60000, elements: 300, beforeTime, signal }
+      );
+      if (signal.aborted || symbol !== currentSymbol || timeframe !== currentTimeframe) return;
+      if (bars.length > 0) {
+        historyBars = bars;
+        historySource = 'REAL_BARS';
+        console.log(`[History] ${symbol}: ${bars.length} real bar(s) from tradovate`);
+        for (const session of sessions.values()) session.send(buildInitState(session));
+      } else {
+        historySource = 'NONE';
+        console.log(`[History] ${symbol}: no real history available — accumulating live ticks only.`);
+      }
+      return;
     }
 
-    // Discard if the instrument changed while we were fetching.
-    if (symbol !== currentSymbol) return;
+    // Discard even if the instrument switched away and then back to the same name.
+    if (signal.aborted || symbol !== currentSymbol) return;
 
     historySource = source;
     if (ticks.length === 0) {
@@ -691,6 +743,7 @@ function buildInitState(session: TradingSession): WSServerMessage {
     slaves: session.copier.getSlaves(),
     timeframe: currentTimeframe,
     historySource,
+    historyBars,
     feedStatus,
   };
 }
@@ -740,9 +793,11 @@ wss.on('connection', (ws: WebSocket) => {
         // Timeframe change: rebuild the footprint engine with the requested bar duration.
         if (msg.timeframe && msg.timeframe !== currentTimeframe && TIMEFRAMES[msg.timeframe]) {
           currentTimeframe = msg.timeframe;
+          if (currentSymbol !== 'BTCUSDT') resetHistory();
           footprint = new FootprintEngine(currentInstrument.tickSize, TIMEFRAMES[currentTimeframe], 3.0, 1.0);
           console.log(`[DeepChart Server] Timeframe changed to ${currentTimeframe}`);
           session.send(buildInitState(session));
+          if (currentSymbol !== 'BTCUSDT') void backfillHistory();
         }
       } else if (msg.type === 'DOM_ORDER') {
         if (msg.action === 'CANCEL') {

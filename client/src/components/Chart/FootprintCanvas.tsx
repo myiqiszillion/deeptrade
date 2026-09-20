@@ -1,8 +1,15 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { AbsorptionAlert, DeepTrade, FootprintBar, GEXProfile, VWAPPoint } from '../../types';
+import { AbsorptionAlert, DeepTrade, FootprintBar, GEXProfile, HistoricalBar, VWAPPoint } from '../../types';
+import { historyBeforeLive } from '../../services/chartHistory';
 
 interface FootprintCanvasProps {
   bars: FootprintBar[];
+  /**
+   * REAL vendor bars that preceded the live session. Rendered as plain candles to the LEFT of
+   * the live footprint, because a bar carries no per-price bid/ask split — there is nothing
+   * honest to draw inside them.
+   */
+  historyBars?: HistoricalBar[];
   currentPrice: number;
   vwapPoints: VWAPPoint[];
   deepTrades: DeepTrade[];
@@ -13,10 +20,12 @@ interface FootprintCanvasProps {
   showDeltaNumbers: boolean;
   tickSize?: number;
   symbol?: string;
+  isLive?: boolean;
 }
 
 export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   bars,
+  historyBars,
   currentPrice,
   vwapPoints,
   deepTrades,
@@ -27,6 +36,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   showDeltaNumbers,
   tickSize = 0.5,
   symbol,
+  isLive = false,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -258,7 +268,68 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         ctx.restore();
       }
 
-      // 4. Draw Footprint Bars
+      // 4. Draw REAL historical candles.
+      //
+      // History occupies NEGATIVE bar indices so the live footprint always begins at index 0 and
+      // the two can never overlap or be mistaken for one another. They are drawn filled + dimmed
+      // (live footprint bars are outlined + bright) and carry no footprint cells, because a bar
+      // aggregate simply does not contain a per-price bid/ask split.
+      const history = historyBeforeLive(historyBars ?? [], bars);
+      if (history.length > 0) {
+        ctx.save();
+        ctx.globalAlpha = 0.4;
+        for (let i = 0; i < history.length; i++) {
+          const bar = history[i];
+          const barIndex = i - history.length; // negative => strictly left of the live bars
+          const barX = viewport.panX + barIndex * (viewport.barWidth + viewport.barSpacing);
+          if (barX + viewport.barWidth < 0 || barX > width - 65) continue;
+
+          const color = bar.close >= bar.open ? '#00c087' : '#f6465d';
+          const highY = priceToY(bar.high, height);
+          const lowY = priceToY(bar.low, height);
+          const openY = priceToY(bar.open, height);
+          const closeY = priceToY(bar.close, height);
+
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(barX + viewport.barWidth / 2, highY);
+          ctx.lineTo(barX + viewport.barWidth / 2, lowY);
+          ctx.stroke();
+
+          const bodyTop = Math.min(openY, closeY);
+          ctx.fillStyle = color;
+          ctx.fillRect(barX + 2, bodyTop, viewport.barWidth - 4, Math.max(1, Math.abs(closeY - openY)));
+          ctx.fillStyle = '#94a3b8';
+          ctx.font = '9px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(new Date(bar.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            barX + viewport.barWidth / 2, height - 8);
+        }
+
+        // Mark the boundary: left of this line is real history WITHOUT footprint detail, right of
+        // it is built from real ticks. The distinction is the product's core claim, so it is drawn
+        // rather than left to the provenance strip alone.
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.45)';
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(viewport.panX, 0);
+        ctx.lineTo(viewport.panX, height);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const boundaryLabelX = viewport.panX + 6;
+        if (boundaryLabelX >= 0 && boundaryLabelX < width - 65) {
+          ctx.textAlign = 'left';
+          ctx.fillStyle = 'rgba(148, 163, 184, 0.8)';
+          ctx.font = '9px monospace';
+          ctx.fillText('real bars (no footprint) | live ticks', boundaryLabelX, 12);
+        }
+        ctx.restore();
+      }
+
+      // 5. Draw Footprint Bars
       const levelHeight = viewport.priceScale;
 
       bars.forEach((bar, barIndex) => {
@@ -491,6 +562,11 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
       ctx.font = 'bold 10px JetBrains Mono, monospace';
       ctx.textAlign = 'left';
       ctx.fillText(currentPrice.toFixed(1), width - 60, curY + 4);
+      if (!isLive) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '10px monospace';
+        ctx.fillText('Historical / last observed price - live feed unavailable', 10, 25);
+      }
 
       // 7. Crosshair
       if (mousePosRef.current) {
@@ -530,6 +606,8 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     return () => cancelAnimationFrame(animationId);
   }, [
     bars,
+    historyBars,
+    isLive,
     currentPrice,
     vwapPoints,
     deepTrades,

@@ -7,6 +7,7 @@ import {
   FootprintBar,
   FuturesInstrument,
   GEXProfile,
+  HistoricalBar,
   JournalTrade,
   OptionsFlowTrade,
   OrderbookSnapshot,
@@ -117,7 +118,10 @@ export const App: React.FC = () => {
   const [notices, setNotices] = useState<{ id: number; kind: 'ok' | 'error'; text: string }[]>([]);
   const [breachAlert, setBreachAlert] = useState<string | undefined>();
   const [deepTradeThresholdUsd, setDeepTradeThresholdUsd] = useState<number | undefined>();
-  const [historySource, setHistorySource] = useState<'NONE' | 'REAL_TICKS'>('NONE');
+  const [historySource, setHistorySource] = useState<'NONE' | 'REAL_TICKS' | 'REAL_BARS'>('NONE');
+  // REAL vendor bars from before the live session. Plain candles: no per-price footprint exists
+  // for them, and the server never fabricates one.
+  const [historyBars, setHistoryBars] = useState<HistoricalBar[]>([]);
   const [feedStatus, setFeedStatus] = useState<'LIVE' | 'UNAVAILABLE'>('UNAVAILABLE');
 
   // High-frequency tick buffering: ticks arrive every 30-120ms. Buffering them and
@@ -185,7 +189,8 @@ export const App: React.FC = () => {
         instrumentRef.current = data.instrument;
         if (typeof data.deepTradeThresholdUsd === 'number') setDeepTradeThresholdUsd(data.deepTradeThresholdUsd);
         if (data.slaves) setSlaves(data.slaves);
-        if (data.historySource) setHistorySource(data.historySource);
+        setHistorySource(data.historySource ?? 'NONE');
+        setHistoryBars(data.historyBars ?? []);
         if (data.feedStatus) setFeedStatus(data.feedStatus);
         if (data.timeframe) {
           timeframeRef.current = data.timeframe;
@@ -547,7 +552,10 @@ export const App: React.FC = () => {
           <div className="flex-1 min-h-0 relative">
             <FootprintCanvas
               bars={bars}
-              currentPrice={currentPrice}
+              historyBars={historyBars}
+              isLive={feedStatus === 'LIVE'}
+              currentPrice={feedStatus === 'LIVE' ? currentPrice :
+                (bars[bars.length - 1]?.close ?? historyBars[historyBars.length - 1]?.close ?? currentPrice)}
               vwapPoints={vwapPoints}
               deepTrades={deepTrades}
               absorptions={absorptions}
@@ -604,22 +612,23 @@ export const App: React.FC = () => {
         progress={replayProgress}
         symbol={symbol}
         isCrypto={symbol === 'BTCUSDT'}
+        feedStatus={feedStatus}
         historySource={historySource}
         gexSource={gexProfile?.dataSource}
       />
 
       {/* Real-only guard: never render fabricated market data for feedless instruments */}
-      {feedStatus === 'UNAVAILABLE' && (
+      {feedStatus === 'UNAVAILABLE' && bars.length === 0 && historyBars.length === 0 && (
         <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none">
           <div className="max-w-[560px] mx-4 px-5 py-4 rounded-lg border border-amber-500/40 bg-brand-surface/95 shadow-2xl text-center space-y-2">
             <div className="text-sm font-bold text-amber-400">FEED: UNAVAILABLE — {symbol}</div>
             <div className="text-[11px] text-slate-300">
-              No licensed real-time market-data vendor is configured for this instrument. DeepChart is real-only: it
+              Real-time market data is unavailable (configuration, entitlement or connection). DeepChart is real-only: it
               will not display simulated ticks, generated depth, a reconstructed footprint or a synthetic volume
               profile.
             </div>
             <div className="text-[10px] text-slate-500">
-              Connect a licensed vendor (Databento, Rithmic, Tradovate, IBKR…) to stream futures. BTCUSDT is live today.
+              Configure Tradovate API access and market-data permissions for futures. BTCUSDT uses the public Binance feed.
             </div>
           </div>
         </div>

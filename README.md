@@ -6,7 +6,7 @@
 
 | Kênh dữ liệu | Nguồn | Ghi chú |
 |---|---|---|
-| Futures CME (ES, NQ, YM, RTY, GC, CL, NG) | ⚠️ **SIMULATED** (`cmeFuturesFeed.ts`) | Random-walk + depth 30 mức mô phỏng Globex. Cắm Databento/Rithmic/Tradovate/IBKR để thành dữ liệu thật |
+| Futures CME (ES, NQ, YM, RTY, GC, CL, NG) | ✅ **THẬT** khi cắm vendor — đặt `FUTURES_PROVIDER=tradovate` | Tradovate REST auth + `md/subscribequote` (prints, best bid/offer) + `md/subscribedom` (full ladder). **Chưa cắm vendor ⇒ `FEED: UNAVAILABLE`, tuyệt đối không mô phỏng.** Databento đã khai báo nhưng từ chối đoán wire format DBN |
 | Crypto `BTCUSDT` | ✅ **LIVE** | Binance Futures `aggTrade` + `depth20`, có auto-reconnect |
 | Gamma Exposure (GEX) | ✅ **THẬT (delayed)** | Tính từ chain quyền chọn **CBOE delayed** miễn phí (gamma + open interest thật, trễ ~15 phút). UI gắn badge `CBOE DELAYED`; tự fallback về mô hình mô phỏng nếu không lấy được chain |
 | Options Flow (Sweep/Block) | ⚠️ **SIMULATED** | Sinh mỗi 12s; UI gắn badge `SIMULATED` |
@@ -88,9 +88,33 @@ pnpm dev
 | `pnpm typecheck` | `tsc --noEmit` cho cả hai package |
 | `pnpm lint` | `oxlint` cho client (đang ở mức 0 warning) |
 | `pnpm verify` | Smoke test E2E protocol (cần server đang chạy ở `:8080`) |
-| `pnpm verify:p0` | **Bộ 8 test P0 tự dựng server riêng ở `:8089`** (replay, lệnh chờ, huỷ lệnh, cap, notional, STEP/SET_SPEED, breach/reset) |
+| `pnpm verify:p0` | **Bộ 13 test P0 tự dựng server riêng ở `:8089`** (replay, lệnh chờ, huỷ lệnh, cap, notional, STEP/SET_SPEED, breach/reset) |
+| `pnpm verify:feed` | Test tầng market-data (validator, fail-closed, vendor refusal) |
+| `pnpm verify:tradovate` | Test offline adapter và chart history Tradovate: protocol, tick/DOM, OHLC, timeout/hủy yêu cầu, dữ liệu sai, fail-closed |
+| `pnpm verify:chart-smoke` | Sau `pnpm build`: boot bản build và kiểm tra HTTP/WS, đổi mã/khung, history rỗng khi thiếu credential |
+| `pnpm verify:lifecycle` | 24 test vòng đời feed (chuyển symbol, chống dữ liệu cũ lọt vào phiên mới) |
+| `pnpm verify:types` | Chống drift giao thức WebSocket giữa server và client |
 
 Cấu hình qua biến môi trường (xem `.env.example`): `PORT`, `HOST` (mặc định `127.0.0.1` — chỉ mở ra LAN khi bạn đặt `0.0.0.0` và hiểu rằng **hiện chưa có auth**), `VITE_WS_URL`, `DEMO` (seed dữ liệu mẫu), `DEV_HOOKS` (cho phép `SET_PROP_CONFIG` khi test), `TEST_PORT`.
+
+Dữ liệu futures (server-side, không bao giờ lộ ra log/browser): `FUTURES_PROVIDER=none|tradovate|databento`, `TRADOVATE_ENV=demo|live`, `TRADOVATE_USERNAME`, `TRADOVATE_PASSWORD`, `TRADOVATE_APP_ID`, `TRADOVATE_APP_VERSION`, `TRADOVATE_CID`, `TRADOVATE_SEC`, `TRADOVATE_SYMBOL` (ghim tháng cụ thể, ví dụ `ESZ6`), `TRADOVATE_USE_MICRO=1` (stream MES/MNQ/M2K/MGC/MCL).
+
+> **Lưu ý về `side` của Tradovate:** vendor **không** phát cờ aggressor. DeepChart **không đoán 50/50**: side được suy ra bằng quote rule (Lee–Ready) từ chính `Bid`/`Offer` của vendor, fallback sang tick rule; nếu vẫn không xác định được thì **in ra bị loại bỏ** và số lượng được ghi rõ trong lý do trạng thái (`N print(s) dropped: aggressor undecidable`).
+
+### Dữ liệu chart futures
+- Chọn khung **1m hoặc 5m**: server yêu cầu tối đa **300 nến OHLC thật** qua Tradovate `md/getchart`, trước thời điểm bắt đầu phiên live. Số nến thực nhận tùy quyền dữ liệu và phản hồi vendor.
+- Nến lịch sử được vẽ riêng, không có ô footprint. Không tái tạo tick, POC, CVD, VWAP hoặc volume profile từ OHLC; các chỉ số orderflow chỉ dùng tick thu được.
+- Khung **1s/5s/15s** hiện tích lũy tick live, chưa có backfill futures theo giây.
+- Đổi mã/khung sẽ hủy yêu cầu history cũ; response sai subscription không được nhập vào chart. Thiếu quyền, throttle hoặc lỗi kết nối có thể để history trống; không sinh dữ liệu thay thế.
+- Badge **HISTORY: REAL BARS** cho biết có nến lịch sử; không đồng nghĩa **FEED: REALTIME**. Khi mất live, chart vẫn xem được history nhưng lệnh bị chặn theo trạng thái feed.
+- Cần tài khoản có API access và quyền market data Tradovate. Chỉ thêm code hoặc đặt `FUTURES_PROVIDER=tradovate` không cấp quyền dữ liệu. Chưa xác nhận đường dữ liệu với tài khoản vendor thật; test tự động dùng socket giả lập.
+
+Server đọc **biến môi trường của process**, không tự nạp file `.env`. Với Node hỗ trợ `--env-file`, sau khi điền file `.env` ở thư mục gốc:
+```powershell
+pnpm build
+node --env-file=.env server/dist/index.js
+```
+Chạy lệnh trong thư mục gốc dự án. Không commit `.env` hoặc chia sẻ credential; không phân phối lại dữ liệu licensed nếu chưa được vendor cho phép.
 
 ### Giao thức WebSocket (tóm tắt)
 - **Client → Server**: `SUBSCRIBE` (symbol + timeframe), `DOM_ORDER` (MARKET/LIMIT/CANCEL/FLATTEN, kèm `orderId` khi huỷ từng lệnh), `REPLAY_CONTROL` (START/PAUSE/SEEK/SET_SPEED/STEP), `UPDATE_COPIER`, `SET_PROP_TRAILING_MODE`, `RESET_PROP_ACCOUNT`, `SET_PROP_CONFIG` (chỉ khi `DEV_HOOKS=1`).
@@ -131,10 +155,10 @@ docker run -p 8080:8080 deepchart
 ### ⚖️ Miễn trừ trách nhiệm
 - DeepChart là công cụ **giáo dục/nghiên cứu**, **không phải lời khuyên đầu tư**.
 - Mọi lệnh trong app là **mô phỏng nội bộ** (không gửi tới broker/sàn thật).
-- Dữ liệu crypto (Binance) là thời gian thực; **dữ liệu quyền chọn CBOE là delayed ~15 phút**; futures mặc định là mô hình mô phỏng trừ khi bạn cắm feed thật có license.
+- Dữ liệu crypto (Binance) là thời gian thực; **dữ liệu quyền chọn CBOE là delayed ~15 phút**; futures cần feed có license, mặc định **UNAVAILABLE** (không mô phỏng).
 - Tôn trọng điều khoản của nhà cung cấp dữ liệu khi triển khai công khai.
 
 ### Roadmap dữ liệu thật
-1. `DataFeedCallbacks` đã sẵn sàng: thêm `databentoFeed.ts` / `rithmicFeed.ts` / `tradovateFeed.ts` và fallback về simulator khi thiếu key.
+1. Hoàn thiện các vendor còn lại qua `MarketDataFeed`; Tradovate đã có quote/DOM và nến lịch sử. Không fallback sang simulator khi thiếu key.
 2. GEX/Options Flow: nối CBOE OI / ORATS / dxFeed / Tradier rồi đổi `dataSource` sang `'LIVE'` (UI tự bỏ badge `SIMULATED`).
 3. Trade Copier: thay engine mô phỏng bằng API broker thật (cần auth + quản lý rủi ro theo account).
