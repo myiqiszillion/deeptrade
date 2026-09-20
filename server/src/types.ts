@@ -190,6 +190,8 @@ export type WSServerMessage =
       propState?: PropAccountState;
       propConfig?: PropAccountConfig;
       deepTradeThresholdUsd?: number;
+      slaves?: SlaveAccount[];
+      timeframe?: string;
     }
   | { type: 'TICK'; tick: Tick }
   | { type: 'BAR_UPDATE'; bar: FootprintBar }

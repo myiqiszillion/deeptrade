@@ -54,6 +54,12 @@ const POPULAR_FUTURES = [
   { symbol: 'BTCUSDT', name: 'Bitcoin Perpetual' },
 ];
 
+/** Insert or replace a footprint bar, keeping the series ordered by bar open time. */
+function mergeBar(bars: FootprintBar[], bar: FootprintBar): FootprintBar[] {
+  const next = bars.some((b) => b.id === bar.id) ? bars.map((b) => (b.id === bar.id ? bar : b)) : [...bars, bar];
+  return next.sort((a, b) => a.time - b.time);
+}
+
 export const App: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [symbol, setSymbol] = useState('ES');
@@ -116,6 +122,8 @@ export const App: React.FC = () => {
   const pendingTicksRef = useRef<Tick[]>([]);
   const lastPriceRef = useRef<number | null>(null);
   const symbolRef = useRef('ES');
+  const desiredSymbolRef = useRef('ES');
+  const timeframeRef = useRef('1m');
 
   const pushNotice = (kind: 'ok' | 'error', text: string) => {
     const id = Date.now() + Math.random();
@@ -132,21 +140,30 @@ export const App: React.FC = () => {
   const [showVWAP, setShowVWAP] = useState(true);
   const [showImbalances, setShowImbalances] = useState(true);
   const [showDeltaNumbers, setShowDeltaNumbers] = useState(true);
+  const [timeframe, setTimeframe] = useState('1m');
 
   // Modals
   const [isCopierOpen, setIsCopierOpen] = useState(false);
   const [isJournalOpen, setIsJournalOpen] = useState(false);
   const [trades, setTrades] = useState<JournalTrade[]>([]);
-  const [slaves, setSlaves] = useState<SlaveAccount[]>([
-    { id: 'sub_1', name: 'Sub-Account #1 (Apex $50K)', multiplier: 1.0, enabled: true, status: 'connected' },
-    { id: 'sub_2', name: 'Sub-Account #2 (Topstep $100K)', multiplier: 0.5, enabled: true, status: 'connected' },
-  ]);
+  const [slaves, setSlaves] = useState<SlaveAccount[]>([]);
 
   // Connect WebSocket & Register Listeners
   useEffect(() => {
     wsClient.setListeners({
       onConnectionChange: (connected) => setIsConnected(connected),
       onInitState: (data) => {
+        // After a reconnect the server may be back on its default contract. Ask it to
+        // switch instead of silently reverting the UI to another instrument.
+        if (data.symbol !== desiredSymbolRef.current) {
+          wsClient.subscribe(
+            desiredSymbolRef.current,
+            desiredSymbolRef.current === 'BTCUSDT' ? 'binance' : 'cme',
+            timeframeRef.current
+          );
+          return;
+        }
+
         // A symbol switch (or reconnect) must reset per-instrument market state,
         // otherwise bars/tape from the previous contract stay on screen.
         if (data.symbol !== symbolRef.current) {
@@ -161,6 +178,11 @@ export const App: React.FC = () => {
         setSymbol(data.symbol);
         setInstrument(data.instrument);
         if (typeof data.deepTradeThresholdUsd === 'number') setDeepTradeThresholdUsd(data.deepTradeThresholdUsd);
+        if (data.slaves) setSlaves(data.slaves);
+        if (data.timeframe) {
+          timeframeRef.current = data.timeframe;
+          setTimeframe(data.timeframe);
+        }
         setBars(data.bars);
         setOrderbook(data.orderbook);
         setVolumeProfile(data.volumeProfile);
@@ -179,20 +201,14 @@ export const App: React.FC = () => {
         lastPriceRef.current = tick.price;
       },
       onBarUpdate: (bar) => {
-        setBars((prev) => {
-          if (prev.length === 0) return [bar];
-          const lastIdx = prev.length - 1;
-          if (prev[lastIdx].id === bar.id) {
-            const updated = [...prev];
-            updated[lastIdx] = bar;
-            return updated;
-          }
-          return [...prev, bar];
-        });
+        setBars((prev) => mergeBar(prev, bar));
         setCurrentCVD(bar.cvd);
       },
       onBarClose: (bar) => {
-        setBars((prev) => [...prev.filter((b) => b.id !== bar.id), bar]);
+        // A close can arrive for a bar that is no longer the last one, so merge by id and
+        // keep the series ordered by open time.
+        setBars((prev) => mergeBar(prev, bar));
+        setCurrentCVD(bar.cvd);
       },
       onOrderbookUpdate: (book) => {
         setOrderbook(book);
@@ -279,9 +295,17 @@ export const App: React.FC = () => {
   }, []);
 
   const handleSelectSymbol = (sym: string) => {
+    desiredSymbolRef.current = sym;
     setSymbol(sym);
     const src = sym === 'BTCUSDT' ? 'binance' : 'cme';
-    wsClient.subscribe(sym, src);
+    wsClient.subscribe(sym, src, timeframeRef.current);
+  };
+
+  const handleTimeframeChange = (tf: string) => {
+    timeframeRef.current = tf;
+    setTimeframe(tf);
+    const src = desiredSymbolRef.current === 'BTCUSDT' ? 'binance' : 'cme';
+    wsClient.subscribe(desiredSymbolRef.current, src, tf);
   };
 
   const handleCancelOrder = (orderId: string) => {
@@ -358,6 +382,25 @@ export const App: React.FC = () => {
           >
             Delta Bar
           </button>
+
+          <div className="h-4 w-px bg-brand-border" />
+
+          {/* Footprint bar timeframe (server rebuilds the bar engine) */}
+          <div className="flex items-center gap-1">
+            <span className="text-slate-500 text-[10px]">TF</span>
+            {['1s', '5s', '15s', '1m', '5m'].map((tf) => (
+              <button
+                key={tf}
+                onClick={() => handleTimeframeChange(tf)}
+                className={`px-1.5 py-0.5 rounded font-mono text-[10px] ${
+                  timeframe === tf ? 'bg-amber-500 text-black font-bold' : 'text-slate-400 hover:text-white'
+                }`}
+                title={`Footprint bar duration: ${tf}`}
+              >
+                {tf}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Right: Panels & Tool Toggles */}

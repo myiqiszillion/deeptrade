@@ -208,6 +208,7 @@ export interface GEXProfile {
   regime: 'POSITIVE_GAMMA' | 'NEGATIVE_GAMMA';
   levels: GEXStrikeLevel[];
   timestamp: number;
+  dataSource: 'SIMULATED' | 'LIVE';
 }
 
 export interface OptionsFlowTrade {
@@ -224,6 +225,7 @@ export interface OptionsFlowTrade {
   price: number;
   premiumUsd: number;
   spotPrice: number;
+  source: 'SIMULATED' | 'LIVE';
 }
 
 export type TrailingMode = 'INTRADAY_PEAK' | 'END_OF_DAY';
@@ -296,6 +298,8 @@ export type WSServerMessage =
       propState?: PropAccountState;
       propConfig?: PropAccountConfig;
       deepTradeThresholdUsd?: number;
+      slaves?: SlaveAccount[];
+      timeframe?: string;
     }
   | { type: 'TICK'; tick: Tick }
   | { type: 'BAR_UPDATE'; bar: FootprintBar }

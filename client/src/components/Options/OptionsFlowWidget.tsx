@@ -14,6 +14,12 @@ export const OptionsFlowWidget: React.FC<OptionsFlowWidgetProps> = ({ flowTrades
         <div className="flex items-center gap-1.5 font-bold text-slate-200">
           <Flame size={14} className="text-rose-400" />
           <span>OPTIONS FLOW SCANNER</span>
+          <span
+            className="text-[9px] px-1 py-0.5 rounded bg-slate-700 text-slate-300 font-normal"
+            title="Synthetic sweep/block tape — not a live options-flow provider"
+          >
+            SIMULATED
+          </span>
         </div>
         <span className="text-[10px] px-1.5 py-0.5 bg-rose-500/20 text-rose-300 rounded font-bold">
           Whale Sweeps &gt; $100K

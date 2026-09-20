@@ -37,6 +37,8 @@ export interface WSListeners {
     propState?: PropAccountState;
     propConfig?: PropAccountConfig;
     deepTradeThresholdUsd?: number;
+    slaves?: SlaveAccount[];
+    timeframe?: string;
   }) => void;
   onTick?: (tick: Tick) => void;
   onBarUpdate?: (bar: FootprintBar) => void;
@@ -64,6 +66,7 @@ export class DeepChartWSClient {
   private listeners: WSListeners = {};
   private isConnected = false;
   private reconnectTimer: any = null;
+  private intentionalClose = false;
 
   constructor(url = 'ws://localhost:8080') {
     this.url = url;
@@ -74,7 +77,15 @@ export class DeepChartWSClient {
   }
 
   public connect() {
+    this.intentionalClose = false;
     if (this.ws) {
+      // Detach handlers from the previous socket first: otherwise its close event would
+      // schedule a reconnect and leave two live connections (double messages / double
+      // journal entries). React StrictMode double-mounts effects in dev, so this matters.
+      this.ws.onopen = null;
+      this.ws.onmessage = null;
+      this.ws.onclose = null;
+      this.ws.onerror = null;
       this.ws.close();
     }
 
@@ -154,6 +165,10 @@ export class DeepChartWSClient {
       this.ws.onclose = () => {
         this.isConnected = false;
         this.listeners.onConnectionChange?.(false);
+        if (this.intentionalClose) {
+          console.log('[DeepChart WS] Disconnected (intentional).');
+          return;
+        }
         console.log('[DeepChart WS] Disconnected. Reconnecting in 2s...');
         this.reconnectTimer = setTimeout(() => this.connect(), 2000);
       };
@@ -182,11 +197,11 @@ export class DeepChartWSClient {
     });
   }
 
-  public subscribe(symbol: string, source?: 'binance' | 'simulator' | 'cme') {
+  public subscribe(symbol: string, source?: 'binance' | 'simulator' | 'cme', timeframe?: string) {
     this.send({
       type: 'SUBSCRIBE',
       symbol,
-      timeframe: '1m',
+      timeframe: timeframe || '1m',
       source,
     });
   }
@@ -236,8 +251,13 @@ export class DeepChartWSClient {
   }
 
   public disconnect() {
+    this.intentionalClose = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.ws) {
+      this.ws.onopen = null;
+      this.ws.onmessage = null;
+      this.ws.onclose = null;
+      this.ws.onerror = null;
       this.ws.close();
       this.ws = null;
     }

@@ -88,10 +88,10 @@ async function runE2ETest() {
 
   console.log('\n======================================================');
   console.log('🎉 ALL PROP FIRM & FUTURES ENGINES VERIFIED:');
-  console.log('1. US Futures (ES, NQ, YM, RTY, GC, CL, NG): PASS');
-  console.log('2. CME Globex L2 Depth & Real Tick Pipeline: PASS');
-  console.log('3. Gamma Exposure (GEX) Engine (Call/Put Walls, Zero Gamma): PASS');
-  console.log('4. Options Flow Whale Scanner (Sweeps/Blocks): PASS');
+  console.log('1. US Futures (ES, NQ, YM, RTY, GC, CL, NG) instrument specs: PASS');
+  console.log('2. Simulated CME Globex L2 + tick pipeline (engines are real, feed is synthetic): PASS');
+  console.log('3. Gamma Exposure (GEX) Engine (Call/Put Walls, Zero Gamma) [SIMULATED source]: PASS');
+  console.log('4. Options Flow Whale Scanner (Sweeps/Blocks) [SIMULATED source]: PASS');
   console.log('5. Prop Firm Trailing Drawdown & Daily Loss Safeguards: PASS');
   console.log('6. Contract Limits & Consistency Rule (30/40%): PASS');
   console.log('7. Multi-Account Trade Copier & Automated Journal: PASS');

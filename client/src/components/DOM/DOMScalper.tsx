@@ -90,7 +90,12 @@ export const DOMScalper: React.FC<DOMScalperProps> = ({
             <Lock size={10} /> LOCKED OUT
           </span>
         ) : (
-          <span className="text-[10px] px-1.5 py-0.5 bg-emerald-500/20 text-emerald-400 rounded">Real L2 Feed</span>
+          <span
+            className="text-[10px] px-1.5 py-0.5 bg-emerald-500/20 text-emerald-400 rounded"
+            title={symbol === 'BTCUSDT' ? 'Live Binance depth stream' : 'Simulated CME depth generator'}
+          >
+            {symbol === 'BTCUSDT' ? 'Live L2' : 'Simulated L2'}
+          </span>
         )}
       </div>
 

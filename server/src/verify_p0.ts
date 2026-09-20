@@ -29,18 +29,17 @@ function assertPortFree(port: number): Promise<void> {
 async function startServer(): Promise<ChildProcess> {
   console.log(`[verify_p0] Starting test server on port ${TEST_PORT} with DEV_HOOKS=1...`);
   const serverPath = path.resolve(__dirname, 'index.ts');
-  const tsxBin = process.platform === 'win32'
-    ? path.resolve(__dirname, '../node_modules/.bin/tsx.cmd')
-    : path.resolve(__dirname, '../node_modules/.bin/tsx');
+  // Run tsx through node directly instead of the .cmd shim: spawning a shell wrapper
+  // triggers Node's DEP0190 warning and adds an extra cmd.exe layer that has to be killed.
+  const tsxCli = path.resolve(__dirname, '../node_modules/tsx/dist/cli.mjs');
 
-  const proc = spawn(tsxBin, [serverPath], {
+  const proc = spawn(process.execPath, [tsxCli, serverPath], {
     env: {
       ...process.env,
       PORT: TEST_PORT.toString(),
       DEV_HOOKS: '1',
       DEMO: '0',
     },
-    shell: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -67,7 +66,9 @@ async function startServer(): Promise<ChildProcess> {
     });
 
     proc.stderr?.on('data', (data) => {
-      console.error(`[Server stderr] ${data}`);
+      // Server rejections/warnings are expected during these tests; route them to stdout
+      // so piping the suite output never trips PowerShell's NativeCommandError handling.
+      console.log(`[server] ${data.toString().trim()}`);
     });
 
     // Fail fast instead of silently testing a stale server that already owns the port.
@@ -93,9 +94,10 @@ async function startServer(): Promise<ChildProcess> {
 function killServerTree(proc: ChildProcess | null) {
   if (!proc || proc.killed || proc.pid === undefined) return;
   if (process.platform === 'win32') {
-    // spawn(..., { shell: true }) wraps the process in cmd.exe on Windows, so killing the
-    // direct child can leave node/tsx holding the test port (EADDRINUSE on the next run).
+    // tsx is spawned via node directly (no shell wrapper), but a taskkill /T still guards
+    // against any grandchild process holding the test port.
     spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { stdio: 'ignore' });
+    proc.kill('SIGKILL');
   } else {
     proc.kill('SIGKILL');
   }
@@ -103,7 +105,7 @@ function killServerTree(proc: ChildProcess | null) {
 
 async function runVerifyP0() {
   console.log('======================================================');
-  console.log('🧪 RUNNING DEEPCHART P0 VERIFICATION SUITE (8 TESTS)');
+  console.log('🧪 RUNNING DEEPCHART P0 VERIFICATION SUITE (9 TESTS)');
   console.log('======================================================\n');
 
   let serverProc: ChildProcess | null = null;
@@ -451,8 +453,28 @@ async function runVerifyP0() {
     console.log(`RESET_PROP_ACCOUNT verified: isLockedOut = ${resetState.state.isLockedOut}, dailyLossRemaining = ${resetState.state.dailyLossRemaining}`);
     console.log('✅ TEST 8 PASSED: Lockout clears resting orders, fires once, and rejects subsequent orders.');
 
+    // ==========================================
+    // TEST 9: Instrument + timeframe switch returns a fresh INIT_STATE
+    // ==========================================
+    console.log('\n--- TEST 9: SUBSCRIBE symbol/timeframe -> fresh INIT_STATE ---');
+    ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'NQ', timeframe: '15s', source: 'cme' }));
+
+    const switched = await waitForMessage(
+      (m) => m.type === 'INIT_STATE' && m.symbol === 'NQ' && m.timeframe === '15s'
+    );
+    console.log(
+      `Switched to ${switched.symbol} @ ${switched.timeframe} (pointValue=${switched.instrument.pointValue}, tickSize=${switched.instrument.tickSize}, deepTradeThreshold=$${switched.deepTradeThresholdUsd})`
+    );
+    if (switched.instrument?.pointValue !== 20 || switched.instrument?.tickSize !== 0.25) {
+      throw new Error('TEST 9 FAILED: instrument specs were not updated for the new contract.');
+    }
+    if (!switched.bars || !switched.orderbook) {
+      throw new Error('TEST 9 FAILED: INIT_STATE after a switch is missing market state.');
+    }
+    console.log('✅ TEST 9 PASSED: symbol + timeframe switch returns a coherent snapshot.');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 8 P0 TEST CASES PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 9 P0 TEST CASES PASSED SUCCESSFULLY!');
     console.log('======================================================\n');
   } finally {
     if (ws && ws.readyState === WebSocket.OPEN) {

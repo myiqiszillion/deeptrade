@@ -9,7 +9,6 @@ interface GEXPanelProps {
 
 export const GEXPanel: React.FC<GEXPanelProps> = ({ profile, currentPrice }) => {
   const [show0DteOnly, setShow0DteOnly] = useState(false);
-
   if (!profile) {
     return (
       <div className="w-80 h-full border-l border-brand-border bg-brand-surface p-4 text-slate-500 text-center flex flex-col justify-center text-xs">
@@ -29,6 +28,14 @@ export const GEXPanel: React.FC<GEXPanelProps> = ({ profile, currentPrice }) => 
         <div className="flex items-center gap-1.5 font-bold text-slate-200">
           <Shield size={14} className="text-amber-400" />
           <span>GAMMA EXPOSURE (GEX)</span>
+          {profile.dataSource === 'SIMULATED' && (
+            <span
+              className="text-[9px] px-1 py-0.5 rounded bg-slate-700 text-slate-300 font-normal"
+              title="Synthetic dealer-gamma model — not a live OPRA/open-interest feed"
+            >
+              SIMULATED
+            </span>
+          )}
         </div>
         <span className="text-[10px] px-1.5 py-0.5 bg-brand-bg text-amber-400 rounded font-bold">
           {profile.underlying}

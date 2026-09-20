@@ -43,6 +43,16 @@ let lastPropStateUpdate = 0;
 let lastOrderbookUpdate = 0;
 let lastBarUpdate = 0;
 let lastSpeedOfTapeUpdate = 0;
+
+// Supported footprint bar durations; the client picks one via SUBSCRIBE.timeframe.
+const TIMEFRAMES: Record<string, number> = {
+  '1s': 1000,
+  '5s': 5000,
+  '15s': 15000,
+  '1m': 60000,
+  '5m': 300000,
+};
+let currentTimeframe = '1m';
 let cachedBook: OrderbookSnapshot | null = null;
 let cachedBookTime = 0;
 
@@ -153,7 +163,12 @@ const callbacks: DataFeedCallbacks = {
 
     // 6. Process Tape, Deep Trades & Absorption
     const currentBook = getBook();
-    const { speed, deepTrade, absorption } = tape.processTick(tick, currentBook, currentInstrument.pointValue);
+    const { speed, deepTrade, absorption } = tape.processTick(
+      tick,
+      currentBook,
+      currentInstrument.pointValue,
+      currentInstrument.tickSize
+    );
 
     broadcast({ type: 'TICK', tick });
     if (now - lastSpeedOfTapeUpdate > 250) {
@@ -333,6 +348,17 @@ setInterval(() => {
   }
 }, 500);
 
+// Refresh Gamma Exposure periodically so walls / zero-gamma stay alive instead of
+// freezing at their boot values.
+setInterval(() => {
+  gex.refreshAll();
+  const underlying = currentInstrument.underlyingIndex || 'SPX';
+  const profile = gex.getProfile(underlying);
+  if (profile) {
+    broadcast({ type: 'GEX_UPDATE', profile });
+  }
+}, 30000);
+
 // Periodically emit simulated Options Flow Whale Trades
 setInterval(() => {
   const underlyings = ['SPX', 'SPY', 'NDX', 'QQQ'];
@@ -360,6 +386,7 @@ setInterval(() => {
     price,
     premiumUsd,
     spotPrice: spot,
+    source: 'SIMULATED' as const,
   };
 
   gex.addFlowTrade(flowTrade);
@@ -385,6 +412,8 @@ function buildInitState(): WSServerMessage {
     propState: propRisk.getState(),
     propConfig: propRisk.getConfig(),
     deepTradeThresholdUsd: computeDeepTradeThresholdUsd(),
+    slaves: copier.getSlaves(),
+    timeframe: currentTimeframe,
   };
 }
 
@@ -414,6 +443,14 @@ wss.on('connection', (ws: WebSocket) => {
         } else if (msg.source && msg.source !== currentFeedType) {
           startFeed(msg.source);
         }
+
+        // Timeframe change: rebuild the footprint engine with the requested bar duration.
+        if (msg.timeframe && msg.timeframe !== currentTimeframe && TIMEFRAMES[msg.timeframe]) {
+          currentTimeframe = msg.timeframe;
+          footprint = new FootprintEngine(currentInstrument.tickSize, TIMEFRAMES[currentTimeframe], 3.0, 1.0);
+          console.log(`[DeepChart Server] Timeframe changed to ${currentTimeframe}`);
+          ws.send(JSON.stringify(buildInitState()));
+        }
       } else if (msg.type === 'DOM_ORDER') {
         if (msg.action === 'CANCEL') {
           if (msg.orderId) {
@@ -429,9 +466,13 @@ wss.on('connection', (ws: WebSocket) => {
           broadcastOpenOrders();
         } else if (msg.action === 'FLATTEN') {
           clearRestingOrders('FLATTEN');
-          const currentPrice = orderbook.getBestAsk() || currentInstrument.basePrice;
-          const execPrice = msg.price || currentPrice;
-          settleClosedTrades(execPrice);
+          // Exit at the mid price: a side-aware best-bid/best-ask would systematically
+          // penalise one direction and require per-trade handling.
+          const bestBid = orderbook.getBestBid();
+          const bestAsk = orderbook.getBestAsk();
+          const midPrice =
+            bestBid !== null && bestAsk !== null ? (bestBid + bestAsk) / 2 : currentInstrument.basePrice;
+          settleClosedTrades(msg.price && msg.price > 0 ? msg.price : midPrice);
           broadcast({ type: 'PROP_STATE_UPDATE', state: propRisk.getState() });
         } else if (msg.action === 'BUY' || msg.action === 'SELL') {
           const validation = propRisk.validateOrder(currentSymbol, msg.size, getPendingContracts());

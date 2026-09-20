@@ -2,8 +2,16 @@
 
 **DeepChart Prop Firm Edition** là nền tảng Web Terminal phân tích Orderflow, Footprint, DOM Scalping, Options Flow và Gamma Exposure (GEX) chuyên biệt cho giao dịch **Quỹ cấp vốn (Prop Firm: Topstep, Apex Trader Funding, MyFundedFutures, Bulenox, FTMO)**.
 
-Hệ thống được thiết kế với tiêu chuẩn:
-> **100% Real Tick & Level 2 Data.** Nói KHÔNG với Fake Footprint / Fake Volume Profile / Fake DOM.
+> **Đọc kỹ trước khi dùng:** Toàn bộ *engine* orderflow (Footprint, Volume Profile/TPO, DOM, CVD, VWAP, absorption, Speed of Tape) được tính **thật 100% từ dòng tick** — không vẽ lại từ nến 1m. Tuy nhiên **nguồn dữ liệu** hiện tại như sau:
+
+| Kênh dữ liệu | Nguồn | Ghi chú |
+|---|---|---|
+| Futures CME (ES, NQ, YM, RTY, GC, CL, NG) | ⚠️ **SIMULATED** (`cmeFuturesFeed.ts`) | Random-walk + depth 30 mức mô phỏng Globex. Cắm Databento/Rithmic/Tradovate/IBKR để thành dữ liệu thật |
+| Crypto `BTCUSDT` | ✅ **LIVE** | Binance Futures `aggTrade` + `depth20`, có auto-reconnect |
+| Gamma Exposure (GEX) | ⚠️ **SIMULATED** (`gexEngine.ts`) | Mô hình Gaussian + random, refresh mỗi 30s; UI gắn badge `SIMULATED` |
+| Options Flow (Sweep/Block) | ⚠️ **SIMULATED** | Sinh mỗi 12s; UI gắn badge `SIMULATED` |
+| Prop-firm risk | ✅ Tính thật từ lệnh khớp trong app | Chưa nối broker/API quỹ thật |
+| Trade Copier | ⚠️ Mô phỏng | 3 slave ảo, latency giả lập 10–35ms |
 
 ---
 
@@ -60,9 +68,36 @@ Hỗ trợ đầy đủ bảng thông số chuẩn (Tick size, Point value, Tick
 
 ## 🚀 Hướng Dẫn Khởi Chạy
 
+Cài dependencies (đã cấu hình pnpm workspace):
+```bash
+pnpm install
+```
+
 Khởi chạy cả Server và Client:
 ```bash
 pnpm dev
 ```
-- **Frontend Web Terminal**: [http://localhost:5173](http://localhost:5173)
+- **Frontend Web Terminal**: http://localhost:5173
 - **Backend WebSocket Server**: `ws://localhost:8080`
+
+### Scripts
+| Lệnh | Tác dụng |
+|---|---|
+| `pnpm dev` | Chạy song song server (`tsx watch`) + client (`vite`) |
+| `pnpm build` | Build server (`tsc` → `dist/`) và client (`vite build`) |
+| `pnpm typecheck` | `tsc --noEmit` cho cả hai package |
+| `pnpm lint` | `oxlint` cho client (đang ở mức 0 warning) |
+| `pnpm verify` | Smoke test E2E protocol (cần server đang chạy ở `:8080`) |
+| `pnpm verify:p0` | **Bộ 8 test P0 tự dựng server riêng ở `:8089`** (replay, lệnh chờ, huỷ lệnh, cap, notional, STEP/SET_SPEED, breach/reset) |
+
+Cấu hình qua biến môi trường (xem `.env.example`): `PORT`, `VITE_WS_URL`, `DEMO` (seed dữ liệu mẫu), `DEV_HOOKS` (cho phép `SET_PROP_CONFIG` khi test), `TEST_PORT`.
+
+### Giao thức WebSocket (tóm tắt)
+- **Client → Server**: `SUBSCRIBE` (symbol + timeframe), `DOM_ORDER` (MARKET/LIMIT/CANCEL/FLATTEN, kèm `orderId` khi huỷ từng lệnh), `REPLAY_CONTROL` (START/PAUSE/SEEK/SET_SPEED/STEP), `UPDATE_COPIER`, `SET_PROP_TRAILING_MODE`, `RESET_PROP_ACCOUNT`, `SET_PROP_CONFIG` (chỉ khi `DEV_HOOKS=1`).
+- **Server → Client**: `INIT_STATE` (gửi lại mỗi khi đổi symbol/timeframe), `TICK`, `BAR_UPDATE`, `BAR_CLOSE`, `ORDERBOOK_UPDATE`, `SPEED_OF_TAPE`, `DEEP_TRADE`, `ABSORPTION`, `OPEN_ORDERS`, `ORDER_ACK`, `ORDER_REJECT`, `JOURNAL_UPDATE`, `TRADE_COPIED`, `GEX_UPDATE`, `OPTIONS_FLOW`, `PROP_STATE_UPDATE`, `PROP_BREACH_ALERT`, `REPLAY_STATE`.
+- Băng thông được throttle: `ORDERBOOK_UPDATE`/`BAR_UPDATE` 100ms, `SPEED_OF_TAPE`/`PROP_STATE_UPDATE` 250ms, tick phía client được buffer 120ms trước khi render.
+
+### Roadmap dữ liệu thật
+1. `DataFeedCallbacks` đã sẵn sàng: thêm `databentoFeed.ts` / `rithmicFeed.ts` / `tradovateFeed.ts` và fallback về simulator khi thiếu key.
+2. GEX/Options Flow: nối CBOE OI / ORATS / dxFeed / Tradier rồi đổi `dataSource` sang `'LIVE'` (UI tự bỏ badge `SIMULATED`).
+3. Trade Copier: thay engine mô phỏng bằng API broker thật (cần auth + quản lý rủi ro theo account).

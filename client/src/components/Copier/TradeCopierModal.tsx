@@ -12,22 +12,32 @@ interface TradeCopierModalProps {
 export const TradeCopierModal: React.FC<TradeCopierModalProps> = ({
   isOpen,
   onClose,
-  slaves: initialSlaves,
+  slaves: serverSlaves,
 }) => {
-  const [slaves, setSlaves] = useState<SlaveAccount[]>(initialSlaves);
+  // Local overrides layered on top of the server-owned list. Mirroring props into state
+  // (setState inside an effect) is both a React anti-pattern and a staleness source.
+  const [overrides, setOverrides] = useState<Record<string, SlaveAccount>>({});
 
   if (!isOpen) return null;
 
-  const handleToggle = (id: string) => {
-    const updated = slaves.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s));
-    setSlaves(updated);
+  const slaves = serverSlaves.map((s) => overrides[s.id] ?? s);
+
+  const applyChange = (id: string, patch: Partial<SlaveAccount>) => {
+    const updated = serverSlaves.map((s) => {
+      const merged = overrides[s.id] ?? s;
+      return s.id === id ? { ...merged, ...patch } : merged;
+    });
+    setOverrides(Object.fromEntries(updated.map((s) => [s.id, s])));
     wsClient.updateCopier(updated);
   };
 
+  const handleToggle = (id: string) => {
+    const current = slaves.find((s) => s.id === id);
+    if (current) applyChange(id, { enabled: !current.enabled });
+  };
+
   const handleMultiplierChange = (id: string, multiplier: number) => {
-    const updated = slaves.map((s) => (s.id === id ? { ...s, multiplier } : s));
-    setSlaves(updated);
-    wsClient.updateCopier(updated);
+    applyChange(id, { multiplier });
   };
 
   return (
@@ -49,7 +59,7 @@ export const TradeCopierModal: React.FC<TradeCopierModalProps> = ({
           <div className="flex items-center gap-2">
             <ShieldCheck size={18} className="text-emerald-400" />
             <div>
-              <div className="font-bold text-slate-200">Master Account: Binance Futures Live (DeepChart)</div>
+              <div className="font-bold text-slate-200">Master Account: DeepChart Execution Bridge (simulated)</div>
               <div className="text-[11px] text-slate-500">Every market/limit order on DOM is mirrored instantly</div>
             </div>
           </div>

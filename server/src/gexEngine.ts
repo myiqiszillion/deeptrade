@@ -21,6 +21,8 @@ export interface GEXProfile {
   regime: 'POSITIVE_GAMMA' | 'NEGATIVE_GAMMA';
   levels: GEXStrikeLevel[];
   timestamp: number;
+  /** 'SIMULATED' = synthetic dealer gamma model, not a live OPRA/OI feed. */
+  dataSource: 'SIMULATED' | 'LIVE';
 }
 
 export interface OptionsFlowTrade {
@@ -37,6 +39,8 @@ export interface OptionsFlowTrade {
   price: number;
   premiumUsd: number;
   spotPrice: number;
+  /** 'SIMULATED' = synthetic tape, not a live options-flow provider. */
+  source: 'SIMULATED' | 'LIVE';
 }
 
 export class GEXEngine {
@@ -135,10 +139,25 @@ export class GEXEngine {
       regime,
       levels,
       timestamp: Date.now(),
+      dataSource: 'SIMULATED',
     };
 
     this.currentProfiles.set(underlying, profile);
     return profile;
+  }
+
+  /**
+   * Re-generate every tracked profile around a small random walk of its spot price.
+   * Called on a timer so GEX walls/flip stay "alive" instead of freezing at boot values.
+   */
+  public refreshAll(): GEXProfile[] {
+    const updated: GEXProfile[] = [];
+    for (const [underlying, profile] of this.currentProfiles.entries()) {
+      const drift = (Math.random() - 0.5) * 0.002; // +/- 10 bps per refresh
+      const nextSpot = Math.round(profile.spotPrice * (1 + drift) * 100) / 100;
+      updated.push(this.generateGexProfile(underlying, nextSpot));
+    }
+    return updated;
   }
 
   public getProfile(underlying: string): GEXProfile | undefined {
@@ -181,6 +200,7 @@ export class GEXEngine {
         price: 8.4,
         premiumUsd: 210000,
         spotPrice: 5860.5,
+        source: 'SIMULATED',
       },
       {
         id: 'flow_2',
@@ -196,6 +216,7 @@ export class GEXEngine {
         price: 1.85,
         premiumUsd: 925000,
         spotPrice: 585.2,
+        source: 'SIMULATED',
       },
       {
         id: 'flow_3',
@@ -211,6 +232,7 @@ export class GEXEngine {
         price: 1.15,
         premiumUsd: 368000,
         spotPrice: 495.4,
+        source: 'SIMULATED',
       },
       {
         id: 'flow_4',
@@ -226,6 +248,7 @@ export class GEXEngine {
         price: 12.2,
         premiumUsd: 488000,
         spotPrice: 5861.0,
+        source: 'SIMULATED',
       },
     ];
   }

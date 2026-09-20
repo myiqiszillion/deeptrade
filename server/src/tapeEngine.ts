@@ -22,7 +22,8 @@ export class TapeEngine {
   public processTick(
     tick: Tick,
     currentBook?: OrderbookSnapshot | null,
-    pointValue: number = 1
+    pointValue: number = 1,
+    tickSize: number = 0.01
   ): {
     speed: SpeedOfTapeData;
     deepTrade: DeepTrade | null;
@@ -93,8 +94,8 @@ export class TapeEngine {
     // Detect Sell Absorption (High aggressive selling absorbed by limit buy)
     if (priceData.sellVol >= this.absorptionVolumeThreshold) {
       const bestBid = currentBook?.bids[0]?.price;
-      // If selling occurred near best bid without breaking down
-      if (bestBid && Math.abs(tick.price - bestBid) <= 1.0) {
+      // Tolerance is tick-relative: 1.0 point would be 4 ticks on ES but 100 ticks on CL.
+      if (bestBid && Math.abs(tick.price - bestBid) <= tickSize * 1.5) {
         absorption = {
           id: `abs_${now}_${tick.price}`,
           timestamp: now,
@@ -110,8 +111,8 @@ export class TapeEngine {
     // Detect Buy Absorption (High aggressive buying absorbed by limit sell)
     if (priceData.buyVol >= this.absorptionVolumeThreshold) {
       const bestAsk = currentBook?.asks[0]?.price;
-      // If buying occurred near best ask without breaking up
-      if (bestAsk && Math.abs(tick.price - bestAsk) <= 1.0) {
+      // Tick-relative tolerance (see sell-absorption note above).
+      if (bestAsk && Math.abs(tick.price - bestAsk) <= tickSize * 1.5) {
         absorption = {
           id: `abs_${now}_${tick.price}`,
           timestamp: now,

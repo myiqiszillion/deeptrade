@@ -10,7 +10,13 @@ export class JournalEngine {
   }
 
   constructor() {
-    // Seed initial historical trades for demo / analysis
+    if (process.env.DEMO === '1') {
+      this.seedDemo();
+    }
+  }
+
+  /** Sample closed trades used only for UI demos (enable with DEMO=1). */
+  public seedDemo() {
     this.trades.push(
       {
         id: 'trade_seed_1',
@@ -49,6 +55,12 @@ export class JournalEngine {
         imbalanceContext: 'Single Print rejection + Unfinished High',
       }
     );
+  }
+
+  /** Wipe journal state (used by test suites and account resets). */
+  public reset() {
+    this.trades = [];
+    this.openTrades.clear();
   }
 
   public openTrade(
