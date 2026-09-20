@@ -21,8 +21,12 @@ export interface GEXProfile {
   regime: 'POSITIVE_GAMMA' | 'NEGATIVE_GAMMA';
   levels: GEXStrikeLevel[];
   timestamp: number;
-  /** 'SIMULATED' = synthetic dealer gamma model, not a live OPRA/OI feed. */
-  dataSource: 'SIMULATED' | 'LIVE';
+  /**
+   * 'SIMULATED'     = synthetic dealer-gamma model (fallback, no external data)
+   * 'CBOE_DELAYED'  = computed from CBOE's free delayed option chain (real gamma + OI)
+   * 'LIVE'          = reserved for a licensed real-time options feed
+   */
+  dataSource: 'SIMULATED' | 'LIVE' | 'CBOE_DELAYED';
 }
 
 export interface OptionsFlowTrade {
@@ -140,6 +144,137 @@ export class GEXEngine {
       levels,
       timestamp: Date.now(),
       dataSource: 'SIMULATED',
+    };
+
+    this.currentProfiles.set(underlying, profile);
+    return profile;
+  }
+
+  /**
+   * Build a GEX profile from a REAL option chain (CBOE delayed quotes).
+   *
+   * Standard dealer-gamma convention: dealers are assumed long call gamma and short put
+   * gamma, so net GEX = Σ(call gamma·OI) − Σ(put gamma·OI), converted to dollars per 1%
+   * underlying move via:  gamma × OI × 100 (contract multiplier) × spot² × 0.01
+   * Values are expressed in millions to match the units the UI already renders.
+   */
+  public buildFromChain(
+    underlying: string,
+    spotPrice: number,
+    rows: { strike: number; type: 'CALL' | 'PUT'; gamma: number; openInterest: number; volume: number; dte: number }[],
+    dataSource: GEXProfile['dataSource'] = 'CBOE_DELAYED'
+  ): GEXProfile {
+    const CONTRACT_MULTIPLIER = 100;
+    const MILLIONS = 1_000_000;
+    const round1 = (n: number) => Math.round(n * 10) / 10;
+
+    interface Bucket {
+      callGex: number;
+      putGex: number;
+      callOI: number;
+      putOI: number;
+      callVol: number;
+      putVol: number;
+      zeroDte: number;
+    }
+
+    const buckets = new Map<number, Bucket>();
+    for (const row of rows) {
+      if (!Number.isFinite(row.gamma) || !Number.isFinite(row.openInterest) || row.openInterest <= 0) continue;
+      const gexUsd = row.gamma * row.openInterest * CONTRACT_MULTIPLIER * spotPrice * spotPrice * 0.01;
+      const bucket =
+        buckets.get(row.strike) ?? { callGex: 0, putGex: 0, callOI: 0, putOI: 0, callVol: 0, putVol: 0, zeroDte: 0 };
+
+      if (row.type === 'CALL') {
+        bucket.callGex += gexUsd;
+        bucket.callOI += row.openInterest;
+        bucket.callVol += row.volume;
+      } else {
+        bucket.putGex += gexUsd;
+        bucket.putOI += row.openInterest;
+        bucket.putVol += row.volume;
+      }
+      if (row.dte === 0) bucket.zeroDte += row.type === 'CALL' ? gexUsd : -gexUsd;
+
+      buckets.set(row.strike, bucket);
+    }
+
+    // Keep a readable strike window around spot: the panel renders one row per strike and
+    // a 400-strike ladder would be unusable.
+    const allStrikes = [...buckets.keys()].sort((a, b) => a - b);
+    const nearStrikes = allStrikes.filter((s) => Math.abs(s - spotPrice) / spotPrice <= 0.05);
+    const usedStrikes = nearStrikes.length >= 10 ? nearStrikes : allStrikes.slice(0, 80);
+
+    const levels: GEXStrikeLevel[] = usedStrikes.map((strike) => {
+      const bucket = buckets.get(strike)!;
+      const callGex = bucket.callGex / MILLIONS;
+      const putGex = -bucket.putGex / MILLIONS;
+      return {
+        strike,
+        callGex: round1(callGex),
+        putGex: round1(putGex),
+        netGex: round1(callGex + putGex),
+        zeroDteGex: round1(bucket.zeroDte / MILLIONS),
+        callOI: bucket.callOI,
+        putOI: bucket.putOI,
+        callVol: bucket.callVol,
+        putVol: bucket.putVol,
+      };
+    });
+
+    let callWall = usedStrikes[0] ?? spotPrice;
+    let putWall = callWall;
+    let maxCallGex = -Infinity;
+    let maxPutGex = -Infinity;
+    let totalNetGex = 0;
+    let total0DteGex = 0;
+
+    for (const level of levels) {
+      if (level.callGex > maxCallGex) {
+        maxCallGex = level.callGex;
+        callWall = level.strike;
+      }
+      if (-level.putGex > maxPutGex) {
+        maxPutGex = -level.putGex;
+        putWall = level.strike;
+      }
+      totalNetGex += level.netGex;
+      total0DteGex += level.zeroDteGex;
+    }
+
+    // Zero-gamma flip: the strike where cumulative dealer gamma changes sign.
+    let cumulative = 0;
+    let zeroGammaFlip = spotPrice;
+    let flipFound = false;
+    for (const level of levels) {
+      const previous = cumulative;
+      cumulative += level.netGex;
+      if (!flipFound && previous < 0 && cumulative >= 0) {
+        zeroGammaFlip = level.strike;
+        flipFound = true;
+      }
+    }
+    if (!flipFound) {
+      for (let i = 1; i < levels.length; i++) {
+        if (levels[i - 1].netGex <= 0 && levels[i].netGex > 0) {
+          zeroGammaFlip = levels[i].strike;
+          break;
+        }
+      }
+    }
+
+    const profile: GEXProfile = {
+      underlying,
+      spotPrice,
+      callWall,
+      putWall,
+      zeroGammaFlip,
+      totalNetGex: round1(totalNetGex),
+      total0DteGex: round1(total0DteGex),
+      regime: totalNetGex >= 0 ? 'POSITIVE_GAMMA' : 'NEGATIVE_GAMMA',
+      levels,
+      timestamp: Date.now(),
+      dataSource,
     };
 
     this.currentProfiles.set(underlying, profile);

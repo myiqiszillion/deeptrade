@@ -8,7 +8,7 @@
 |---|---|---|
 | Futures CME (ES, NQ, YM, RTY, GC, CL, NG) | ⚠️ **SIMULATED** (`cmeFuturesFeed.ts`) | Random-walk + depth 30 mức mô phỏng Globex. Cắm Databento/Rithmic/Tradovate/IBKR để thành dữ liệu thật |
 | Crypto `BTCUSDT` | ✅ **LIVE** | Binance Futures `aggTrade` + `depth20`, có auto-reconnect |
-| Gamma Exposure (GEX) | ⚠️ **SIMULATED** (`gexEngine.ts`) | Mô hình Gaussian + random, refresh mỗi 30s; UI gắn badge `SIMULATED` |
+| Gamma Exposure (GEX) | ✅ **THẬT (delayed)** | Tính từ chain quyền chọn **CBOE delayed** miễn phí (gamma + open interest thật, trễ ~15 phút). UI gắn badge `CBOE DELAYED`; tự fallback về mô hình mô phỏng nếu không lấy được chain |
 | Options Flow (Sweep/Block) | ⚠️ **SIMULATED** | Sinh mỗi 12s; UI gắn badge `SIMULATED` |
 | Prop-firm risk | ✅ Tính thật từ lệnh khớp trong app | Chưa nối broker/API quỹ thật |
 | Trade Copier | ⚠️ Mô phỏng | 3 slave ảo, latency giả lập 10–35ms |
@@ -96,6 +96,43 @@ Cấu hình qua biến môi trường (xem `.env.example`): `PORT`, `HOST` (mặ
 - **Client → Server**: `SUBSCRIBE` (symbol + timeframe), `DOM_ORDER` (MARKET/LIMIT/CANCEL/FLATTEN, kèm `orderId` khi huỷ từng lệnh), `REPLAY_CONTROL` (START/PAUSE/SEEK/SET_SPEED/STEP), `UPDATE_COPIER`, `SET_PROP_TRAILING_MODE`, `RESET_PROP_ACCOUNT`, `SET_PROP_CONFIG` (chỉ khi `DEV_HOOKS=1`).
 - **Server → Client**: `INIT_STATE` (gửi lại mỗi khi đổi symbol/timeframe), `TICK`, `BAR_UPDATE`, `BAR_CLOSE`, `ORDERBOOK_UPDATE`, `SPEED_OF_TAPE`, `DEEP_TRADE`, `ABSORPTION`, `OPEN_ORDERS`, `ORDER_ACK`, `ORDER_REJECT`, `JOURNAL_UPDATE`, `TRADE_COPIED`, `GEX_UPDATE`, `OPTIONS_FLOW`, `PROP_STATE_UPDATE`, `PROP_BREACH_ALERT`, `REPLAY_STATE`.
 - Băng thông được throttle: `ORDERBOOK_UPDATE`/`BAR_UPDATE` 100ms, `SPEED_OF_TAPE`/`PROP_STATE_UPDATE` 250ms, tick phía client được buffer 120ms trước khi render.
+
+### 🌍 Chạy public / free cho mọi người
+
+Thiết kế để tự host miễn phí (Render, Fly.io, Railway, VPS nhỏ, Docker…):
+
+| Đặc điểm | Chi tiết |
+|---|---|
+| **1 port duy nhất** | Server serve luôn client build (`client/dist`) và WebSocket trên cùng cổng ⇒ chỉ cần expose `8080` |
+| **Tài khoản riêng cho mỗi người** | Mỗi kết nối có `TradingSession` riêng (journal, prop-risk, lệnh chờ, copier). Dữ liệu thị trường thì chia sẻ chung ⇒ không ai thấy lệnh của ai |
+| **Chống lạm dụng** | `MAX_SESSIONS` (mặc định 500), `MAX_MESSAGES_PER_SEC` (40/giây/client), `MAX_PAYLOAD_BYTES` (64 KB/frame), validate payload runtime (size/price/symbol) |
+| **Health check** | `GET /healthz` → `{status, uptimeSec, sessions, symbol, feed, gexSource}` |
+| **Không cần cấu hình** | Client production tự trỏ WebSocket về `window.location.host` — deploy ở đâu cũng chạy |
+
+**Cách chạy nhanh (1 port):**
+```bash
+pnpm install
+pnpm build                 # build server (tsc) + client (vite)
+HOST=0.0.0.0 node server/dist/index.js
+# → http://<host>:8080          (web terminal)
+# → http://<host>:8080/healthz  (health)
+```
+
+**Docker:**
+```bash
+docker build -t deepchart .
+docker run -p 8080:8080 deepchart
+```
+
+**Ví dụ Render/Fly:** build command `pnpm install && pnpm build`, start command `node server/dist/index.js`, env `HOST=0.0.0.0`, health check path `/healthz`.
+
+> ⚠️ **Chưa có authentication.** Mặc định server bind `127.0.0.1`. Nếu mở `HOST=0.0.0.0` cho công chúng, hãy đặt sau reverse proxy có rate-limit/TLS (Cloudflare, Caddy, nginx) — hoặc thêm lớp auth trước khi phát hành rộng rãi.
+
+### ⚖️ Miễn trừ trách nhiệm
+- DeepChart là công cụ **giáo dục/nghiên cứu**, **không phải lời khuyên đầu tư**.
+- Mọi lệnh trong app là **mô phỏng nội bộ** (không gửi tới broker/sàn thật).
+- Dữ liệu crypto (Binance) là thời gian thực; **dữ liệu quyền chọn CBOE là delayed ~15 phút**; futures mặc định là mô hình mô phỏng trừ khi bạn cắm feed thật có license.
+- Tôn trọng điều khoản của nhà cung cấp dữ liệu khi triển khai công khai.
 
 ### Roadmap dữ liệu thật
 1. `DataFeedCallbacks` đã sẵn sàng: thêm `databentoFeed.ts` / `rithmicFeed.ts` / `tradovateFeed.ts` và fallback về simulator khi thiếu key.

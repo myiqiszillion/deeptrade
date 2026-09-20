@@ -105,7 +105,7 @@ function killServerTree(proc: ChildProcess | null) {
 
 async function runVerifyP0() {
   console.log('======================================================');
-  console.log('🧪 RUNNING DEEPCHART P0 VERIFICATION SUITE (11 TESTS)');
+  console.log('🧪 RUNNING DEEPCHART P0 VERIFICATION SUITE (12 TESTS)');
   console.log('======================================================\n');
 
   let serverProc: ChildProcess | null = null;
@@ -525,8 +525,45 @@ async function runVerifyP0() {
     await waitForMessage((m) => m.type === 'ORDER_ACK' && m.action === 'FILLED' && m.orderId === 'clear_2');
     console.log('✅ TEST 11 PASSED: a cleared journal no longer consumes contract budget.');
 
+    // ==========================================
+    // TEST 12: Session isolation — the core requirement for a public server
+    // ==========================================
+    console.log('\n--- TEST 12: per-session isolation (2 clients) ---');
+    ws.send(JSON.stringify({ type: 'RESET_PROP_ACCOUNT' }));
+    await waitForMessage((m) => m.type === 'PROP_STATE_UPDATE' && m.state.openContractsCount === 0);
+
+    const ws2 = new WebSocket(WS_URL);
+    await new Promise<void>((resolve, reject) => {
+      ws2.on('open', () => resolve());
+      ws2.on('error', reject);
+    });
+    const ws2Messages: any[] = [];
+    ws2.on('message', (data) => ws2Messages.push(JSON.parse(data.toString())));
+    await sleep(800);
+
+    const accountEventsBefore = ws2Messages.filter((m) => m.type === 'JOURNAL_UPDATE' || m.type === 'ORDER_ACK').length;
+
+    ws.send(JSON.stringify({ type: 'DOM_ORDER', action: 'BUY', size: 1, orderType: 'MARKET', orderId: 'iso_1' }));
+    await waitForMessage((m) => m.type === 'ORDER_ACK' && m.action === 'FILLED' && m.orderId === 'iso_1');
+    await sleep(800);
+
+    const accountEventsAfter = ws2Messages.filter((m) => m.type === 'JOURNAL_UPDATE' || m.type === 'ORDER_ACK').length;
+    const marketTicks = ws2Messages.filter((m) => m.type === 'TICK').length;
+
+    if (accountEventsAfter !== accountEventsBefore) {
+      throw new Error(
+        `TEST 12 FAILED: client B saw ${accountEventsAfter - accountEventsBefore} of client A's account event(s).`
+      );
+    }
+    if (marketTicks === 0) {
+      throw new Error('TEST 12 FAILED: client B received no shared market data.');
+    }
+    console.log(`Client B received ${marketTicks} market ticks but 0 account events from client A.`);
+    ws2.close();
+    console.log('✅ TEST 12 PASSED: accounts are isolated while market data stays shared.');
+
     console.log('\n======================================================');
-    console.log('🎉 ALL 11 P0 TEST CASES PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 12 P0 TEST CASES PASSED SUCCESSFULLY!');
     console.log('======================================================\n');
   } finally {
     if (ws && ws.readyState === WebSocket.OPEN) {

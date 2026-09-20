@@ -1,3 +1,7 @@
+import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { readFile } from 'fs/promises';
+import { extname, resolve, sep } from 'path';
+import { fileURLToPath } from 'url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { BacktestReplayEngine } from './backtestEngine.js';
 import { BinanceFuturesFeed, DataFeedCallbacks } from './dataFeeds/binanceFeed.js';
@@ -6,12 +10,11 @@ import { SimulatorFeed } from './dataFeeds/simulatorFeed.js';
 import { FootprintEngine } from './footprintEngine.js';
 import { FUTURES_INSTRUMENTS, FuturesInstrument } from './futuresConfig.js';
 import { GEXEngine } from './gexEngine.js';
-import { JournalEngine } from './journalEngine.js';
+import { CboeOptionsProvider } from './dataFeeds/cboeOptionsFeed.js';
 import { OrderbookManager } from './orderbook.js';
 import { ProfileEngine } from './profileEngine.js';
-import { PropRiskEngine } from './propRiskEngine.js';
+import { MAX_SESSIONS, TradingSession } from './session.js';
 import { TapeEngine } from './tapeEngine.js';
-import { TradeCopierEngine } from './tradeCopier.js';
 import {
   JournalTrade,
   OrderbookSnapshot,
@@ -40,7 +43,8 @@ let restingOrders: RestingOrder[] = [];
 let pendingAutoFlatten = false;
 let sessionDate = new Date().toISOString().slice(0, 10);
 const round2 = (n: number) => Math.round(n * 100) / 100;
-let lastPropStateUpdate = 0;
+// Per-connection trading state: markets are global, accounts are not.
+const sessions = new Map<WebSocket, TradingSession>();
 let lastOrderbookUpdate = 0;
 let lastBarUpdate = 0;
 let lastSpeedOfTapeUpdate = 0;
@@ -69,12 +73,8 @@ let profile = new ProfileEngine(currentInstrument.tickSize);
 let vwap = new VWAPEngine();
 let tape = new TapeEngine(computeDeepTradeThresholdUsd(), 15.0);
 const backtest = new BacktestReplayEngine();
-const copier = new TradeCopierEngine();
-const journal = new JournalEngine();
 const gex = new GEXEngine();
-const propRisk = new PropRiskEngine();
-
-journal.setPointValue(currentInstrument.pointValue);
+const cboe = new CboeOptionsProvider();
 
 function getBook(): OrderbookSnapshot {
   const now = Date.now();
@@ -85,26 +85,26 @@ function getBook(): OrderbookSnapshot {
   return cachedBook;
 }
 
-function getPendingContracts(symbol = currentSymbol) {
-  return restingOrders.filter((o) => o.symbol === symbol).reduce((s, o) => s + o.size, 0);
+function broadcastOpenOrders(session: TradingSession) {
+  session.send({
+    type: 'OPEN_ORDERS',
+    symbol: currentSymbol,
+    orders: session.restingOrders.filter((o) => o.symbol === currentSymbol),
+  });
 }
 
-function broadcastOpenOrders() {
-  broadcast({ type: 'OPEN_ORDERS', symbol: currentSymbol, orders: restingOrders.filter((o) => o.symbol === currentSymbol) });
+function clearRestingOrders(session: TradingSession, reason: string) {
+  if (session.restingOrders.length === 0) return;
+  console.log(`[Orders][${session.id}] Cleared ${session.restingOrders.length} resting order(s): ${reason}`);
+  session.restingOrders = [];
+  broadcastOpenOrders(session);
 }
 
-function clearRestingOrders(reason: string) {
-  if (restingOrders.length === 0) return;
-  console.log(`[Orders] Cleared ${restingOrders.length} resting order(s): ${reason}`);
-  restingOrders = [];
-  broadcastOpenOrders();
-}
-
-function settleClosedTrades(exitPrice: number) {
-  const closed = journal.closeAllTrades(currentSymbol, exitPrice);
+function settleClosedTrades(session: TradingSession, exitPrice: number): JournalTrade[] {
+  const closed = session.journal.closeAllTrades(currentSymbol, exitPrice);
   for (const c of closed) {
-    propRisk.recordClosedTrade(c.pnl ?? 0);
-    broadcast({ type: 'JOURNAL_UPDATE', trade: c });
+    session.propRisk.recordClosedTrade(c.pnl ?? 0);
+    session.send({ type: 'JOURNAL_UPDATE', trade: c });
   }
   return closed;
 }
@@ -113,29 +113,111 @@ function settleClosedTrades(exitPrice: number) {
  * Close every open trade regardless of instrument (account reset). Positions left open on
  * other symbols are valued at their last seen price, falling back to the supplied price.
  */
-function flattenEveryOpenTrade(fallbackPrice: number): JournalTrade[] {
+function flattenEveryOpenTrade(session: TradingSession, fallbackPrice: number): JournalTrade[] {
   const closed: JournalTrade[] = [];
-  for (const t of journal.getTrades()) {
+  for (const t of session.journal.getTrades()) {
     if (t.status !== 'OPEN') continue;
     const exitPrice = lastPriceBySymbol.get(t.symbol) ?? fallbackPrice;
-    const c = journal.closeTrade(t.id, exitPrice);
+    const c = session.journal.closeTrade(t.id, exitPrice);
     if (c) closed.push(c);
   }
   for (const c of closed) {
-    propRisk.recordClosedTrade(c.pnl ?? 0);
-    broadcast({ type: 'JOURNAL_UPDATE', trade: c });
+    session.propRisk.recordClosedTrade(c.pnl ?? 0);
+    session.send({ type: 'JOURNAL_UPDATE', trade: c });
   }
   return closed;
+}
+
+/** Create a session and wire the callbacks that used to live on the global engines. */
+function createSession(socket: WebSocket): TradingSession {
+  const session = new TradingSession(socket);
+  session.setPointValue(currentInstrument.pointValue);
+
+  session.propRisk.setCallback((breachType, message) => {
+    console.log(`[Prop Alert][${session.id}] ${breachType}: ${message}`);
+    // Handled on the next tick so we never re-enter propRisk.recalculate() while it runs.
+    session.pendingAutoFlatten = true;
+    clearRestingOrders(session, 'prop breach');
+    session.send({ type: 'PROP_BREACH_ALERT', breachType, message });
+  });
+
+  session.copier.setCallback((slaveId, symbol, size, price, latencyMs) => {
+    session.send({ type: 'TRADE_COPIED', slaveId, symbol, size, price, latencyMs });
+  });
+
+  return session;
 }
 
 let currentFeedType: 'binance' | 'simulator' | 'cme' = 'cme';
 let activeFeed: { stop: () => void } | null = null;
 
-// Setup WebSocket Server.
-// Defaults to loopback so a dev machine on a shared network does not expose order entry
-// to everyone. Set HOST=0.0.0.0 explicitly to accept remote clients (no auth yet!).
+// Setup HTTP + WebSocket server on ONE port so a free host only needs to expose 8080:
+// the built client is served as static files, /healthz reports status, and the WS upgrade
+// happens on the same listener.
 const HOST = process.env.HOST || '127.0.0.1';
-const wss = new WebSocketServer({ port: PORT, host: HOST });
+const CLIENT_DIST = process.env.CLIENT_DIST || fileURLToPath(new URL('../../client/dist', import.meta.url));
+const MAX_PAYLOAD_BYTES = parseInt(process.env.MAX_PAYLOAD_BYTES || '65536', 10);
+
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.map': 'application/json; charset=utf-8',
+};
+
+async function serveStatic(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const urlPath = (req.url || '/').split('?')[0];
+  const requested = urlPath === '/' ? '/index.html' : urlPath;
+  // Resolve inside the dist folder only — blocks ../ traversal.
+  const target = resolve(CLIENT_DIST, `.${requested}`);
+  if (!target.startsWith(CLIENT_DIST + sep) && target !== resolve(CLIENT_DIST, 'index.html')) {
+    res.writeHead(403).end('Forbidden');
+    return;
+  }
+
+  try {
+    const body = await readFile(target);
+    res.writeHead(200, { 'content-type': MIME_TYPES[extname(target)] || 'application/octet-stream' });
+    res.end(body);
+  } catch {
+    // SPA fallback: unknown paths return index.html so client routing keeps working.
+    try {
+      const fallback = await readFile(resolve(CLIENT_DIST, 'index.html'));
+      res.writeHead(200, { 'content-type': MIME_TYPES['.html'] });
+      res.end(fallback);
+    } catch {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('Client build not found. Run `pnpm build` first (or set CLIENT_DIST).');
+    }
+  }
+}
+
+const httpServer = createServer(async (req, res) => {
+  if (req.url?.startsWith('/healthz')) {
+    res.writeHead(200, { 'content-type': MIME_TYPES['.json'] });
+    res.end(
+      JSON.stringify({
+        status: 'ok',
+        uptimeSec: Math.round(process.uptime()),
+        sessions: sessions.size,
+        symbol: currentSymbol,
+        timeframe: currentTimeframe,
+        feed: currentFeedType,
+        gexSource: currentInstrument.underlyingIndex ? gex.getProfile(currentInstrument.underlyingIndex)?.dataSource : undefined,
+      })
+    );
+    return;
+  }
+  await serveStatic(req, res);
+});
+
+const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD_BYTES });
 
 function broadcast(msg: WSServerMessage) {
   const json = JSON.stringify(msg);
@@ -151,23 +233,7 @@ const callbacks: DataFeedCallbacks = {
   onTick: (tick: Tick) => {
     const isReplay = backtest.isActive();
 
-    // 1. Pending auto-flatten from breach callback
-    if (pendingAutoFlatten && !isReplay) {
-      pendingAutoFlatten = false;
-      clearRestingOrders('prop breach');
-      settleClosedTrades(tick.price);
-      broadcast({ type: 'PROP_STATE_UPDATE', state: propRisk.getState() });
-    }
-
-    // 2. Day rollover check
-    const today = new Date().toISOString().slice(0, 10);
-    if (today !== sessionDate) {
-      sessionDate = today;
-      propRisk.rollDay();
-      broadcast({ type: 'PROP_STATE_UPDATE', state: propRisk.getState() });
-    }
-
-    // 3. Record for backtesting (only when live, not during replay)
+    // 1. Record for backtesting (only when live, not during replay)
     if (!isReplay) {
       backtest.recordTick(tick);
     }
@@ -210,13 +276,35 @@ const callbacks: DataFeedCallbacks = {
       broadcast({ type: 'ABSORPTION', alert: absorption });
     }
 
-    // 7. Process resting orders - ONLY when !isReplay
+    // 7. Per-session account pipeline: orders, journal and prop risk are private to each
+    // visitor, while the market-data pipeline above is shared by everyone.
     if (!isReplay) {
-      if (propRisk.getState().isLockedOut) {
-        clearRestingOrders('account locked out');
-      } else {
-        const filled: RestingOrder[] = [];
-        restingOrders = restingOrders.filter((ord) => {
+      lastPriceBySymbol.set(currentSymbol, tick.price);
+      const accountNow = Date.now();
+
+      for (const session of sessions.values()) {
+        // 7a. Auto-flatten requested by a breach on a previous tick
+        if (session.pendingAutoFlatten) {
+          session.pendingAutoFlatten = false;
+          clearRestingOrders(session, 'prop breach');
+          settleClosedTrades(session, tick.price);
+          session.send({ type: 'PROP_STATE_UPDATE', state: session.propRisk.getState() });
+        }
+
+        // 7b. Day rollover (each account ages independently)
+        const today = new Date().toISOString().slice(0, 10);
+        if (today !== session.sessionDate) {
+          session.sessionDate = today;
+          session.propRisk.rollDay();
+          session.send({ type: 'PROP_STATE_UPDATE', state: session.propRisk.getState() });
+        }
+
+        // 7c. Fill this session's resting limit orders
+        if (session.propRisk.getState().isLockedOut) {
+          clearRestingOrders(session, 'account locked out');
+        } else {
+          const filled: RestingOrder[] = [];
+          session.restingOrders = session.restingOrders.filter((ord) => {
           if (ord.symbol !== currentSymbol) return true;
           const hit = ord.side === 'LONG' ? tick.price <= ord.price : tick.price >= ord.price;
           if (hit) {
@@ -226,45 +314,45 @@ const callbacks: DataFeedCallbacks = {
           return true;
         });
 
-        for (const ord of filled) {
-          const validation = propRisk.validateOrder(ord.symbol, ord.size, getPendingContracts());
-          if (!validation.allowed) {
-            broadcast({ type: 'ORDER_REJECT', reason: 'Contract limit exceeded at fill time', orderId: ord.id });
-            continue;
+          for (const ord of filled) {
+            const validation = session.propRisk.validateOrder(ord.symbol, ord.size, session.pendingContracts(ord.symbol));
+            if (!validation.allowed) {
+              session.send({ type: 'ORDER_REJECT', reason: 'Contract limit exceeded at fill time', orderId: ord.id });
+              continue;
+            }
+            const trade = session.journal.openTrade(ord.symbol, ord.side, ord.price, ord.size, 'DOM Limit Fill', 'Prop Firm Scalp');
+            session.send({ type: 'JOURNAL_UPDATE', trade });
+            void session.copier.copyOrder(ord.symbol, ord.side === 'LONG' ? 'BUY' : 'SELL', ord.size, ord.price);
           }
-          const trade = journal.openTrade(ord.symbol, ord.side, ord.price, ord.size, 'DOM Limit Fill', 'Prop Firm Scalp');
-          broadcast({ type: 'JOURNAL_UPDATE', trade });
-          void copier.copyOrder(ord.symbol, ord.side === 'LONG' ? 'BUY' : 'SELL', ord.size, ord.price);
+          if (filled.length > 0) {
+            broadcastOpenOrders(session);
+          }
         }
-        if (filled.length > 0) {
-          broadcastOpenOrders();
+
+        // 7d. Mark-to-market this session's account
+        session.journal.updatePriceForOpenTrades(currentSymbol, tick.price);
+
+        // Equity must include positions on *every* instrument the account holds, using each
+        // trade's own point value and last seen price. Counting only the visible contract
+        // would freeze the PnL of any position left open on another symbol.
+        let totalUnrealized = 0;
+        let openContracts = 0;
+        for (const t of session.journal.getTrades()) {
+          if (t.status !== 'OPEN') continue;
+          const lastPx = lastPriceBySymbol.get(t.symbol);
+          if (lastPx === undefined) continue; // no price observed yet for that contract
+          const pointValue = FUTURES_INSTRUMENTS[t.symbol]?.pointValue ?? currentInstrument.pointValue;
+          const pointDiff = t.side === 'LONG' ? lastPx - t.entryPrice : t.entryPrice - lastPx;
+          totalUnrealized += pointDiff * pointValue * t.size;
+          // Contract limits are enforced per instrument, so only the active symbol counts.
+          if (t.symbol === currentSymbol) openContracts += t.size;
         }
-      }
 
-      // 8. Update Open Journal Trades & Prop Risk - ONLY when !isReplay
-      journal.updatePriceForOpenTrades(currentSymbol, tick.price);
-      lastPriceBySymbol.set(currentSymbol, tick.price);
-
-      // Equity must include positions on *every* instrument the account holds, using each
-      // trade's own point value and last seen price. Counting only the visible contract
-      // would freeze the PnL of any position left open on another symbol.
-      let totalUnrealized = 0;
-      let openContracts = 0;
-      for (const t of journal.getTrades()) {
-        if (t.status !== 'OPEN') continue;
-        const lastPx = lastPriceBySymbol.get(t.symbol);
-        if (lastPx === undefined) continue; // no price observed yet for that contract
-        const pointValue = FUTURES_INSTRUMENTS[t.symbol]?.pointValue ?? currentInstrument.pointValue;
-        const pointDiff = t.side === 'LONG' ? lastPx - t.entryPrice : t.entryPrice - lastPx;
-        totalUnrealized += pointDiff * pointValue * t.size;
-        // Contract limits are enforced per instrument, so only the active symbol counts.
-        if (t.symbol === currentSymbol) openContracts += t.size;
-      }
-
-      propRisk.updateEquity(totalUnrealized, openContracts);
-      if (now - lastPropStateUpdate > 250) {
-        broadcast({ type: 'PROP_STATE_UPDATE', state: propRisk.getState() });
-        lastPropStateUpdate = now;
+        session.propRisk.updateEquity(totalUnrealized, openContracts);
+        if (accountNow - session.lastPropBroadcast > 250) {
+          session.send({ type: 'PROP_STATE_UPDATE', state: session.propRisk.getState() });
+          session.lastPropBroadcast = accountNow;
+        }
       }
     }
   },
@@ -301,8 +389,10 @@ function switchInstrument(symbol: string, source: 'binance' | 'simulator' | 'cme
   vwap = new VWAPEngine();
   tape = new TapeEngine(computeDeepTradeThresholdUsd(), 15.0);
   cachedBook = null;
-  clearRestingOrders('switch instrument');
-  journal.setPointValue(currentInstrument.pointValue);
+  for (const session of sessions.values()) {
+    clearRestingOrders(session, 'switch instrument');
+    session.setPointValue(currentInstrument.pointValue);
+  }
 
   startFeed(source);
 
@@ -352,29 +442,7 @@ backtest.setProgressCallback((progress) => {
   broadcast({ type: 'REPLAY_STATE', progress });
 });
 
-// Setup Copier Callback
-copier.setCallback((slaveId, symbol, size, price, latencyMs) => {
-  broadcast({
-    type: 'TRADE_COPIED',
-    slaveId,
-    symbol,
-    size,
-    price,
-    latencyMs,
-  });
-});
-
-// Setup Prop Risk Callback
-propRisk.setCallback((breachType, message) => {
-  console.log(`[Prop Firm Alert] ${breachType}: ${message}`);
-  pendingAutoFlatten = true;
-  clearRestingOrders('prop breach');
-  broadcast({
-    type: 'PROP_BREACH_ALERT',
-    breachType,
-    message,
-  });
-});
+// Copier and prop-risk callbacks are wired per session inside createSession().
 
 // Broadcast replay progress periodically while replaying
 setInterval(() => {
@@ -383,16 +451,34 @@ setInterval(() => {
   }
 }, 500);
 
-// Refresh Gamma Exposure periodically so walls / zero-gamma stay alive instead of
-// freezing at their boot values.
-setInterval(() => {
-  gex.refreshAll();
-  const underlying = currentInstrument.underlyingIndex || 'SPX';
-  const profile = gex.getProfile(underlying);
-  if (profile) {
-    broadcast({ type: 'GEX_UPDATE', profile });
+/**
+ * Refresh Gamma Exposure for the active instrument.
+ *
+ * Prefers the REAL CBOE delayed option chain (free, key-less) and falls back to the
+ * synthetic model when no chain is available — offline dev, an index CBOE does not publish,
+ * or a CDN hiccup. The profile carries `dataSource` so the UI can label it honestly.
+ */
+async function refreshGex(force = false): Promise<void> {
+  const underlying = currentInstrument.underlyingIndex;
+  if (underlying) {
+    const chain = await cboe.fetchChain(underlying, force);
+    if (chain) gex.buildFromChain(underlying, chain.spotPrice, chain.contracts);
   }
-}, 30000);
+
+  if (!underlying || !gex.getProfile(underlying)) {
+    gex.refreshAll();
+  }
+
+  const profile = underlying ? gex.getProfile(underlying) : undefined;
+  if (profile) broadcast({ type: 'GEX_UPDATE', profile });
+}
+
+setInterval(() => {
+  void refreshGex();
+}, parseInt(process.env.GEX_REFRESH_MS || '300000', 10));
+
+// Warm the cache at boot so the first snapshot already carries real GEX when reachable.
+void refreshGex();
 
 // Periodically emit simulated Options Flow Whale Trades
 setInterval(() => {
@@ -430,7 +516,7 @@ setInterval(() => {
 
 // Build the full client snapshot. Used on connect and again whenever the client
 // switches instrument, so the chart never mixes bars from two contracts.
-function buildInitState(): WSServerMessage {
+function buildInitState(session: TradingSession): WSServerMessage {
   const underlying = currentInstrument.underlyingIndex || 'SPX';
   return {
     type: 'INIT_STATE',
@@ -444,24 +530,38 @@ function buildInitState(): WSServerMessage {
     cvdHistory: footprint.getAllBars().map((b) => ({ time: b.time, cvd: b.cvd })),
     gexProfile: gex.getProfile(underlying),
     optionsFlow: gex.getRecentFlow(),
-    propState: propRisk.getState(),
-    propConfig: propRisk.getConfig(),
+    propState: session.propRisk.getState(),
+    propConfig: session.propRisk.getConfig(),
     deepTradeThresholdUsd: computeDeepTradeThresholdUsd(),
-    slaves: copier.getSlaves(),
+    slaves: session.copier.getSlaves(),
     timeframe: currentTimeframe,
   };
 }
 
 // Handle WebSocket Client Connections
 wss.on('connection', (ws: WebSocket) => {
-  console.log('[DeepChart Server] Client connected. Active clients:', wss.clients.size);
+  if (sessions.size >= MAX_SESSIONS) {
+    console.warn(`[DeepChart Server] Rejecting connection: session limit (${MAX_SESSIONS}) reached.`);
+    ws.close(1013, 'Server at capacity — please retry shortly');
+    return;
+  }
 
-  ws.send(JSON.stringify(buildInitState()));
-  ws.send(JSON.stringify({ type: 'OPEN_ORDERS', symbol: currentSymbol, orders: restingOrders.filter((o) => o.symbol === currentSymbol) }));
+  const session = createSession(ws);
+  sessions.set(ws, session);
+  console.log(`[DeepChart Server] Client connected (${session.id}). Active sessions: ${sessions.size}`);
+
+  session.send(buildInitState(session));
+  broadcastOpenOrders(session);
 
   ws.on('message', async (raw: WebSocket.Data) => {
     try {
       const msg = JSON.parse(raw.toString()) as WSClientMessage;
+
+      // A public server cannot trust any single client's send rate.
+      if (!session.allowMessage()) {
+        session.send({ type: 'ORDER_REJECT', reason: 'Rate limit exceeded — slow down' });
+        return;
+      }
 
       if (msg.type === 'SUBSCRIBE') {
         if (msg.symbol && msg.symbol !== currentSymbol) {
@@ -469,19 +569,13 @@ wss.on('connection', (ws: WebSocket) => {
             console.warn(`[DeepChart Server] Ignoring SUBSCRIBE for unknown symbol '${msg.symbol}'`);
             // Re-sync the caller with the real server state so the UI cannot get stuck on
             // an instrument the server does not know.
-            ws.send(JSON.stringify(buildInitState()));
+            session.send(buildInitState(session));
             return;
           }
           switchInstrument(msg.symbol, msg.source || currentFeedType);
           // Give the requesting client a fresh snapshot for the new contract.
-          ws.send(JSON.stringify(buildInitState()));
-          ws.send(
-            JSON.stringify({
-              type: 'OPEN_ORDERS',
-              symbol: currentSymbol,
-              orders: restingOrders.filter((o) => o.symbol === currentSymbol),
-            })
-          );
+          session.send(buildInitState(session));
+          broadcastOpenOrders(session);
         } else if (msg.source && msg.source !== currentFeedType) {
           startFeed(msg.source);
         }
@@ -491,40 +585,40 @@ wss.on('connection', (ws: WebSocket) => {
           currentTimeframe = msg.timeframe;
           footprint = new FootprintEngine(currentInstrument.tickSize, TIMEFRAMES[currentTimeframe], 3.0, 1.0);
           console.log(`[DeepChart Server] Timeframe changed to ${currentTimeframe}`);
-          ws.send(JSON.stringify(buildInitState()));
+          session.send(buildInitState(session));
         }
       } else if (msg.type === 'DOM_ORDER') {
         if (msg.action === 'CANCEL') {
           if (msg.orderId) {
-            const prevLen = restingOrders.length;
-            restingOrders = restingOrders.filter((o) => o.id !== msg.orderId);
-            if (restingOrders.length < prevLen) {
-              broadcast({ type: 'ORDER_ACK', action: 'CANCELLED', orderId: msg.orderId });
+            const prevLen = session.restingOrders.length;
+            session.restingOrders = session.restingOrders.filter((o) => o.id !== msg.orderId);
+            if (session.restingOrders.length < prevLen) {
+              session.send({ type: 'ORDER_ACK', action: 'CANCELLED', orderId: msg.orderId });
             }
           } else {
-            clearRestingOrders('Client CANCEL ALL');
-            broadcast({ type: 'ORDER_ACK', action: 'CANCELLED' });
+            clearRestingOrders(session, 'Client CANCEL ALL');
+            session.send({ type: 'ORDER_ACK', action: 'CANCELLED' });
           }
-          broadcastOpenOrders();
+          broadcastOpenOrders(session);
         } else if (msg.action === 'FLATTEN') {
-          clearRestingOrders('FLATTEN');
+          clearRestingOrders(session, 'FLATTEN');
           // Exit at the mid price: a side-aware best-bid/best-ask would systematically
           // penalise one direction and require per-trade handling.
           const bestBid = orderbook.getBestBid();
           const bestAsk = orderbook.getBestAsk();
           const midPrice =
             bestBid !== null && bestAsk !== null ? (bestBid + bestAsk) / 2 : currentInstrument.basePrice;
-          settleClosedTrades(msg.price && msg.price > 0 ? msg.price : midPrice);
-          broadcast({ type: 'PROP_STATE_UPDATE', state: propRisk.getState() });
+          settleClosedTrades(session, msg.price && msg.price > 0 ? msg.price : midPrice);
+          session.send({ type: 'PROP_STATE_UPDATE', state: session.propRisk.getState() });
         } else if (msg.action === 'BUY' || msg.action === 'SELL') {
           // --- Runtime input validation: WebSocket payloads are untrusted ---
           const size = msg.size;
           if (typeof size !== 'number' || !Number.isFinite(size) || size <= 0) {
-            broadcast({ type: 'ORDER_REJECT', reason: 'Order size must be a positive number', orderId: msg.orderId });
+            session.send({ type: 'ORDER_REJECT', reason: 'Order size must be a positive number', orderId: msg.orderId });
             return;
           }
           if (currentInstrument.category !== 'CRYPTO' && !Number.isInteger(size)) {
-            broadcast({
+            session.send({
               type: 'ORDER_REJECT',
               reason: 'Futures orders must use whole contract sizes',
               orderId: msg.orderId,
@@ -533,17 +627,22 @@ wss.on('connection', (ws: WebSocket) => {
             return;
           }
 
-          const validation = propRisk.validateOrder(currentSymbol, size, getPendingContracts());
+          const validation = session.propRisk.validateOrder(currentSymbol, size, session.pendingContracts(currentSymbol));
           if (!validation.allowed) {
-            console.warn(`[Prop Firm Safeguard] Order rejected: ${validation.reason}`);
-            broadcast({ type: 'ORDER_REJECT', reason: validation.reason || 'Order rejected by prop risk', orderId: msg.orderId, size });
+            console.warn(`[Prop Firm Safeguard][${session.id}] Order rejected: ${validation.reason}`);
+            session.send({
+              type: 'ORDER_REJECT',
+              reason: validation.reason || 'Order rejected by prop risk',
+              orderId: msg.orderId,
+              size,
+            });
             return;
           }
 
           const side = msg.action === 'BUY' ? 'LONG' : 'SHORT';
           if (msg.orderType === 'LIMIT') {
             if (typeof msg.price !== 'number' || !Number.isFinite(msg.price) || msg.price <= 0) {
-              broadcast({ type: 'ORDER_REJECT', reason: 'LIMIT order requires a valid price', orderId: msg.orderId });
+              session.send({ type: 'ORDER_REJECT', reason: 'LIMIT order requires a valid price', orderId: msg.orderId });
               return;
             }
             const orderId = msg.orderId || `ord_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
@@ -555,41 +654,41 @@ wss.on('connection', (ws: WebSocket) => {
               size,
               createdAt: Date.now(),
             };
-            restingOrders.push(newOrder);
-            broadcast({ type: 'ORDER_ACK', action: 'PLACED', orderId, price: msg.price, size });
-            broadcastOpenOrders();
+            session.restingOrders.push(newOrder);
+            session.send({ type: 'ORDER_ACK', action: 'PLACED', orderId, price: msg.price, size });
+            broadcastOpenOrders(session);
           } else {
             // MARKET
             const currentPrice = orderbook.getBestAsk() || currentInstrument.basePrice;
             const execPrice = (msg.action === 'BUY' ? orderbook.getBestAsk() : orderbook.getBestBid()) || currentPrice;
-            const trade = journal.openTrade(currentSymbol, side, execPrice, size, 'DOM 1-Click Execution', 'Prop Firm Scalp');
-            broadcast({ type: 'ORDER_ACK', action: 'FILLED', orderId: msg.orderId, price: execPrice, size });
-            broadcast({ type: 'JOURNAL_UPDATE', trade });
-            void copier.copyOrder(currentSymbol, msg.action, size, execPrice);
+            const trade = session.journal.openTrade(currentSymbol, side, execPrice, size, 'DOM 1-Click Execution', 'Prop Firm Scalp');
+            session.send({ type: 'ORDER_ACK', action: 'FILLED', orderId: msg.orderId, price: execPrice, size });
+            session.send({ type: 'JOURNAL_UPDATE', trade });
+            void session.copier.copyOrder(currentSymbol, msg.action, size, execPrice);
           }
         }
       } else if (msg.type === 'CLEAR_JOURNAL') {
-        journal.reset();
-        console.log('[DeepChart Server] Journal cleared by client request.');
-        broadcast({ type: 'JOURNAL_CLEARED' });
+        session.journal.reset();
+        console.log(`[DeepChart Server] Journal cleared by ${session.id}.`);
+        session.send({ type: 'JOURNAL_CLEARED' });
       } else if (msg.type === 'SET_PROP_TRAILING_MODE') {
-        propRisk.setTrailingMode(msg.mode);
-        broadcast({ type: 'PROP_STATE_UPDATE', state: propRisk.getState() });
+        session.propRisk.setTrailingMode(msg.mode);
+        session.send({ type: 'PROP_STATE_UPDATE', state: session.propRisk.getState() });
       } else if (msg.type === 'RESET_PROP_ACCOUNT') {
         // Flatten FIRST, then reset: a pre-existing position would otherwise keep feeding
         // PnL into the freshly reset balance.
-        clearRestingOrders('account reset');
+        clearRestingOrders(session, 'account reset');
         const bestBid = orderbook.getBestBid();
         const bestAsk = orderbook.getBestAsk();
         const resetExit =
           bestBid !== null && bestAsk !== null ? (bestBid + bestAsk) / 2 : currentInstrument.basePrice;
-        flattenEveryOpenTrade(resetExit);
-        propRisk.resetAccount();
-        broadcast({ type: 'PROP_STATE_UPDATE', state: propRisk.getState() });
+        flattenEveryOpenTrade(session, resetExit);
+        session.propRisk.resetAccount();
+        session.send({ type: 'PROP_STATE_UPDATE', state: session.propRisk.getState() });
       } else if (msg.type === 'SET_PROP_CONFIG') {
         if (process.env.DEV_HOOKS === '1' && msg.config) {
-          propRisk.setConfig(msg.config);
-          broadcast({ type: 'PROP_STATE_UPDATE', state: propRisk.getState() });
+          session.propRisk.setConfig(msg.config);
+          session.send({ type: 'PROP_STATE_UPDATE', state: session.propRisk.getState() });
         }
       } else if (msg.type === 'REPLAY_CONTROL') {
         if (msg.action === 'START') {
@@ -606,7 +705,7 @@ wss.on('connection', (ws: WebSocket) => {
         broadcast({ type: 'REPLAY_STATE', progress: backtest.getProgress() });
       } else if (msg.type === 'UPDATE_COPIER') {
         for (const s of msg.slaves) {
-          copier.updateSlave(s);
+          session.copier.updateSlave(s);
         }
       }
     } catch (err) {
@@ -615,8 +714,13 @@ wss.on('connection', (ws: WebSocket) => {
   });
 
   ws.on('close', () => {
-    console.log('[DeepChart Server] Client disconnected.');
+    sessions.delete(ws);
+    console.log(`[DeepChart Server] Client disconnected (${session.id}). Active sessions: ${sessions.size}`);
   });
 });
 
-console.log(`[DeepChart Server - Prop Firm Edition] Ready at ws://localhost:${PORT} (bound to ${HOST})`);
+httpServer.listen(PORT, HOST, () => {
+  console.log(`[DeepChart Server - Prop Firm Edition] Ready at ws://localhost:${PORT} (bound to ${HOST})`);
+  console.log(`[DeepChart Server] Web terminal: http://localhost:${PORT} | health: http://localhost:${PORT}/healthz`);
+  console.log(`[DeepChart Server] Serving client build from ${CLIENT_DIST}`);
+});

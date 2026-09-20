@@ -208,7 +208,7 @@ export interface GEXProfile {
   regime: 'POSITIVE_GAMMA' | 'NEGATIVE_GAMMA';
   levels: GEXStrikeLevel[];
   timestamp: number;
-  dataSource: 'SIMULATED' | 'LIVE';
+  dataSource: 'SIMULATED' | 'LIVE' | 'CBOE_DELAYED';
 }
 
 export interface OptionsFlowTrade {

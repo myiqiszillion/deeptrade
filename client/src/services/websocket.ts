@@ -69,8 +69,21 @@ export class DeepChartWSClient {
   private reconnectTimer: any = null;
   private intentionalClose = false;
 
-  constructor(url = 'ws://localhost:8080') {
-    this.url = url;
+  constructor(url?: string) {
+    const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
+
+    if (url) {
+      this.url = url;
+    } else if (envUrl) {
+      this.url = envUrl;
+    } else if (import.meta.env.PROD && typeof window !== 'undefined') {
+      // Production build is served by the DeepChart server itself, so the socket lives on
+      // the same origin — no configuration needed on a free host.
+      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      this.url = `${protocol}://${window.location.host}`;
+    } else {
+      this.url = 'ws://localhost:8080';
+    }
   }
 
   public setListeners(listeners: WSListeners) {

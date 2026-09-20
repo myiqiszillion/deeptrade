@@ -109,6 +109,10 @@ export const TickReplayWidget: React.FC<TickReplayWidgetProps> = ({ progress }) 
           />
         </div>
       </div>
+
+      <span className="text-[10px] text-slate-500 text-right leading-tight hidden xl:block">
+        Educational use only · simulated executions · options data delayed (CBOE) · not investment advice
+      </span>
     </div>
   );
 };

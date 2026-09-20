@@ -28,13 +28,22 @@ export const GEXPanel: React.FC<GEXPanelProps> = ({ profile, currentPrice }) => 
         <div className="flex items-center gap-1.5 font-bold text-slate-200">
           <Shield size={14} className="text-amber-400" />
           <span>GAMMA EXPOSURE (GEX)</span>
-          {profile.dataSource === 'SIMULATED' && (
+          {profile.dataSource === 'CBOE_DELAYED' ? (
             <span
-              className="text-[9px] px-1 py-0.5 rounded bg-slate-700 text-slate-300 font-normal"
-              title="Synthetic dealer-gamma model — not a live OPRA/open-interest feed"
+              className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-300 font-normal"
+              title="Computed from CBOE's free delayed option chain (real gamma + open interest, ~15 min delayed)"
             >
-              SIMULATED
+              CBOE DELAYED
             </span>
+          ) : (
+            profile.dataSource === 'SIMULATED' && (
+              <span
+                className="text-[9px] px-1 py-0.5 rounded bg-slate-700 text-slate-300 font-normal"
+                title="Synthetic dealer-gamma model — not a live OPRA/open-interest feed"
+              >
+                SIMULATED
+              </span>
+            )
           )}
         </div>
         <span className="text-[10px] px-1.5 py-0.5 bg-brand-bg text-amber-400 rounded font-bold">
