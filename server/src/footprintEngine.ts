@@ -1,4 +1,4 @@
-import { FootprintBar, FootprintPriceLevel, Tick } from './types.js';
+import { FootprintBar, FootprintPriceLevel, Tick, classifyAggressorSide } from './types.js';
 import { normalizeToTick } from './priceMath.js';
 
 export class FootprintEngine {
@@ -46,7 +46,7 @@ export class FootprintEngine {
     return normalizeToTick(price, this.tickSize);
   }
 
-  public processTick(tick: Tick): { currentBar: FootprintBar; closedBar: FootprintBar | null } {
+  public processTick(tick: Tick): { currentBar: FootprintBar; closedBar: FootprintBar | null; correctedBar?: FootprintBar | null; affectedBars?: FootprintBar[] } {
     // Deduplication check: drop duplicate ticks by ID
     if (tick.id) {
       if (this.recentTickIds.has(tick.id)) {
@@ -69,6 +69,31 @@ export class FootprintEngine {
     // Check if new bar needs to be opened
     if (!this.currentBar || this.currentBar.time !== barStartTime) {
       if (this.currentBar) {
+        // Guard against late ticks: if tick belongs to the past, update closed bar instead of closing active bar
+        if (barStartTime < this.currentBar.time) {
+          const pastBarIndex = this.closedBars.findIndex((b) => b.time === barStartTime);
+          if (pastBarIndex !== -1) {
+            const pastBar = this.closedBars[pastBarIndex];
+            const prevDelta = pastBar.delta;
+            this.addTickToBar(pastBar, normPrice, tick, true);
+            const deltaDelta = pastBar.delta - prevDelta;
+            this.calculateDiagonalImbalances(pastBar);
+            pastBar.cvd += deltaDelta;
+
+            const affectedBars: FootprintBar[] = [pastBar];
+            // Ripple deltaDelta forward through all subsequent closed bars and currentBar
+            for (let i = pastBarIndex + 1; i < this.closedBars.length; i++) {
+              this.closedBars[i].cvd += deltaDelta;
+              affectedBars.push(this.closedBars[i]);
+            }
+            this.currentCVD += deltaDelta;
+            this.currentBar.cvd = this.currentCVD + this.currentBar.delta;
+            affectedBars.push(this.currentBar);
+            return { currentBar: this.currentBar, closedBar: null, correctedBar: pastBar, affectedBars };
+          }
+          return { currentBar: this.currentBar, closedBar: null };
+        }
+
         this.currentBar.isClosed = true;
         this.calculateBarMetrics(this.currentBar);
         closedBar = { ...this.currentBar };
@@ -99,15 +124,28 @@ export class FootprintEngine {
         unfinishedHigh: false,
         unfinishedLow: false,
         isClosed: false,
+        firstTradeTs: tickTime,
+        lastTradeTs: tickTime,
       };
     }
 
-    const bar = this.currentBar;
+    this.addTickToBar(this.currentBar, normPrice, tick, false);
+    return { currentBar: this.currentBar, closedBar };
+  }
 
+  private addTickToBar(bar: FootprintBar, normPrice: number, tick: Tick, isPastBar = false): void {
     // Update OHLC
     if (normPrice > bar.high) bar.high = normPrice;
     if (normPrice < bar.low) bar.low = normPrice;
-    bar.close = normPrice;
+
+    if (bar.lastTradeTs === undefined || tick.timestamp >= bar.lastTradeTs) {
+      bar.close = normPrice;
+      bar.lastTradeTs = tick.timestamp;
+    }
+    if (bar.firstTradeTs === undefined || tick.timestamp <= bar.firstTradeTs) {
+      bar.open = normPrice;
+      bar.firstTradeTs = tick.timestamp;
+    }
 
     // Update Level
     if (!bar.levels[normPrice]) {
@@ -130,13 +168,12 @@ export class FootprintEngine {
     // Buy market order (taker) -> executed at ask
     // Sell market order (taker) -> executed at bid
     // Unknown side -> volume is counted in totalVol, but neither buy nor sell volume (delta is preserved)
-    const isBuy = tick.side === 'buy' || tick.isBuyerMaker === false;
-    const isSell = tick.side === 'sell' || tick.isBuyerMaker === true;
+    const side = classifyAggressorSide(tick);
 
-    if (isBuy) {
+    if (side === 'buy') {
       level.askVol += tick.size;
       bar.buyVolume += tick.size;
-    } else if (isSell) {
+    } else if (side === 'sell') {
       level.bidVol += tick.size;
       bar.sellVolume += tick.size;
     } else {
@@ -153,8 +190,10 @@ export class FootprintEngine {
     if (bar.delta > bar.maxDelta) bar.maxDelta = bar.delta;
     if (bar.delta < bar.minDelta) bar.minDelta = bar.delta;
 
-    // Cumulative Volume Delta
-    bar.cvd = this.currentCVD + bar.delta;
+    // Cumulative Volume Delta (for current active bar)
+    if (!isPastBar) {
+      bar.cvd = this.currentCVD + bar.delta;
+    }
 
     // Check POC
     let maxLevelVol = 0;
@@ -175,9 +214,6 @@ export class FootprintEngine {
     this.calculateDiagonalImbalances(bar);
 
     // Unfinished auction checks:
-    // Only meaningful when the bar has established a range (high !== low).
-    // An unfinished high occurs when buyers were still buying the offer at the bar's extreme high (askVol > 0).
-    // An unfinished low occurs when sellers were still hitting the bid at the bar's extreme low (bidVol > 0).
     if (bar.high !== bar.low) {
       const highLevel = bar.levels[bar.high];
       const lowLevel = bar.levels[bar.low];
@@ -187,8 +223,6 @@ export class FootprintEngine {
       bar.unfinishedHigh = false;
       bar.unfinishedLow = false;
     }
-
-    return { currentBar: bar, closedBar };
   }
 
   private calculateDiagonalImbalances(bar: FootprintBar) {

@@ -1,9 +1,14 @@
 export type OrderSide = 'buy' | 'sell' | 'unknown';
 
+export type AssetClass = 'EQUITY_INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND' | 'CRYPTO';
+export type ContractType = 'CONTINUOUS' | 'SPECIFIC';
+
 export interface FuturesInstrument {
   symbol: string;
+  rootSymbol?: string;
   name: string;
   category: 'INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND' | 'CRYPTO';
+  assetClass?: AssetClass;
   exchange: 'CME' | 'NYMEX' | 'COMEX' | 'CBOT' | 'BINANCE';
   tickSize: number;
   pointValue: number;
@@ -14,7 +19,22 @@ export interface FuturesInstrument {
   dayTradingMargin: number;
   underlyingIndex?: string;
   basePrice: number;
+  timezone?: string;
+  currency?: string;
+  multiplier?: number;
+  isMicro?: boolean;
+  parentSymbol?: string;
+  contractType?: ContractType;
+  contractMonth?: string;
+  contractYear?: number;
+  sessionScheduleId?: string;
 }
+
+export type AggressorProvenance =
+  | 'EXCHANGE_NATIVE'
+  | 'INFERRED_QUOTE'
+  | 'INFERRED_TICK'
+  | 'UNKNOWN';
 
 export interface Tick {
   id: string;
@@ -23,6 +43,15 @@ export interface Tick {
   size: number;
   side: OrderSide;
   isBuyerMaker?: boolean;
+  receiveTs?: number;
+  aggressorProvenance?: AggressorProvenance;
+  sequenceId?: string;
+  sourceProvider?: string;
+  qualityFlags?: {
+    isCoalesced?: boolean;
+    isSuspect?: boolean;
+    isGapBoundary?: boolean;
+  };
 }
 
 export interface OrderbookLevel {
@@ -72,6 +101,8 @@ export interface FootprintBar {
   unfinishedHigh: boolean;
   unfinishedLow: boolean;
   isClosed: boolean;
+  firstTradeTs?: number;
+  lastTradeTs?: number;
 }
 
 /**
@@ -92,6 +123,8 @@ export interface HistoricalBar {
   buyVolume?: number;
   sellVolume?: number;
   delta?: number;
+  sourceProvider?: string;
+  isPartial?: boolean;
 }
 
 export interface VolumeProfileLevel {
@@ -143,6 +176,8 @@ export interface ChartViewport {
   barWidth: number;
   barSpacing: number;
   priceScale: number;
+  anchorPrice?: number;
+  autoFollow?: boolean;
 }
 
 export interface SpeedOfTapeData {
@@ -214,6 +249,8 @@ export interface ReplayProgress {
   totalTicks: number;
   speed: number;
   currentTime?: number;
+  isEnded?: boolean;
+  mode?: 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
 }
 
 export interface GEXStrikeLevel {
@@ -297,10 +334,11 @@ export type WSClientMessage =
   | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'binance' | 'simulator' | 'cme' }
   | {
       type: 'REPLAY_CONTROL';
-      action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP';
+      action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP' | 'RETURN_TO_LIVE';
       speed?: number;
       timestamp?: number;
-    };
+    }
+  | { type: 'FETCH_HISTORY'; symbol: string; timeframe: string; beforeTime?: number; limit?: number; requestId?: string };
 
 export type WSServerMessage =
   | {
@@ -321,6 +359,7 @@ export type WSServerMessage =
       /** REAL vendor bars preceding the live session; plain candles, no per-price breakdown. */
       historyBars?: HistoricalBar[];
       feedStatus?: 'LIVE' | 'UNAVAILABLE';
+      mode?: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
     }
   | { type: 'TICK'; tick: Tick }
   | { type: 'BAR_UPDATE'; bar: FootprintBar }
@@ -333,5 +372,7 @@ export type WSServerMessage =
   | { type: 'VWAP_UPDATE'; point: VWAPPoint }
   | { type: 'GEX_UPDATE'; profile: GEXProfile }
   | { type: 'OPTIONS_FLOW'; trade: OptionsFlowTrade }
-  | { type: 'REPLAY_STATE'; progress: ReplayProgress };
+  | { type: 'REPLAY_STATE'; progress: ReplayProgress }
+  | { type: 'ERROR'; code: string; message: string }
+  | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number; requestId?: string };
 

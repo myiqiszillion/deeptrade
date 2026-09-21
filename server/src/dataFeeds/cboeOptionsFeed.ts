@@ -36,9 +36,50 @@ const TTL_MS = parseInt(process.env.CBOE_TTL_MS || '600000', 10); // delayed fee
 const MAX_DTE = parseInt(process.env.CBOE_MAX_DTE || '60', 10); // near-term chains drive GEX
 const FETCH_TIMEOUT_MS = 25000;
 
+function parseEasternDateTime(dateStr: string, timeStr = '16:00:00'): number {
+  try {
+    const probe = new Date(`${dateStr}T12:00:00Z`);
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      timeZoneName: 'shortOffset',
+    }).formatToParts(probe);
+    const offsetPart = parts.find((p) => p.type === 'timeZoneName')?.value || 'GMT-5';
+    const offsetMatch = /GMT([+-]\d+)/.exec(offsetPart);
+    const offsetHours = offsetMatch ? parseInt(offsetMatch[1], 10) : -5;
+    const offsetSign = offsetHours >= 0 ? '+' : '-';
+    const offsetFormatted = `${offsetSign}${String(Math.abs(offsetHours)).padStart(2, '0')}:00`;
+    return new Date(`${dateStr}T${timeStr}${offsetFormatted}`).getTime();
+  } catch {
+    return new Date(`${dateStr}T${timeStr}-05:00`).getTime();
+  }
+}
+
+function getEasternDateString(date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const y = parts.find((p) => p.type === 'year')?.value;
+  const m = parts.find((p) => p.type === 'month')?.value;
+  const d = parts.find((p) => p.type === 'day')?.value;
+  return `${y}-${m}-${d}`;
+}
+
 function daysUntil(expiration: string, today = new Date()): number {
-  const exp = new Date(`${expiration}T23:59:59Z`);
-  return Math.max(0, Math.round((exp.getTime() - today.getTime()) / 86_400_000));
+  // Expiration cutoff: 16:00 (4:00 PM) Eastern Time (US/Eastern market close, DST-aware)
+  const expTime = parseEasternDateTime(expiration, '16:00:00');
+  if (expTime < today.getTime()) {
+    return -1; // Contract already expired
+  }
+  const todayEasternStr = getEasternDateString(today);
+  const [tY, tM, tD] = todayEasternStr.split('-').map(Number);
+  const [eY, eM, eD] = expiration.split('-').map(Number);
+  const todayUtc = Date.UTC(tY, tM - 1, tD);
+  const expUtc = Date.UTC(eY, eM - 1, eD);
+  const diffCalendarDays = Math.round((expUtc - todayUtc) / 86_400_000);
+  return Math.max(0, diffCalendarDays);
 }
 
 export class CboeOptionsProvider {
@@ -85,7 +126,7 @@ export class CboeOptionsProvider {
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
       if (!res.ok) {
-        console.warn(`[CBOE] ${underlying}: HTTP ${res.status} — falling back to simulated GEX`);
+        console.warn(`[CBOE] ${underlying}: HTTP ${res.status} — no options chain available`);
         return null;
       }
 
@@ -108,7 +149,7 @@ export class CboeOptionsProvider {
         if (gamma <= 0 || openInterest <= 0) continue;
 
         const dte = daysUntil(parsed.expiration);
-        if (dte > MAX_DTE) continue;
+        if (dte < 0 || dte > MAX_DTE) continue;
 
         contracts.push({
           strike: parsed.strike,
@@ -125,7 +166,7 @@ export class CboeOptionsProvider {
       }
 
       if (contracts.length === 0 || !Number.isFinite(spotPrice) || spotPrice <= 0) {
-        console.warn(`[CBOE] ${underlying}: chain unusable — falling back to simulated GEX`);
+        console.warn(`[CBOE] ${underlying}: chain unusable or empty — no options chain available`);
         return null;
       }
 
@@ -138,7 +179,7 @@ export class CboeOptionsProvider {
         contracts,
       };
     } catch (err) {
-      console.warn(`[CBOE] ${underlying}: ${(err as Error).message} — falling back to simulated GEX`);
+      console.warn(`[CBOE] ${underlying}: ${(err as Error).message} — no options chain available`);
       return null;
     }
   }

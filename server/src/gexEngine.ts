@@ -62,8 +62,8 @@ export class GEXEngine {
    * Build a GEX profile from a REAL option chain (CBOE delayed quotes).
    *
    * Standard dealer-gamma convention: dealers are assumed long call gamma and short put
-   * gamma, so net GEX = Î£(call gammaÂ·OI) âˆ’ Î£(put gammaÂ·OI), converted to dollars per 1%
-   * underlying move via:  gamma Ã— OI Ã— 100 (contract multiplier) Ã— spotÂ² Ã— 0.01
+   * gamma, so net GEX = Sigma(call gamma * OI) - Sigma(put gamma * OI), converted to dollars per 1%
+   * underlying move via: gamma * OI * 100 (contract multiplier) * spot^2 * 0.01
    * Values are expressed in millions to match the units the UI already renders.
    */
   public buildFromChain(
@@ -130,27 +130,34 @@ export class GEXEngine {
       };
     });
 
-    let callWall = usedStrikes[0] ?? spotPrice;
+    // Compute total chain GEX and walls across ALL strikes in the received chain
+    let callWall = allStrikes[0] ?? spotPrice;
     let putWall = callWall;
     let maxCallGex = -Infinity;
     let maxPutGex = -Infinity;
     let totalNetGex = 0;
     let total0DteGex = 0;
 
-    for (const level of levels) {
-      if (level.callGex > maxCallGex) {
-        maxCallGex = level.callGex;
-        callWall = level.strike;
+    for (const strike of allStrikes) {
+      const bucket = buckets.get(strike)!;
+      const callGex = bucket.callGex / MILLIONS;
+      const putGex = -bucket.putGex / MILLIONS;
+      const netGex = callGex + putGex;
+
+      totalNetGex += netGex;
+      total0DteGex += bucket.zeroDte / MILLIONS;
+
+      if (callGex > maxCallGex) {
+        maxCallGex = callGex;
+        callWall = strike;
       }
-      if (-level.putGex > maxPutGex) {
-        maxPutGex = -level.putGex;
-        putWall = level.strike;
+      if (-putGex > maxPutGex) {
+        maxPutGex = -putGex;
+        putWall = strike;
       }
-      totalNetGex += level.netGex;
-      total0DteGex += level.zeroDteGex;
     }
 
-    // Zero-gamma flip: the strike where cumulative dealer gamma changes sign.
+    // Zero-gamma flip: strike-level heuristic where cumulative dealer gamma changes sign.
     let cumulative = 0;
     let zeroGammaFlip = spotPrice;
     let flipFound = false;

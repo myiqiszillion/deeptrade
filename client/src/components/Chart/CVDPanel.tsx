@@ -43,6 +43,7 @@ export const CVDPanel: React.FC<CVDPanelProps> = ({
       const dx = e.clientX - dragStartRef.current.x;
       onViewportChange({
         ...viewport,
+        autoFollow: false,
         panX: dragStartRef.current.panX + dx,
       });
     }

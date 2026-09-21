@@ -1,4 +1,4 @@
-import { AbsorptionAlert, DeepTrade, OrderbookSnapshot, SpeedOfTapeData, Tick } from './types.js';
+import { AbsorptionAlert, DeepTrade, OrderbookSnapshot, SpeedOfTapeData, Tick, classifyAggressorSide } from './types.js';
 
 export class TapeEngine {
   private recentTicks: Tick[] = [];
@@ -34,24 +34,30 @@ export class TapeEngine {
 
     // Keep only last 3 seconds of ticks for Speed of Tape calculation
     const cutoff = now - 3000;
-    while (this.recentTicks.length > 0 && this.recentTicks[0].timestamp < cutoff) {
-      this.recentTicks.shift();
-    }
+    this.recentTicks = this.recentTicks.filter((t) => t.timestamp >= cutoff && t.timestamp <= now + 5000);
 
     // 1. Calculate Speed of Tape
     const count = this.recentTicks.length;
-    const durationSec = Math.max(0.1, (now - (this.recentTicks[0]?.timestamp || now)) / 1000);
-    const tps = Math.round((count / durationSec) * 10) / 10;
-
+    let minTs = now;
     let totalVol = 0;
     let buyVol = 0;
+    let knownVol = 0;
     for (const t of this.recentTicks) {
+      if (t.timestamp < minTs) minTs = t.timestamp;
       totalVol += t.size;
-      if (!t.isBuyerMaker) buyVol += t.size;
+      const side = classifyAggressorSide(t);
+      if (side === 'buy') {
+        buyVol += t.size;
+        knownVol += t.size;
+      } else if (side === 'sell') {
+        knownVol += t.size;
+      }
     }
-
+    const durationSec = Math.max(0.1, (now - minTs) / 1000);
+    const tps = Math.round((count / durationSec) * 10) / 10;
     const volumePerSec = Math.round((totalVol / durationSec) * 100) / 100;
-    const buyRatio = totalVol > 0 ? buyVol / totalVol : 0.5;
+    // Base buyRatio only on trades with known aggressor side to avoid skew from unknown volume
+    const buyRatio = knownVol > 0 ? buyVol / knownVol : 0.5;
     const acceleration = this.prevTps > 0 ? Math.min(1, Math.max(-1, (tps - this.prevTps) / this.prevTps)) : 0;
     this.prevTps = tps;
 
@@ -61,6 +67,15 @@ export class TapeEngine {
       buyRatio,
       acceleration,
     };
+
+    // Periodic eviction of stale price levels (older than 10s)
+    if (this.rollingPriceVolumes.size > 50) {
+      for (const [p, d] of this.rollingPriceVolumes.entries()) {
+        if (now - d.lastTime > 10000) {
+          this.rollingPriceVolumes.delete(p);
+        }
+      }
+    }
 
     // 2. Check for Deep Trade (Whale)
     const valueUsd = tick.price * tick.size * pointValue;
@@ -84,9 +99,10 @@ export class TapeEngine {
       this.rollingPriceVolumes.set(tick.price, priceData);
     }
 
-    if (!tick.isBuyerMaker) {
+    const side = classifyAggressorSide(tick);
+    if (side === 'buy') {
       priceData.buyVol += tick.size;
-    } else {
+    } else if (side === 'sell') {
       priceData.sellVol += tick.size;
     }
     priceData.lastTime = now;

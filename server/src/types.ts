@@ -3,6 +3,12 @@ import { GEXProfile, OptionsFlowTrade } from './gexEngine.js';
 
 export type OrderSide = 'buy' | 'sell' | 'unknown';
 
+export type AggressorProvenance =
+  | 'EXCHANGE_NATIVE' // Native flag from exchange (e.g. Binance isBuyerMaker, CME MBO)
+  | 'INFERRED_QUOTE'  // Derived via Lee-Ready quote rule (bid/offer comparison)
+  | 'INFERRED_TICK'   // Derived via tick rule (uptick/downtick vs previous price)
+  | 'UNKNOWN';        // Undecidable or not provided
+
 export interface Tick {
   id: string;
   timestamp: number;
@@ -10,6 +16,15 @@ export interface Tick {
   size: number;
   side: OrderSide;
   isBuyerMaker?: boolean; // true = sell market order (buyer was maker), false = buy market order, undefined = unknown
+  receiveTs?: number; // Server receive timestamp (epoch ms)
+  aggressorProvenance?: AggressorProvenance;
+  sequenceId?: string;
+  sourceProvider?: string;
+  qualityFlags?: {
+    isCoalesced?: boolean;
+    isSuspect?: boolean;
+    isGapBoundary?: boolean;
+  };
 }
 
 export interface OrderbookLevel {
@@ -59,6 +74,16 @@ export interface FootprintBar {
   unfinishedHigh: boolean;
   unfinishedLow: boolean;
   isClosed: boolean;
+  firstTradeTs?: number;
+  lastTradeTs?: number;
+}
+
+/** Classify whether an incoming trade was aggressor buy, sell, or unknown. */
+export function classifyAggressorSide(tick: Tick): 'buy' | 'sell' | 'unknown' {
+  if (tick.side === 'unknown') return 'unknown';
+  if (tick.side === 'buy' || tick.isBuyerMaker === false) return 'buy';
+  if (tick.side === 'sell' || tick.isBuyerMaker === true) return 'sell';
+  return 'unknown';
 }
 
 /**
@@ -81,6 +106,8 @@ export interface HistoricalBar {
   buyVolume?: number;
   sellVolume?: number;
   delta?: number;
+  sourceProvider?: string;
+  isPartial?: boolean;
 }
 
 export interface VolumeProfileLevel {
@@ -152,8 +179,9 @@ export interface AbsorptionAlert {
 }
 
 export type WSClientMessage =
-  | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source: 'binance' | 'simulator' | 'cme' }
-  | { type: 'REPLAY_CONTROL'; action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP'; speed?: number; timestamp?: number };
+  | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'binance' | 'simulator' | 'cme' }
+  | { type: 'REPLAY_CONTROL'; action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP' | 'RETURN_TO_LIVE'; speed?: number; timestamp?: number }
+  | { type: 'FETCH_HISTORY'; symbol: string; timeframe: string; beforeTime?: number; limit?: number; requestId?: string };
 
 export type WSServerMessage =
   | {
@@ -183,6 +211,7 @@ export type WSServerMessage =
       historyBars?: HistoricalBar[];
       /** 'LIVE' when a real feed streams this instrument, 'UNAVAILABLE' when none is wired. */
       feedStatus?: 'LIVE' | 'UNAVAILABLE';
+      mode?: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
     }
   | { type: 'TICK'; tick: Tick }
   | { type: 'BAR_UPDATE'; bar: FootprintBar }
@@ -195,5 +224,7 @@ export type WSServerMessage =
   | { type: 'VWAP_UPDATE'; point: VWAPPoint }
   | { type: 'GEX_UPDATE'; profile: GEXProfile }
   | { type: 'OPTIONS_FLOW'; trade: OptionsFlowTrade }
-  | { type: 'REPLAY_STATE'; progress: { isPlaying: boolean; currentIndex: number; totalTicks: number; speed: number; currentTime?: number } };
+  | { type: 'REPLAY_STATE'; progress: { isPlaying: boolean; currentIndex: number; totalTicks: number; speed: number; currentTime?: number; isEnded?: boolean; mode?: 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED' } }
+  | { type: 'ERROR'; code: string; message: string }
+  | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number; requestId?: string };
 

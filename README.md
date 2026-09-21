@@ -59,14 +59,14 @@
 | **BTCUSDT** (Bitcoin Perpetual) | Binance USD-M Futures | ✅ **LIVE**: WebSocket `aggTrade` & `depth20` + REST history đầy đủ |
 | **CME Futures** (ES, NQ, YM, RTY, GC, CL, NG) | Tradovate Adapter | ✅ **THẬT** khi có credential (`FUTURES_PROVIDER=tradovate`). Chưa cấu hình $\rightarrow$ `FEED: UNAVAILABLE` (fail-closed) |
 | **Gamma Exposure (GEX)** | CBOE Delayed Chain | ✅ **THẬT**: Tính từ chain quyền chọn SPX/SPY/NDX/QQQ trễ ~15 phút |
-| **Options Flow** | Scanner | Quét các lệnh sweeps và blocks giá trị lớn |
+| **Options Flow** | Options Tape | Bảng hiển thị sweeps/blocks khi kết nối feed quyền chọn (để trống khi không có feed) |
 
 ---
 
 ## 🚀 Hướng Dẫn Cài Đặt & Khởi Chạy
 
 ### Yêu cầu môi trường
-- Node.js >= 18
+- Node.js >= 20 (khuyến nghị Node 20 hoặc 22 LTS)
 - pnpm >= 9
 
 ### Cài đặt dependencies

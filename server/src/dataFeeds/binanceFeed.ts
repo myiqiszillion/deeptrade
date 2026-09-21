@@ -135,6 +135,10 @@ export class BinanceFuturesFeed {
             size,
             side: isBuyerMaker ? 'sell' : 'buy',
             isBuyerMaker,
+            receiveTs: Date.now(),
+            aggressorProvenance: 'EXCHANGE_NATIVE',
+            sequenceId: String(msg.a),
+            sourceProvider: 'binance',
           };
           this.callbacks.onTick(tick);
         }

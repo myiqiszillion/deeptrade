@@ -39,7 +39,9 @@ import {
 
 const POPULAR_FUTURES = [
   { symbol: 'ES', name: 'E-mini S&P 500' },
+  { symbol: 'MES', name: 'Micro E-mini S&P 500' },
   { symbol: 'NQ', name: 'E-mini Nasdaq 100' },
+  { symbol: 'MNQ', name: 'Micro E-mini Nasdaq 100' },
   { symbol: 'YM', name: 'E-mini Dow Jones' },
   { symbol: 'RTY', name: 'E-mini Russell 2000' },
   { symbol: 'GC', name: 'Gold Futures' },
@@ -78,10 +80,32 @@ function saveSettings(settings: SavedSettings) {
   } catch {}
 }
 
-/** Insert or replace a footprint bar, keeping the series ordered by bar open time. */
+const MAX_CLIENT_BARS = 1000;
+
+/** Insert or replace a footprint bar, keeping the series ordered by bar open time and bounded to MAX_CLIENT_BARS. */
 function mergeBar(bars: FootprintBar[], bar: FootprintBar): FootprintBar[] {
-  const next = bars.some((b) => b.id === bar.id) ? bars.map((b) => (b.id === bar.id ? bar : b)) : [...bars, bar];
-  return next.sort((a, b) => a.time - b.time);
+  if (bars.length === 0) return [bar];
+  const lastIdx = bars.length - 1;
+  // Fast path: update current active bar (overwhelming majority of ticks)
+  if (bars[lastIdx].id === bar.id) {
+    const next = [...bars];
+    next[lastIdx] = bar;
+    return next;
+  }
+  // Fast path: new bar appended at the end
+  if (bar.time >= bars[lastIdx].time) {
+    const next = [...bars, bar];
+    return next.length > MAX_CLIENT_BARS ? next.slice(next.length - MAX_CLIENT_BARS) : next;
+  }
+  // Fallback: bar belongs to an earlier index (e.g. late tick updating previous bar)
+  const idx = bars.findIndex((b) => b.id === bar.id);
+  if (idx !== -1) {
+    const next = [...bars];
+    next[idx] = bar;
+    return next;
+  }
+  const next = [...bars, bar].sort((a, b) => a.time - b.time);
+  return next.length > MAX_CLIENT_BARS ? next.slice(next.length - MAX_CLIENT_BARS) : next;
 }
 
 export const App: React.FC = () => {
@@ -90,7 +114,7 @@ export const App: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [symbol, setSymbol] = useState(savedSettings.symbol || 'BTCUSDT');
   const [instrument, setInstrument] = useState<FuturesInstrument | undefined>();
-  const [currentPrice, setCurrentPrice] = useState<number>(65000.0);
+  const [currentPrice, setCurrentPrice] = useState<number>(0);
   const [chartMode, setChartMode] = useState<'footprint' | 'candles'>(savedSettings.chartMode || 'footprint');
 
   // Synchronized Viewport & Crosshair across Chart & CVD
@@ -100,6 +124,7 @@ export const App: React.FC = () => {
     barWidth: 80,
     barSpacing: 20,
     priceScale: 6,
+    autoFollow: true,
   });
   const [crosshairX, setCrosshairX] = useState<number | null>(null);
 
@@ -144,6 +169,7 @@ export const App: React.FC = () => {
 
   // Replay protocol state
   const [replayProgress, setReplayProgress] = useState<ReplayProgress | undefined>();
+  const [sessionMode, setSessionMode] = useState<'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED'>('LIVE');
   const [deepTradeThresholdUsd, setDeepTradeThresholdUsd] = useState<number | undefined>();
   const [historySource, setHistorySource] = useState<'NONE' | 'REAL_TICKS' | 'REAL_BARS'>('NONE');
   // REAL vendor bars from before the live session. Plain candles: no per-price footprint exists
@@ -159,6 +185,13 @@ export const App: React.FC = () => {
   const symbolRef = useRef(savedSettings.symbol || 'BTCUSDT');
   const desiredSymbolRef = useRef(savedSettings.symbol || 'BTCUSDT');
   const timeframeRef = useRef(savedSettings.timeframe || '1m');
+
+  // History pagination state
+  const [hasMoreHistory, setHasMoreHistory] = useState(true);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const oldestBarTimeRef = useRef<number | null>(null);
+  const isLoadingHistoryRef = useRef(false);
+  const hasMoreHistoryRef = useRef(true);
 
   // Features & Panels Toggles (restored from browser storage)
   const [showDOM, setShowDOM] = useState(savedSettings.showDOM ?? true);
@@ -205,9 +238,9 @@ export const App: React.FC = () => {
     wsClient.setListeners({
       onConnectionChange: (connected) => setIsConnected(connected),
       onInitState: (data) => {
-        // After a reconnect the server may be back on its default contract. Ask it to
-        // switch instead of silently reverting the UI to another instrument.
-        if (data.symbol !== desiredSymbolRef.current) {
+        // After a reconnect the server may be back on its default contract or timeframe. Ask it to
+        // switch instead of silently reverting the UI.
+        if (data.symbol !== desiredSymbolRef.current || (data.timeframe && data.timeframe !== timeframeRef.current)) {
           wsClient.subscribe(
             desiredSymbolRef.current,
             desiredSymbolRef.current === 'BTCUSDT' ? 'binance' : 'cme',
@@ -220,12 +253,22 @@ export const App: React.FC = () => {
         // otherwise bars/tape from the previous contract stay on screen.
         if (data.symbol !== symbolRef.current) {
           symbolRef.current = data.symbol;
-          pendingTicksRef.current = [];
           setBars([]);
-          setRecentTicks([]);
-          setDeepTrades([]);
-          setAbsorptions([]);
         }
+        pendingTicksRef.current = [];
+        setRecentTicks([]);
+        setDeepTrades([]);
+        setAbsorptions([]);
+        setTape({ tps: 0, volumePerSec: 0, buyRatio: 0.5, acceleration: 0 });
+        if (data.mode) {
+          setSessionMode(data.mode);
+        } else {
+          setSessionMode('LIVE');
+        }
+        if (data.mode === 'LIVE') {
+          setReplayProgress(undefined);
+        }
+
         setSymbol(data.symbol);
         setInstrument(data.instrument);
         if (typeof data.deepTradeThresholdUsd === 'number') setDeepTradeThresholdUsd(data.deepTradeThresholdUsd);
@@ -241,25 +284,44 @@ export const App: React.FC = () => {
         setVolumeProfile(data.volumeProfile);
         setTpoProfile(data.tpo);
         setVwapPoints(data.vwap);
-        if (data.gexProfile) setGexProfile(data.gexProfile);
-        if (data.optionsFlow) setOptionsFlow(data.optionsFlow);
-        if (data.orderbook.asks[0]) {
-          setCurrentPrice(data.orderbook.asks[0].price);
+        setGexProfile(data.gexProfile);
+        setOptionsFlow(data.optionsFlow ?? []);
+
+        const latestBar = data.bars && data.bars.length > 0 ? data.bars[data.bars.length - 1] : null;
+        setCurrentCVD(latestBar ? latestBar.cvd : 0);
+
+        let resolvedPrice = 0;
+        if (data.orderbook && data.orderbook.asks && data.orderbook.asks[0]) {
+          resolvedPrice = data.orderbook.asks[0].price;
+        } else if (data.bars && data.bars.length > 0) {
+          resolvedPrice = data.bars[data.bars.length - 1].close;
+        } else if (data.historyBars && data.historyBars.length > 0) {
+          resolvedPrice = data.historyBars[data.historyBars.length - 1].close;
         }
+        setCurrentPrice(resolvedPrice);
+        lastPriceRef.current = resolvedPrice > 0 ? resolvedPrice : null;
       },
       onTick: (tick) => {
         pendingTicksRef.current.unshift(tick);
         lastPriceRef.current = tick.price;
       },
       onBarUpdate: (bar) => {
-        setBars((prev) => mergeBar(prev, bar));
-        setCurrentCVD(bar.cvd);
+        setBars((prev) => {
+          const merged = mergeBar(prev, bar);
+          if (merged.length > 0 && merged[merged.length - 1].id === bar.id) {
+            setCurrentCVD(bar.cvd);
+          }
+          return merged;
+        });
       },
       onBarClose: (bar) => {
-        // A close can arrive for a bar that is no longer the last one, so merge by id and
-        // keep the series ordered by open time.
-        setBars((prev) => mergeBar(prev, bar));
-        setCurrentCVD(bar.cvd);
+        setBars((prev) => {
+          const merged = mergeBar(prev, bar);
+          if (merged.length > 0 && merged[merged.length - 1].id === bar.id) {
+            setCurrentCVD(bar.cvd);
+          }
+          return merged;
+        });
       },
       onOrderbookUpdate: (book) => {
         setOrderbook(book);
@@ -291,6 +353,34 @@ export const App: React.FC = () => {
       },
       onReplayState: (progress) => {
         setReplayProgress(progress);
+        if (progress.mode) {
+          setSessionMode(progress.mode);
+        } else if (progress.isPlaying) {
+          setSessionMode('REPLAY');
+        } else if (progress.isEnded) {
+          setSessionMode('REPLAY_ENDED');
+        } else {
+          setSessionMode('REPLAY_PAUSED');
+        }
+      },
+      onHistoryResponse: (resp) => {
+        isLoadingHistoryRef.current = false;
+        setIsLoadingHistory(false);
+        if (resp.symbol !== symbolRef.current || resp.timeframe !== timeframeRef.current) {
+          return; // Ignore stale response from earlier symbol/timeframe
+        }
+        if (!resp.hasMore || resp.bars.length === 0) {
+          hasMoreHistoryRef.current = false;
+          setHasMoreHistory(false);
+        }
+        if (resp.bars.length > 0) {
+          setHistoryBars((prev) => {
+            const seenTimes = new Set<number>(prev.map((b) => b.time));
+            const newBars = resp.bars.filter((b) => !seenTimes.has(b.time));
+            const merged = [...newBars, ...prev].sort((a, b) => a.time - b.time);
+            return merged.length > MAX_CLIENT_BARS ? merged.slice(-MAX_CLIENT_BARS) : merged;
+          });
+        }
       },
     });
 
@@ -311,17 +401,64 @@ export const App: React.FC = () => {
 
   const handleSelectSymbol = (sym: string) => {
     desiredSymbolRef.current = sym;
+    symbolRef.current = sym;
+    pendingTicksRef.current = [];
+    oldestBarTimeRef.current = null;
+    hasMoreHistoryRef.current = true;
+    isLoadingHistoryRef.current = false;
+    setHasMoreHistory(true);
+    setIsLoadingHistory(false);
     setSymbol(sym);
+    setBars([]);
+    setHistoryBars([]);
+    setCurrentPrice(0);
+    lastPriceRef.current = null;
+    setGexProfile(undefined);
+    setOptionsFlow([]);
+    setDeepTrades([]);
+    setAbsorptions([]);
+    setRecentTicks([]);
+    setTape({ tps: 0, volumePerSec: 0, buyRatio: 0.5, acceleration: 0 });
     const src = sym === 'BTCUSDT' ? 'binance' : 'cme';
     wsClient.subscribe(sym, src, timeframeRef.current);
   };
 
   const handleTimeframeChange = (tf: string) => {
     timeframeRef.current = tf;
+    oldestBarTimeRef.current = null;
+    hasMoreHistoryRef.current = true;
+    isLoadingHistoryRef.current = false;
+    setHasMoreHistory(true);
+    setIsLoadingHistory(false);
     setTimeframe(tf);
     const src = desiredSymbolRef.current === 'BTCUSDT' ? 'binance' : 'cme';
     wsClient.subscribe(desiredSymbolRef.current, src, tf);
   };
+
+  // Trigger historical backfill when viewport is panned near the oldest available bar
+  useEffect(() => {
+    if (isLoadingHistoryRef.current || !hasMoreHistoryRef.current) return;
+    if (bars.length === 0 && historyBars.length === 0) return;
+
+    const totalLeftBars = historyBars.length;
+    const barStep = viewport.barWidth + viewport.barSpacing;
+    const oldestBarScreenX = viewport.panX - totalLeftBars * barStep;
+
+    if (oldestBarScreenX > -300) {
+      let oldestTime: number | undefined;
+      if (historyBars.length > 0) {
+        oldestTime = historyBars[0].time;
+      } else if (bars.length > 0) {
+        oldestTime = bars[0].time;
+      }
+      if (oldestTime && (!oldestBarTimeRef.current || oldestTime < oldestBarTimeRef.current)) {
+        oldestBarTimeRef.current = oldestTime;
+        isLoadingHistoryRef.current = true;
+        setIsLoadingHistory(true);
+        wsClient.fetchHistory(symbolRef.current, timeframeRef.current, oldestTime, 300);
+      }
+    }
+  }, [viewport.panX, viewport.barWidth, viewport.barSpacing, historyBars, bars]);
 
   return (
     <div className="relative flex flex-col w-screen h-screen bg-brand-bg text-brand-text font-sans overflow-hidden select-none">
@@ -522,8 +659,9 @@ export const App: React.FC = () => {
             <FootprintCanvas
               bars={bars}
               historyBars={historyBars}
-              isLive={feedStatus === 'LIVE'}
-              currentPrice={feedStatus === 'LIVE' ? currentPrice :
+              isLive={sessionMode === 'LIVE'}
+              sessionMode={sessionMode}
+              currentPrice={sessionMode === 'LIVE' ? currentPrice :
                 (bars[bars.length - 1]?.close ?? historyBars[historyBars.length - 1]?.close ?? currentPrice)}
               vwapPoints={vwapPoints}
               deepTrades={deepTrades}
@@ -534,6 +672,7 @@ export const App: React.FC = () => {
               showDeltaNumbers={showDeltaNumbers}
               tickSize={instrument?.tickSize || 0.25}
               symbol={symbol}
+              timeframe={timeframe}
               chartMode={chartMode}
               viewport={viewport}
               onViewportChange={setViewport}

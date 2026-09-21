@@ -1,5 +1,19 @@
 export type TradeSide = 'BUY' | 'SELL' | 'UNKNOWN';
 
+export type AggressorProvenance =
+  | 'EXCHANGE_NATIVE' // From exchange native flag (e.g. Binance isBuyerMaker, CME MBO flag)
+  | 'INFERRED_QUOTE'  // Derived via Lee-Ready quote rule (bid/offer comparison)
+  | 'INFERRED_TICK'   // Derived via tick rule (uptick/downtick vs previous price)
+  | 'UNKNOWN';        // Undecidable or not provided
+
+export type DataDepthLevel = 'TOP_OF_BOOK' | 'L2_20' | 'L2_50' | 'FULL_MBO';
+
+export interface TradeQualityFlags {
+  isCoalesced?: boolean; // Vendor coalesced multiple trades into this quote/update
+  isSuspect?: boolean;
+  isGapBoundary?: boolean;
+}
+
 /**
  * Normalized trade/tick — the ONLY shape the orderflow engines consume.
  * Vendor payloads must never reach Footprint/Profile/VWAP/Tape/Replay directly.
@@ -12,6 +26,16 @@ export interface MarketTrade {
   side: TradeSide;
   /** Stable id from the vendor when available (used for dedupe). */
   id?: string;
+  /** Epoch milliseconds when server received this event. */
+  receiveTs?: number;
+  /** Provenance of the aggressor side. */
+  aggressorProvenance?: AggressorProvenance;
+  /** Sequence identifier from vendor for gap detection. */
+  sequenceId?: number | string;
+  /** Data source provider identifier (e.g. 'binance', 'tradovate', 'databento', 'fixture'). */
+  sourceProvider?: string;
+  /** Quality metadata flags. */
+  qualityFlags?: TradeQualityFlags;
 }
 
 export interface DepthLevel {
@@ -26,6 +50,9 @@ export interface MarketDepthSnapshot {
   bids: DepthLevel[];
   asks: DepthLevel[];
   updateId?: number;
+  receiveTs?: number;
+  depthLevel?: DataDepthLevel;
+  sourceProvider?: string;
 }
 
 /** A single-level L2 change (size 0 = remove that price). */
@@ -36,6 +63,8 @@ export interface MarketDepthDelta {
   price: number;
   size: number;
   updateId?: number;
+  receiveTs?: number;
+  sourceProvider?: string;
 }
 
 export type MarketDepthEvent = MarketDepthSnapshot | MarketDepthDelta;

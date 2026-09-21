@@ -74,10 +74,16 @@ export class DatabentoMarketDataFeed implements MarketDataFeed {
 /** Symbols Databento would serve once the transport lands (configurable via env). */
 export const DATABENTO_SYMBOL_MAP: Record<string, string> = {
   ES: 'ES.FUT',
+  MES: 'MES.FUT',
   NQ: 'NQ.FUT',
+  MNQ: 'MNQ.FUT',
   YM: 'YM.FUT',
+  MYM: 'MYM.FUT',
   RTY: 'RTY.FUT',
+  M2K: 'M2K.FUT',
   GC: 'GC.FUT',
+  MGC: 'MGC.FUT',
   CL: 'CL.FUT',
+  MCL: 'MCL.FUT',
   NG: 'NG.FUT',
 };

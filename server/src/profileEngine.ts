@@ -1,9 +1,9 @@
-import { TPOBracket, TPOProfileData, VolumeProfileData, VolumeProfileLevel, Tick } from './types.js';
+import { TPOBracket, TPOProfileData, VolumeProfileData, VolumeProfileLevel, Tick, classifyAggressorSide } from './types.js';
 import { normalizeToTick } from './priceMath.js';
 
 export class ProfileEngine {
   private tickSize: number;
-  private volumeLevels = new Map<number, { buyVol: number; sellVol: number }>();
+  private volumeLevels = new Map<number, { buyVol: number; sellVol: number; unknownVol?: number }>();
   private totalVolume = 0;
 
   // TPO state
@@ -15,9 +15,19 @@ export class ProfileEngine {
   private ibHigh = -Infinity;
   private ibLow = Infinity;
 
-  constructor(tickSize = 0.5, sessionStartTime = Date.now()) {
+  constructor(tickSize = 0.5, sessionStartTime = 0) {
     this.tickSize = tickSize;
     this.sessionStartTime = sessionStartTime;
+  }
+
+  public reset(sessionStartTime = 0) {
+    this.volumeLevels.clear();
+    this.totalVolume = 0;
+    this.sessionStartTime = sessionStartTime;
+    this.tpoPriceLevels.clear();
+    this.brackets = [];
+    this.ibHigh = -Infinity;
+    this.ibLow = Infinity;
   }
 
   private normalizePrice(price: number): number {
@@ -30,21 +40,43 @@ export class ProfileEngine {
     // 1. Update Volume Profile
     let lvl = this.volumeLevels.get(normPrice);
     if (!lvl) {
-      lvl = { buyVol: 0, sellVol: 0 };
+      lvl = { buyVol: 0, sellVol: 0, unknownVol: 0 };
       this.volumeLevels.set(normPrice, lvl);
     }
 
-    if (!tick.isBuyerMaker) {
+    const side = classifyAggressorSide(tick);
+    if (side === 'buy') {
       lvl.buyVol += tick.size;
-    } else {
+    } else if (side === 'sell') {
       lvl.sellVol += tick.size;
+    } else {
+      lvl.unknownVol = (lvl.unknownVol || 0) + tick.size;
     }
     this.totalVolume += tick.size;
 
     // 2. Update TPO
+    if (this.sessionStartTime === 0 || (this.totalVolume <= tick.size && tick.timestamp < this.sessionStartTime)) {
+      this.sessionStartTime = tick.timestamp;
+    }
     const elapsed = tick.timestamp - this.sessionStartTime;
     const bracketIndex = Math.floor(Math.max(0, elapsed) / this.tpoBracketDurationMs);
     const letter = this.tpoLetters[bracketIndex % this.tpoLetters.length] || 'Z';
+
+    // Track brackets
+    while (this.brackets.length <= bracketIndex) {
+      const bIdx = this.brackets.length;
+      const bLetter = this.tpoLetters[bIdx % this.tpoLetters.length] || 'Z';
+      const bStart = this.sessionStartTime + bIdx * this.tpoBracketDurationMs;
+      this.brackets.push({
+        letter: bLetter,
+        timeStart: bStart,
+        timeEnd: bStart + this.tpoBracketDurationMs,
+        prices: [],
+      });
+    }
+    if (!this.brackets[bracketIndex].prices.includes(normPrice)) {
+      this.brackets[bracketIndex].prices.push(normPrice);
+    }
 
     // Track Initial Balance (first two brackets A & B = 1 hour)
     if (bracketIndex < 2) {
@@ -72,7 +104,7 @@ export class ProfileEngine {
 
     for (const price of sortedPrices) {
       const data = this.volumeLevels.get(price)!;
-      const vol = data.buyVol + data.sellVol;
+      const vol = data.buyVol + data.sellVol + (data.unknownVol || 0);
       const delta = data.buyVol - data.sellVol;
       levels.push({
         price,

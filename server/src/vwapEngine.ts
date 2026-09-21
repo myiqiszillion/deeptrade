@@ -9,11 +9,11 @@ export class VWAPEngine {
   private lastSampleTime = 0;
   private sampleIntervalMs = 5000; // 5s interval for smooth curve
 
-  constructor(anchorTimestamp = Date.now()) {
+  constructor(anchorTimestamp = 0) {
     this.anchorTimestamp = anchorTimestamp;
   }
 
-  public reset(anchorTimestamp = Date.now()) {
+  public reset(anchorTimestamp = 0) {
     this.cumulativePV = 0;
     this.cumulativeVolume = 0;
     this.cumulativePV2 = 0;
@@ -23,6 +23,9 @@ export class VWAPEngine {
   }
 
   public processTick(tick: Tick): VWAPPoint | null {
+    if (this.anchorTimestamp === 0 || (this.cumulativeVolume === 0 && tick.timestamp < this.anchorTimestamp)) {
+      this.anchorTimestamp = tick.timestamp;
+    }
     if (tick.timestamp < this.anchorTimestamp) return null;
 
     const p = tick.price;

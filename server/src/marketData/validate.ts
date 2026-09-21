@@ -1,5 +1,5 @@
 import { normalizeToTick } from '../priceMath.js';
-import { DepthLevel, MarketDepthEvent, MarketTrade, TradeSide } from './types.js';
+import { AggressorProvenance, DataDepthLevel, DepthLevel, MarketDepthEvent, MarketTrade, TradeSide } from './types.js';
 
 /**
  * Validation + normalization boundary. Everything coming from a vendor passes through here
@@ -28,12 +28,36 @@ function normalizeSide(value: unknown): TradeSide {
   return 'UNKNOWN';
 }
 
+function normalizeAggressorProvenance(value: unknown): AggressorProvenance {
+  if (
+    value === 'EXCHANGE_NATIVE' ||
+    value === 'INFERRED_QUOTE' ||
+    value === 'INFERRED_TICK' ||
+    value === 'UNKNOWN'
+  ) {
+    return value;
+  }
+  return 'UNKNOWN';
+}
+
 /**
  * Validate and tick-align a raw trade for the given symbol.
  * `activeSymbol` guards against late frames from an instrument we already switched away from.
  */
 export function validateTrade(
-  raw: { ts: unknown; price: unknown; size: unknown; side?: unknown; id?: unknown; symbol?: unknown },
+  raw: {
+    ts: unknown;
+    price: unknown;
+    size: unknown;
+    side?: unknown;
+    id?: unknown;
+    symbol?: unknown;
+    receiveTs?: unknown;
+    aggressorProvenance?: unknown;
+    sequenceId?: unknown;
+    sourceProvider?: unknown;
+    qualityFlags?: unknown;
+  },
   tickSize: number,
   activeSymbol: string
 ): TradeValidation {
@@ -47,6 +71,19 @@ export function validateTrade(
   const aligned = normalizeToTick(raw.price, tickSize);
   if (!isFinitePositive(aligned)) return { trade: null, dropped: 'misaligned' as 'invalid' };
 
+  const receiveTs =
+    typeof raw.receiveTs === 'number' && Number.isFinite(raw.receiveTs) && raw.receiveTs > 0
+      ? raw.receiveTs
+      : Date.now();
+
+  const sourceProvider = typeof raw.sourceProvider === 'string' && raw.sourceProvider.trim().length > 0
+    ? raw.sourceProvider.trim()
+    : undefined;
+
+  const qualityFlags = (raw.qualityFlags && typeof raw.qualityFlags === 'object')
+    ? (raw.qualityFlags as { isCoalesced?: boolean; isSuspect?: boolean; isGapBoundary?: boolean })
+    : undefined;
+
   return {
     trade: {
       ts: raw.ts,
@@ -54,6 +91,14 @@ export function validateTrade(
       size: raw.size,
       side: normalizeSide(raw.side),
       id: typeof raw.id === 'string' ? raw.id : undefined,
+      receiveTs,
+      aggressorProvenance: normalizeAggressorProvenance(raw.aggressorProvenance),
+      sequenceId:
+        typeof raw.sequenceId === 'number' || typeof raw.sequenceId === 'string'
+          ? raw.sequenceId
+          : undefined,
+      sourceProvider,
+      qualityFlags,
     },
   };
 }
@@ -78,7 +123,17 @@ function cleanLevels(levels: unknown, tickSize: number): DepthLevel[] {
 /** Validate/normalize a snapshot or a single-level delta. */
 export function validateDepth(
   raw:
-    | { kind: 'snapshot'; ts: unknown; bids: unknown; asks: unknown; updateId?: unknown; symbol?: unknown }
+    | {
+        kind: 'snapshot';
+        ts: unknown;
+        bids: unknown;
+        asks: unknown;
+        updateId?: unknown;
+        symbol?: unknown;
+        receiveTs?: unknown;
+        depthLevel?: unknown;
+        sourceProvider?: unknown;
+      }
     | {
         kind: 'delta';
         ts: unknown;
@@ -87,6 +142,8 @@ export function validateDepth(
         size: unknown;
         updateId?: unknown;
         symbol?: unknown;
+        receiveTs?: unknown;
+        sourceProvider?: unknown;
       },
   tickSize: number,
   activeSymbol: string
@@ -96,10 +153,27 @@ export function validateDepth(
   }
   if (!isFinitePositive(raw.ts)) return { event: null, dropped: 'invalid' };
 
+  const receiveTs =
+    typeof raw.receiveTs === 'number' && Number.isFinite(raw.receiveTs) && raw.receiveTs > 0
+      ? raw.receiveTs
+      : Date.now();
+
+  const sourceProvider = typeof raw.sourceProvider === 'string' && raw.sourceProvider.trim().length > 0
+    ? raw.sourceProvider.trim()
+    : undefined;
+
   if (raw.kind === 'snapshot') {
     const bids = cleanLevels(raw.bids, tickSize);
     const asks = cleanLevels(raw.asks, tickSize);
     if (bids.length === 0 && asks.length === 0) return { event: null, dropped: 'invalid' };
+    const depthLevel =
+      raw.depthLevel === 'TOP_OF_BOOK' ||
+      raw.depthLevel === 'L2_20' ||
+      raw.depthLevel === 'L2_50' ||
+      raw.depthLevel === 'FULL_MBO'
+        ? (raw.depthLevel as DataDepthLevel)
+        : undefined;
+
     return {
       event: {
         kind: 'snapshot',
@@ -107,6 +181,9 @@ export function validateDepth(
         bids,
         asks,
         updateId: typeof raw.updateId === 'number' ? raw.updateId : undefined,
+        receiveTs,
+        depthLevel,
+        sourceProvider,
       },
     };
   }
@@ -126,6 +203,8 @@ export function validateDepth(
       price: normalizeToTick(raw.price, tickSize),
       size: raw.size,
       updateId: typeof raw.updateId === 'number' ? raw.updateId : undefined,
+      receiveTs,
+      sourceProvider,
     },
   };
 }

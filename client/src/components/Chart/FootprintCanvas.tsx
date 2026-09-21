@@ -2,6 +2,11 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { AbsorptionAlert, ChartViewport, DeepTrade, FootprintBar, GEXProfile, HistoricalBar, VWAPPoint } from '../../types';
 import { historyBeforeLive } from '../../services/chartHistory';
 import { formatPrice } from '../../services/priceFormat';
+import {
+  calculatePriceToY,
+  calculateYToPrice,
+  clampScale,
+} from '../../services/viewportMath';
 
 interface FootprintCanvasProps {
   bars: FootprintBar[];
@@ -21,7 +26,9 @@ interface FootprintCanvasProps {
   showDeltaNumbers: boolean;
   tickSize?: number;
   symbol?: string;
+  timeframe?: string;
   isLive?: boolean;
+  sessionMode?: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
   chartMode?: 'footprint' | 'candles';
   viewport?: ChartViewport;
   onViewportChange?: (vp: ChartViewport) => void;
@@ -42,7 +49,9 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   showDeltaNumbers,
   tickSize = 0.5,
   symbol,
+  timeframe,
   isLive = false,
+  sessionMode = 'LIVE',
   chartMode = 'footprint',
   viewport: propsViewport,
   onViewportChange,
@@ -51,43 +60,95 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // When enabled the newest bar stays pinned to the right edge of the viewport.
-  const [autoFollow, setAutoFollow] = useState(true);
-
-  // Viewport / Camera state
+  // Viewport / Camera fallback state
   const [internalViewport, setInternalViewport] = useState<ChartViewport>({
     panX: 0,
     panY: 0,
-    barWidth: 80, // pixels per bar
+    barWidth: 80,
     barSpacing: 20,
-    priceScale: 6, // pixels per tick
+    priceScale: 6,
+    autoFollow: true,
   });
 
-  const viewport = propsViewport ?? internalViewport;
+  const viewport = propsViewport || internalViewport;
+
+  // Cache ref to prevent stale closures in event listeners
+  const viewportRef = useRef(viewport);
+  const currentPriceRef = useRef<number>(currentPrice);
+
+  useEffect(() => {
+    viewportRef.current = viewport;
+  }, [viewport]);
+
+  useEffect(() => {
+    currentPriceRef.current = currentPrice;
+  }, [currentPrice]);
+
   const updateViewport = useCallback(
     (updater: (prev: ChartViewport) => ChartViewport) => {
       if (onViewportChange) {
-        const next = updater(viewport);
+        const next = updater(viewportRef.current);
+        viewportRef.current = next;
         onViewportChange(next);
       } else {
         setInternalViewport(updater);
       }
     },
-    [onViewportChange, viewport]
+    [onViewportChange]
+  );
+
+  const autoFollow = viewport.autoFollow;
+  const setAutoFollow = useCallback(
+    (valOrFn: boolean | ((prev: boolean) => boolean)) => {
+      updateViewport((prev) => {
+        const currentVal = prev.autoFollow ?? true;
+        const nextVal = typeof valOrFn === 'function' ? valOrFn(currentVal) : valOrFn;
+        return { ...prev, autoFollow: nextVal };
+      });
+    },
+    [updateViewport]
   );
 
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const mousePosRef = useRef<{ x: number; y: number } | null>(null);
+  const lastFittedDatasetRef = useRef<string | null>(null);
 
-  // Fit the viewport once per instrument: centre price vertically, anchor on the right.
-  useEffect(() => {
+  // Manual or automatic fit of viewport: center price vertically, anchor on the right.
+  const fitViewport = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const cssWidth = canvas.parentElement?.clientWidth || 800;
     const cssHeight = canvas.parentElement?.clientHeight || 600;
-    updateViewport((prev) => ({ ...prev, panY: cssHeight / 2, panX: cssWidth - 80 }));
-  }, [symbol, updateViewport]);
+    const anchor = currentPriceRef.current && currentPriceRef.current > 0
+      ? currentPriceRef.current
+      : (bars[bars.length - 1]?.close ?? historyBars?.[historyBars.length - 1]?.close ?? 100);
+    const totalWidth = bars.length * (viewportRef.current.barWidth + viewportRef.current.barSpacing);
+    const targetPanX = Math.min(cssWidth - 80, cssWidth - totalWidth - 80);
+    updateViewport((prev) => ({
+      ...prev,
+      anchorPrice: anchor,
+      panY: cssHeight / 2,
+      panX: targetPanX,
+      autoFollow: true,
+    }));
+  }, [bars, historyBars, updateViewport]);
+
+  // Fit the viewport once per dataset switch (symbol, timeframe, or mode switch),
+  // only after valid price/bars for the current dataset are present.
+  useEffect(() => {
+    if (!symbol) return;
+    const isReplayMode = sessionMode ? sessionMode !== 'LIVE' : !isLive;
+    const datasetKey = `${symbol}:${timeframe || ''}:${isReplayMode ? 'replay' : 'live'}`;
+    if (lastFittedDatasetRef.current === datasetKey) return;
+
+    const hasPrice = typeof currentPrice === 'number' && currentPrice > 0;
+    const hasBars = bars.length > 0 || (historyBars && historyBars.length > 0);
+    if (!hasPrice && !hasBars) return;
+
+    lastFittedDatasetRef.current = datasetKey;
+    fitViewport();
+  }, [symbol, timeframe, sessionMode, isLive, bars.length, historyBars, currentPrice, fitViewport]);
 
   // Auto-follow: pin the newest bar near the right edge while enabled.
   useEffect(() => {
@@ -97,10 +158,27 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     const cssWidth = canvas.parentElement?.clientWidth || 800;
     const totalWidth = bars.length * (viewport.barWidth + viewport.barSpacing);
     const nextPanX = cssWidth - totalWidth - 80;
-    if (nextPanX !== viewport.panX) {
+    if (Math.abs(nextPanX - viewport.panX) > 1) {
       updateViewport((prev) => ({ ...prev, panX: nextPanX }));
     }
   }, [bars.length, autoFollow, viewport.barWidth, viewport.barSpacing, viewport.panX, updateViewport]);
+
+  // Handle container resize without resetting user pan/zoom
+  useEffect(() => {
+    const parent = canvasRef.current?.parentElement;
+    if (!parent) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width } = entry.contentRect;
+        if (autoFollow) {
+          const totalWidth = bars.length * (viewportRef.current.barWidth + viewportRef.current.barSpacing);
+          updateViewport((prev) => ({ ...prev, panX: width - totalWidth - 80 }));
+        }
+      }
+    });
+    ro.observe(parent);
+    return () => ro.disconnect();
+  }, [autoFollow, bars.length, updateViewport]);
 
   // Mouse handlers for pan & zoom
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -130,10 +208,11 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     if (isDraggingRef.current) {
       const dx = e.clientX - dragStartRef.current.x;
       const dy = e.clientY - dragStartRef.current.y;
-      // Manual panning takes over from auto-follow until the user re-enables it.
-      if (autoFollow) setAutoFollow(false);
+      // Manual panning takes over from auto-follow atomically
+      const shouldDisableFollow = autoFollow && (Math.abs(dx) > 3 || Math.abs(dy) > 3);
       updateViewport((prev) => ({
         ...prev,
+        autoFollow: shouldDisableFollow ? false : prev.autoFollow,
         panX: dragStartRef.current.panX + dx,
         panY: dragStartRef.current.panY + dy,
       }));
@@ -159,38 +238,34 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
       const factor = e.deltaY < 0 ? 1.1 : 0.9;
       updateViewport((prev) => ({
         ...prev,
-        priceScale: Math.max(2, Math.min(25, prev.priceScale * factor)),
+        priceScale: clampScale(prev.priceScale, factor, 2, 25),
       }));
     } else {
       // Zoom X (bar width)
       const factor = e.deltaY < 0 ? 1.1 : 0.9;
       updateViewport((prev) => ({
         ...prev,
-        barWidth: Math.max(40, Math.min(180, prev.barWidth * factor)),
+        barWidth: clampScale(prev.barWidth, factor, 40, 180),
       }));
     }
   };
 
-  // Convert Price to Canvas Y
+  // Convert Price to Canvas Y: anchored to viewport.anchorPrice so live ticks don't jump the chart
   const priceToY = useCallback(
     (price: number, _canvasHeight: number) => {
-      // Vertical anchoring is driven by viewport.panY (set on fit + drag), so the
-      // canvas height is intentionally not part of the mapping.
-      const priceDiff = price - currentPrice;
-      const ticks = priceDiff / tickSize;
-      return viewport.panY - ticks * viewport.priceScale;
+      const effectiveAnchor = viewport.anchorPrice ?? currentPriceRef.current;
+      return calculatePriceToY(price, effectiveAnchor, viewport.panY, viewport.priceScale, tickSize);
     },
-    [currentPrice, tickSize, viewport.panY, viewport.priceScale]
+    [tickSize, viewport.anchorPrice, viewport.panY, viewport.priceScale]
   );
 
   // Convert Canvas Y to Price
   const yToPrice = useCallback(
     (y: number) => {
-      const diffY = viewport.panY - y;
-      const ticks = diffY / viewport.priceScale;
-      return Math.round((currentPrice + ticks * tickSize) / tickSize) * tickSize;
+      const effectiveAnchor = viewport.anchorPrice ?? currentPriceRef.current;
+      return calculateYToPrice(y, effectiveAnchor, viewport.panY, viewport.priceScale, tickSize);
     },
-    [currentPrice, tickSize, viewport.panY, viewport.priceScale]
+    [tickSize, viewport.anchorPrice, viewport.panY, viewport.priceScale]
   );
 
   // Main Render Loop
@@ -713,18 +788,27 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         </span>
       </div>
 
-      {/* Auto-follow toggle: drag the chart to disable, press to re-enable */}
-      <button
-        onClick={() => setAutoFollow((v) => !v)}
-        title="Keep the newest bar pinned to the right edge"
-        className={`absolute top-2 right-20 px-2 py-0.5 rounded text-[9px] font-mono border ${
-          autoFollow
-            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-            : 'bg-slate-700/40 text-slate-300 border-slate-600'
-        }`}
-      >
-        {autoFollow ? 'FOLLOW ON' : 'FOLLOW OFF'}
-      </button>
+      {/* Viewport Controls: Fit View and Auto-follow toggle */}
+      <div className="absolute top-2 right-20 flex items-center gap-1.5 select-none">
+        <button
+          onClick={fitViewport}
+          title="Reset View and Fit to Price"
+          className="px-2 py-0.5 rounded text-[9px] font-mono border bg-slate-700/40 text-slate-300 border-slate-600 hover:bg-slate-600/50 hover:text-white transition-colors"
+        >
+          FIT VIEW
+        </button>
+        <button
+          onClick={() => setAutoFollow((v) => !v)}
+          title="Keep the newest bar pinned to the right edge"
+          className={`px-2 py-0.5 rounded text-[9px] font-mono border transition-colors ${
+            autoFollow
+              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
+              : 'bg-slate-700/40 text-slate-300 border-slate-600 hover:bg-slate-600/50'
+          }`}
+        >
+          {autoFollow ? 'FOLLOW ON' : 'FOLLOW OFF'}
+        </button>
+      </div>
     </div>
   );
 };

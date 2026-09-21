@@ -1,4 +1,4 @@
-﻿import { FuturesInstrument } from '../futuresConfig.js';
+import { FuturesInstrument } from '../futuresConfig.js';
 import { BinanceFuturesFeed, DataFeedCallbacks } from '../dataFeeds/binanceFeed.js';
 import { FeedConnectionState, FeedHandlers, MarketDataFeed } from './types.js';
 import { validateDepth, validateTrade } from './validate.js';
@@ -67,7 +67,17 @@ export class BinanceMarketDataFeed implements MarketDataFeed {
       onTick: (tick) => {
         if (gen !== this.generation) return; // stale socket: never emit into the new session
         const { trade, dropped } = validateTrade(
-          { ts: tick.timestamp, price: tick.price, size: tick.size, side: tick.isBuyerMaker ? 'SELL' : 'BUY', id: tick.id },
+          {
+            ts: tick.timestamp,
+            price: tick.price,
+            size: tick.size,
+            side: tick.isBuyerMaker ? 'SELL' : 'BUY',
+            id: tick.id,
+            receiveTs: tick.receiveTs || Date.now(),
+            aggressorProvenance: tick.aggressorProvenance || 'EXCHANGE_NATIVE',
+            sequenceId: tick.sequenceId,
+            sourceProvider: 'binance',
+          },
           this.instrument.tickSize,
           this.symbol
         );
@@ -81,7 +91,7 @@ export class BinanceMarketDataFeed implements MarketDataFeed {
       onOrderbookSnapshot: (bids, asks, updateId) => {
         if (gen !== this.generation) return;
         const { event, dropped } = validateDepth(
-          { kind: 'snapshot', ts: Date.now(), bids, asks, updateId, symbol: this.symbol },
+          { kind: 'snapshot', ts: Date.now(), bids, asks, updateId, symbol: this.symbol, sourceProvider: 'binance' },
           this.instrument.tickSize,
           this.symbol
         );
@@ -95,7 +105,7 @@ export class BinanceMarketDataFeed implements MarketDataFeed {
         if (gen !== this.generation) return;
         const emit = (side: 'bid' | 'ask', price: number, size: number) => {
           const { event, dropped } = validateDepth(
-            { kind: 'delta', ts: Date.now(), side, price, size, updateId, symbol: this.symbol },
+            { kind: 'delta', ts: Date.now(), side, price, size, updateId, symbol: this.symbol, sourceProvider: 'binance' },
             this.instrument.tickSize,
             this.symbol
           );

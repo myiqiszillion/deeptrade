@@ -87,6 +87,7 @@ export class BacktestReplayEngine {
   }
 
   public stepForward(): Tick | null {
+    this.pause();
     if (this.playbackIndex < this.recordedTicks.length) {
       const tick = this.recordedTicks[this.playbackIndex];
       this.playbackIndex++;
@@ -100,6 +101,7 @@ export class BacktestReplayEngine {
   }
 
   public seek(target: number) {
+    this.pause();
     if (this.recordedTicks.length === 0) return;
     if (target > 1000000000) {
       // Treat as epoch timestamp, binary search for closest tick
@@ -113,29 +115,46 @@ export class BacktestReplayEngine {
           high = mid - 1;
         }
       }
-      this.playbackIndex = Math.max(0, Math.min(this.recordedTicks.length - 1, low));
+      this.playbackIndex = Math.max(0, Math.min(this.recordedTicks.length, low));
     } else {
-      this.playbackIndex = Math.max(0, Math.min(this.recordedTicks.length - 1, target));
+      const intTarget = Math.max(0, Math.min(this.recordedTicks.length, Math.floor(target)));
+      this.playbackIndex = intTarget;
     }
     this.notifyProgress();
   }
 
   public setSpeed(speed: number) {
-    this.playbackSpeed = speed;
+    this.playbackSpeed = Number.isFinite(speed) && speed > 0 ? speed : 1;
     if (this.isReplaying) {
-      this.start(speed);
+      this.start(this.playbackSpeed);
     } else {
       this.notifyProgress();
     }
   }
 
   public getProgress() {
+    const isEnded = this.recordedTicks.length > 0 && this.playbackIndex >= this.recordedTicks.length;
+    const currentTickTs =
+      this.playbackIndex < this.recordedTicks.length
+        ? this.recordedTicks[this.playbackIndex]?.timestamp
+        : this.playbackIndex > 0
+        ? this.recordedTicks[this.playbackIndex - 1]?.timestamp
+        : 0;
+
     return {
       currentIndex: this.playbackIndex,
       totalTicks: this.recordedTicks.length,
       isPlaying: this.isReplaying,
       speed: this.playbackSpeed,
-      currentTime: this.recordedTicks[this.playbackIndex]?.timestamp || 0,
+      currentTime: currentTickTs || 0,
+      isEnded,
     };
+  }
+
+  public dispose(): void {
+    this.onTickCallback = null;
+    this.onProgressCallback = null;
+    this.pause();
+    this.recordedTicks = [];
   }
 }

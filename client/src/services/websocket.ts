@@ -34,6 +34,7 @@ export interface WSListeners {
     historySource?: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
     historyBars?: HistoricalBar[];
     feedStatus?: 'LIVE' | 'UNAVAILABLE';
+    mode?: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
   }) => void;
   onTick?: (tick: Tick) => void;
   onBarUpdate?: (bar: FootprintBar) => void;
@@ -48,6 +49,15 @@ export interface WSListeners {
   onOptionsFlow?: (trade: OptionsFlowTrade) => void;
   onReplayState?: (progress: ReplayProgress) => void;
   onConnectionChange?: (connected: boolean) => void;
+  onHistoryResponse?: (response: {
+    symbol: string;
+    timeframe: string;
+    bars: HistoricalBar[];
+    hasMore: boolean;
+    cursor?: number;
+    requestId?: string;
+  }) => void;
+  onError?: (error: { code: string; message: string }) => void;
 }
 
 export class DeepChartWSClient {
@@ -144,6 +154,12 @@ export class DeepChartWSClient {
             case 'REPLAY_STATE':
               this.listeners.onReplayState?.(msg.progress);
               break;
+            case 'HISTORY_RESPONSE':
+              this.listeners.onHistoryResponse?.(msg);
+              break;
+            case 'ERROR':
+              this.listeners.onError?.(msg);
+              break;
           }
         } catch (err) {
           console.error('[DeepChart WS] Error parsing message:', err);
@@ -184,7 +200,7 @@ export class DeepChartWSClient {
     });
   }
 
-  public controlReplay(action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED', speed?: number, timestamp?: number) {
+  public controlReplay(action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'RETURN_TO_LIVE', speed?: number, timestamp?: number) {
     this.send({
       type: 'REPLAY_CONTROL',
       action,
@@ -196,6 +212,28 @@ export class DeepChartWSClient {
   /** Advance the replay playhead by exactly one tick. */
   public stepReplay() {
     this.send({ type: 'REPLAY_CONTROL', action: 'STEP' });
+  }
+
+  /** Exit replay mode and return to the live market stream. */
+  public returnToLive() {
+    this.send({ type: 'REPLAY_CONTROL', action: 'RETURN_TO_LIVE' });
+  }
+
+  public fetchHistory(
+    symbol: string,
+    timeframe: string,
+    beforeTime?: number,
+    limit?: number,
+    requestId?: string
+  ) {
+    this.send({
+      type: 'FETCH_HISTORY',
+      symbol,
+      timeframe,
+      beforeTime,
+      limit,
+      requestId,
+    });
   }
 
   public disconnect() {

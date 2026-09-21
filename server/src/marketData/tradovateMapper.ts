@@ -1,3 +1,4 @@
+import { AggressorProvenance } from './types.js';
 import { TradovateDom, TradovateDomLevel, TradovatePriceSize, TradovateQuote } from './tradovateTransport.js';
 
 /**
@@ -32,6 +33,10 @@ export interface RawTradeCandidate {
   size: number;
   side: 'BUY' | 'SELL';
   symbol: string;
+  receiveTs?: number;
+  aggressorProvenance?: AggressorProvenance;
+  sourceProvider?: string;
+  qualityFlags?: { isCoalesced?: boolean; isSuspect?: boolean; isGapBoundary?: boolean };
 }
 
 /** Raw single-level depth change handed to validateDepth(). */
@@ -42,6 +47,8 @@ export interface RawDepthDeltaCandidate {
   price: number;
   size: number;
   symbol: string;
+  receiveTs?: number;
+  sourceProvider?: string;
 }
 
 /** Raw full-ladder replacement handed to validateDepth(). */
@@ -51,6 +58,8 @@ export interface RawDepthSnapshotCandidate {
   bids: [number, number][];
   asks: [number, number][];
   symbol: string;
+  receiveTs?: number;
+  sourceProvider?: string;
 }
 
 export interface QuoteMappingResult {
@@ -196,7 +205,17 @@ export class TradovateQuoteMapper {
           // A print with no vendor time cannot be bucketed into a bar without lying.
           this.counters.droppedNoTimestamp++;
         } else {
-          trades.push({ ts, price: trade.price, size: trade.size, side: classified.side, symbol });
+          const provenance: AggressorProvenance = classified.rule === 'quote' ? 'INFERRED_QUOTE' : 'INFERRED_TICK';
+          trades.push({
+            ts,
+            price: trade.price,
+            size: trade.size,
+            side: classified.side,
+            symbol,
+            receiveTs: Date.now(),
+            aggressorProvenance: provenance,
+            sourceProvider: 'tradovate',
+          });
         }
       }
     } else {
@@ -211,7 +230,7 @@ export class TradovateQuoteMapper {
     if (ts !== null) {
       if (bid.price !== null && bid.size !== null && (bid.price !== prevBid || bid.size !== prevBidSize)) {
         this.lastBidSize = bid.size;
-        depth.push({ kind: 'delta', ts, side: 'bid', price: bid.price, size: bid.size, symbol });
+        depth.push({ kind: 'delta', ts, side: 'bid', price: bid.price, size: bid.size, symbol, sourceProvider: 'tradovate' });
       }
       if (
         offer.price !== null &&
@@ -219,7 +238,7 @@ export class TradovateQuoteMapper {
         (offer.price !== prevOffer || offer.size !== prevOfferSize)
       ) {
         this.lastOfferSize = offer.size;
-        depth.push({ kind: 'delta', ts, side: 'ask', price: offer.price, size: offer.size, symbol });
+        depth.push({ kind: 'delta', ts, side: 'ask', price: offer.price, size: offer.size, symbol, sourceProvider: 'tradovate' });
       }
     }
 
@@ -243,7 +262,7 @@ export class TradovateQuoteMapper {
     const bids = toTuples(dom.bids);
     const asks = toTuples(dom.offers);
     if (bids.length === 0 && asks.length === 0) return null;
-    return { kind: 'snapshot', ts, bids, asks, symbol };
+    return { kind: 'snapshot', ts, bids, asks, symbol, sourceProvider: 'tradovate' };
   }
 }
 

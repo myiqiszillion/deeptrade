@@ -20,6 +20,9 @@ RUN pnpm install --prod --frozen-lockfile --filter @deepchart/server...
 COPY --from=build /app/server/dist server/dist
 COPY --from=build /app/client/dist client/dist
 
+# Run as non-root user for container security
+USER node
+
 # 0.0.0.0 is required so the container is reachable from outside; put auth/rate limits in
 # front of it before exposing the terminal publicly.
 ENV HOST=0.0.0.0

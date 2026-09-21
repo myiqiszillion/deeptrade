@@ -39,7 +39,8 @@ async function runTests(): Promise<void> {
   let emittedTick: Tick | null = null;
   engine.setCallback((t) => { emittedTick = t; });
   const step1 = engine.stepForward();
-  if (!step1 || step1.id !== 'tick-0' || emittedTick?.id !== 'tick-0') {
+  const recordedTick = emittedTick as Tick | null;
+  if (!step1 || step1.id !== 'tick-0' || recordedTick?.id !== 'tick-0') {
     throw new Error(`Step forward failed: ${JSON.stringify(step1)}`);
   }
   const progress1 = engine.getProgress();

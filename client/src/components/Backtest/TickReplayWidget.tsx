@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { wsClient } from '../../services/websocket';
 import { ReplayProgress } from '../../types';
 import { DataStatusStrip } from '../Status/DataStatusStrip';
-import { Play, Pause, FastForward, StepForward, RotateCcw } from 'lucide-react';
+import { Play, Pause, FastForward, StepForward, RotateCcw, Radio } from 'lucide-react';
 
 interface TickReplayWidgetProps {
   progress?: ReplayProgress;
@@ -48,11 +48,15 @@ export const TickReplayWidget: React.FC<TickReplayWidgetProps> = ({
     wsClient.controlReplay('SEEK', undefined, 0);
   };
 
+  const handleReturnToLive = () => {
+    wsClient.returnToLive();
+  };
+
   return (
     <div className="flex items-center gap-3 px-3 py-1.5 bg-brand-surface border-t border-brand-border text-xs select-none">
       <div className="flex items-center gap-1.5 font-bold text-amber-400">
         <FastForward size={14} />
-        <span>BACKTEST EVERY TICK</span>
+        <span>REPLAY (ISOLATED)</span>
       </div>
 
       <div className="h-4 w-px bg-brand-border" />
@@ -85,6 +89,15 @@ export const TickReplayWidget: React.FC<TickReplayWidgetProps> = ({
           title="Reset to Start"
         >
           <RotateCcw size={13} />
+        </button>
+
+        <button
+          onClick={handleReturnToLive}
+          className="px-2 py-1 rounded font-semibold flex items-center gap-1 bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/50 hover:text-white transition-colors ml-1"
+          title="Return to Live Market Stream"
+        >
+          <Radio size={12} className="animate-pulse" />
+          <span>RETURN TO LIVE</span>
         </button>
       </div>
 
