@@ -1,17 +1,17 @@
-import { historyBeforeLive } from '../../client/src/services/chartHistory.js';
-import { FUTURES_INSTRUMENTS } from './futuresConfig.js';
-import { createMarketDataFeed } from './marketData/registry.js';
+import { historyBeforeLive } from '../../../client/src/services/chartHistory.js';
+import { FUTURES_INSTRUMENTS } from '../../src/futuresConfig.js';
+import { createMarketDataFeed } from '../../src/marketData/registry.js';
 import {
   TradovateMarketDataFeed,
   resolveVendorSymbol,
-} from './marketData/tradovateAdapter.js';
-import { credentialFreeMessage, readTradovateConfig } from './marketData/tradovateConfig.js';
-import { TradovateQuoteMapper } from './marketData/tradovateMapper.js';
+} from '../../src/marketData/tradovateAdapter.js';
+import { credentialFreeMessage, readTradovateConfig } from '../../src/marketData/tradovateConfig.js';
+import { TradovateQuoteMapper } from '../../src/marketData/tradovateMapper.js';
 import {
   fetchTradovateHistoryBars,
   mapChartBar,
   normalizeBars,
-} from './marketData/tradovateHistory.js';
+} from '../../src/marketData/tradovateHistory.js';
 import {
   TRADOVATE_ENDPOINTS,
   TRADOVATE_HEARTBEAT_FRAME,
@@ -19,8 +19,8 @@ import {
   TradovateSocketLike,
   buildTradovateFrame,
   parseTradovateFrame,
-} from './marketData/tradovateTransport.js';
-import { FeedHandlers, FeedStatusEvent, MarketDepthEvent, MarketTrade } from './marketData/types.js';
+} from '../../src/marketData/tradovateTransport.js';
+import { FeedHandlers, FeedStatusEvent, MarketDepthEvent, MarketTrade } from '../../src/marketData/types.js';
 
 /**
  * Tradovate provider verification — fully OFFLINE.

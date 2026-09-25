@@ -612,7 +612,7 @@ export class MarketContext {
           }
         } catch (fetchErr) {
           console.warn(`[History] fetchBinanceAggTrades failed for ${symbol}: ${(fetchErr as Error).message}`);
-          const stored = marketDataStore.queryTrades(symbol, { limit: 5000, beforeTime });
+          const stored = marketDataStore.queryTrades({ provider: 'binance', symbol, limit: 5000, beforeTime });
           if (stored.trades.length > 0) {
             ticks = stored.trades;
             source = 'REAL_TICKS';
@@ -741,7 +741,14 @@ export class MarketContext {
 
     if ((process.env.FUTURES_PROVIDER || '').toLowerCase() !== 'tradovate') {
       // Check persistent store if no live futures provider configured
-      const stored = marketDataStore.queryBars(this.symbol, timeframe, { limit: 300, beforeTime: this.historyBoundary });
+      const provider = this.provider || (this.symbol === 'BTCUSDT' ? 'binance' : (process.env.FUTURES_PROVIDER || 'tradovate'));
+      const stored = marketDataStore.queryBars({
+        provider,
+        symbol: this.symbol,
+        timeframe,
+        limit: 300,
+        beforeTime: this.historyBoundary,
+      });
       if (stored.bars.length > 0) {
         this.historyBarsByTf.set(timeframe, stored.bars);
         this.historyBars = stored.bars;
@@ -779,7 +786,14 @@ export class MarketContext {
         return bars;
       } catch (err) {
         // Fallback to persistent store on provider error
-        const stored = marketDataStore.queryBars(this.symbol, timeframe, { limit: 300, beforeTime: this.historyBoundary });
+        const provider = this.provider || (this.symbol === 'BTCUSDT' ? 'binance' : 'tradovate');
+        const stored = marketDataStore.queryBars({
+          provider,
+          symbol: this.symbol,
+          timeframe,
+          limit: 300,
+          beforeTime: this.historyBoundary,
+        });
         if (stored.bars.length > 0) {
           this.historyBarsByTf.set(timeframe, stored.bars);
           this.historyBars = stored.bars;

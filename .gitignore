@@ -17,3 +17,11 @@ server/dist/
 npm-debug.log*
 .DS_Store
 Thumbs.db
+
+# Runtime data & SQLite databases
+data/
+server/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+test_*.sqlite*

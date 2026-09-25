@@ -178,10 +178,19 @@ export interface AbsorptionAlert {
   description: string;
 }
 
+export interface DataCoverage {
+  provider: string;
+  realtime: 'LIVE' | 'UNAVAILABLE' | 'DEGRADED';
+  history: 'NONE' | 'BARS' | 'TICKS';
+  footprint: 'AVAILABLE' | 'UNAVAILABLE' | 'PARTIAL';
+  orderbook: 'NONE' | 'L2' | 'MBO' | 'PARTIAL';
+  gapStatus: 'NONE' | 'DETECTED' | 'RECOVERED' | 'UNRECOVERED';
+}
+
 export type WSClientMessage =
   | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'binance' | 'simulator' | 'cme' }
   | { type: 'REPLAY_CONTROL'; action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP' | 'RETURN_TO_LIVE'; speed?: number; timestamp?: number }
-  | { type: 'FETCH_HISTORY'; symbol: string; timeframe: string; beforeTime?: number; limit?: number; requestId?: string };
+  | { type: 'FETCH_HISTORY'; symbol: string; timeframe: string; provider?: string; beforeTime?: number; limit?: number; requestId?: string };
 
 export type WSServerMessage =
   | {
@@ -226,5 +235,5 @@ export type WSServerMessage =
   | { type: 'OPTIONS_FLOW'; trade: OptionsFlowTrade }
   | { type: 'REPLAY_STATE'; progress: { isPlaying: boolean; currentIndex: number; totalTicks: number; speed: number; currentTime?: number; isEnded?: boolean; mode?: 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED' } }
   | { type: 'ERROR'; code: string; message: string }
-  | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number; requestId?: string };
+  | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; provider?: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number | { provider: string; symbol: string; timeframe?: string; beforeTime: number; beforeId?: string }; requestId?: string };
 

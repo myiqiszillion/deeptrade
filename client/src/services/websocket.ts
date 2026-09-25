@@ -52,9 +52,10 @@ export interface WSListeners {
   onHistoryResponse?: (response: {
     symbol: string;
     timeframe: string;
+    provider?: string;
     bars: HistoricalBar[];
     hasMore: boolean;
-    cursor?: number;
+    cursor?: number | { provider: string; symbol: string; timeframe?: string; beforeTime: number; beforeId?: string };
     requestId?: string;
   }) => void;
   onError?: (error: { code: string; message: string }) => void;

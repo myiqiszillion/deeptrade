@@ -7,6 +7,16 @@ import { Tick } from './types.js';
 import { VWAPEngine } from './vwapEngine.js';
 import { TIMEFRAMES } from './marketData/marketContext.js';
 
+export interface ReplayDataSource {
+  loadTicks(options: {
+    provider: string;
+    symbol: string;
+    beforeTime?: number;
+    beforeId?: string;
+    limit?: number;
+  }): Promise<Tick[]>;
+}
+
 /**
  * Isolated Replay Context per ChartSession.
  *
@@ -27,7 +37,7 @@ export class ReplaySession {
     public readonly symbol: string,
     public readonly instrument: FuturesInstrument,
     public readonly timeframe: string,
-    ticks: Tick[]
+    ticks: Tick[] = []
   ) {
     this.session.setMode('REPLAY');
     const durationMs = TIMEFRAMES[timeframe] || 60000;
@@ -36,7 +46,9 @@ export class ReplaySession {
     this.profileEngine = new ProfileEngine(instrument.tickSize, startTs);
     this.vwapEngine = new VWAPEngine(startTs);
 
-    this.replayEngine.loadTicks(ticks);
+    if (ticks.length > 0) {
+      this.replayEngine.loadTicks(ticks);
+    }
 
     this.replayEngine.setCallback((tick: Tick) => {
       const { currentBar, closedBar, correctedBar, affectedBars } = this.footprintEngine.processTick(tick);
@@ -114,6 +126,26 @@ export class ReplaySession {
 
     // Send initial replay reset snapshot to clear client chart state
     this.sendReplayInitState();
+  }
+
+  /**
+   * Asynchronously load ticks from a persistent ReplayDataSource.
+   */
+  public async loadFromSource(
+    source: ReplayDataSource,
+    options: { provider: string; beforeTime?: number; beforeId?: string; limit?: number }
+  ): Promise<number> {
+    const ticks = await source.loadTicks({
+      provider: options.provider,
+      symbol: this.symbol,
+      beforeTime: options.beforeTime,
+      beforeId: options.beforeId,
+      limit: options.limit ?? 5000,
+    });
+
+    this.replayEngine.loadTicks(ticks);
+    this.rebuildState();
+    return ticks.length;
   }
 
   public sendProfileAndVwapUpdate(): void {

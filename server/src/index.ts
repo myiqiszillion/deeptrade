@@ -4,6 +4,7 @@ import { extname, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { entitlementService } from './auth/entitlementService.js';
+import { AccessPolicy } from './auth/accessPolicy.js';
 import { verifyToken } from './auth/token.js';
 import { DataType, User } from './auth/types.js';
 import { FUTURES_INSTRUMENTS } from './futuresConfig.js';
@@ -254,6 +255,7 @@ const httpServer = createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const symbol = url.searchParams.get('symbol') || 'BTCUSDT';
     const timeframe = url.searchParams.get('timeframe') || '1m';
+    const provider = url.searchParams.get('provider') || (symbol === 'BTCUSDT' ? 'binance' : (process.env.FUTURES_PROVIDER || 'none'));
     const beforeTimeStr = url.searchParams.get('beforeTime');
     const beforeTime = beforeTimeStr ? parseInt(beforeTimeStr, 10) : undefined;
     const limitStr = url.searchParams.get('limit');
@@ -261,24 +263,32 @@ const httpServer = createServer(async (req, res) => {
 
     // Entitlement / Auth check
     const token = extractToken(req);
-    let userId = 'guest';
+    let user: User | null = null;
     if (token) {
       const payload = verifyToken(token);
-      if (payload) userId = payload.sub;
+      if (payload) {
+        const dbUser = marketDataStore.getUser(payload.sub);
+        user = dbUser || { id: payload.sub, username: payload.username, role: payload.role, status: 'active' };
+      }
     }
-    const isFreeCrypto = symbol === 'BTCUSDT' && process.env.AUTH_REQUIRED !== '1';
-    const devBypass = process.env.DEV_HOOKS === '1' && process.env.AUTH_REQUIRED !== '1';
-    const hasAccess = devBypass || isFreeCrypto || entitlementService.hasEntitlement(userId, symbol, 'BARS');
+
+    const hasAccess = AccessPolicy.isAuthorized({
+      user,
+      symbol,
+      provider,
+      dataType: 'BARS',
+    });
 
     if (!hasAccess) {
       res.writeHead(403, { 'content-type': MIME_TYPES['.json'] });
-      res.end(JSON.stringify({ error: 'Entitlement denied', symbol }));
+      res.end(JSON.stringify({ error: 'Entitlement denied', symbol, provider }));
       return;
     }
 
-    const result = marketDataStore.queryBars(symbol, timeframe, { beforeTime, limit });
+    const result = marketDataStore.queryBars({ provider, symbol, timeframe, beforeTime, limit });
     res.writeHead(200, { 'content-type': MIME_TYPES['.json'] });
     res.end(JSON.stringify({
+      provider,
       symbol,
       timeframe,
       bars: result.bars,
@@ -339,7 +349,13 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
   if (token) {
     const payload = verifyToken(token);
     if (payload) {
-      user = { id: payload.sub, username: payload.username, role: payload.role, status: 'active' };
+      const dbUser = marketDataStore.getUser(payload.sub);
+      user = dbUser || { id: payload.sub, username: payload.username, role: payload.role, status: 'active' };
+      if (user.status === 'suspended') {
+        console.warn(`[DeepChart Server] Rejecting connection: user ${user.id} is suspended`);
+        ws.close(1008, 'User account is suspended');
+        return;
+      }
     } else {
       console.warn(`[DeepChart Server] Invalid or expired token provided`);
       if (process.env.AUTH_REQUIRED === '1') {
@@ -417,20 +433,6 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
 
       const msg = parsed as Record<string, unknown>;
 
-      // 3. Safe rejection of deprecated/legacy trading messages
-      const legacyTradingTypes = new Set([
-        'DOM_ORDER',
-        'UPDATE_COPIER',
-        'SET_PROP_TRAILING_MODE',
-        'RESET_PROP_ACCOUNT',
-        'CLEAR_JOURNAL',
-        'SET_PROP_CONFIG',
-      ]);
-      if (typeof msg.type === 'string' && legacyTradingTypes.has(msg.type)) {
-        console.warn(`[DeepChart Server] Rejected deprecated trading message: ${msg.type}`);
-        return;
-      }
-
       if (msg.type === 'SUBSCRIBE') {
         const requestedSymbol = typeof msg.symbol === 'string' ? msg.symbol : undefined;
         const requestedTf = typeof msg.timeframe === 'string' ? msg.timeframe : session.subscribedTimeframe || '1m';
@@ -451,21 +453,21 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
           return;
         }
 
-        // Entitlement check
-        const userId = session.user?.id || 'guest';
-        const isFreeCrypto = requestedSymbol === 'BTCUSDT' && process.env.AUTH_REQUIRED !== '1';
-        const devBypass = process.env.DEV_HOOKS === '1' && process.env.AUTH_REQUIRED !== '1';
-        const hasAccess =
-          devBypass ||
-          isFreeCrypto ||
-          entitlementService.hasEntitlement(userId, requestedSymbol, 'FOOTPRINT');
+        // Entitlement check via centralized AccessPolicy
+        const provider = requestedSymbol === 'BTCUSDT' ? 'binance' : (process.env.FUTURES_PROVIDER || 'none');
+        const hasAccess = AccessPolicy.isAuthorized({
+          user: session.user,
+          symbol: requestedSymbol,
+          provider,
+          dataType: 'FOOTPRINT',
+        });
 
         if (!hasAccess) {
-          console.warn(`[DeepChart Server] Denied SUBSCRIBE for '${requestedSymbol}': user '${userId}' lacks entitlement`);
+          console.warn(`[DeepChart Server] Denied SUBSCRIBE for '${requestedSymbol}': user '${session.user?.id || 'guest'}' lacks entitlement`);
           session.send({
             type: 'ERROR',
             code: 'ENTITLEMENT_DENIED',
-            message: `User '${userId}' lacks entitlement for ${requestedSymbol}`,
+            message: `User '${session.user?.id || 'guest'}' lacks entitlement for ${requestedSymbol}`,
           });
           return;
         }
@@ -499,21 +501,21 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
           return;
         }
 
-        // Entitlement check for REPLAY
-        const userId = session.user?.id || 'guest';
-        const isFreeCryptoReplay = session.subscribedSymbol === 'BTCUSDT' && process.env.AUTH_REQUIRED !== '1';
-        const devBypass = process.env.DEV_HOOKS === '1' && process.env.AUTH_REQUIRED !== '1';
-        const hasReplayAccess =
-          devBypass ||
-          isFreeCryptoReplay ||
-          entitlementService.hasEntitlement(userId, session.subscribedSymbol, 'REPLAY');
+        // Entitlement check for REPLAY via centralized AccessPolicy
+        const provider = session.subscribedSymbol === 'BTCUSDT' ? 'binance' : (process.env.FUTURES_PROVIDER || 'none');
+        const hasReplayAccess = AccessPolicy.isAuthorized({
+          user: session.user,
+          symbol: session.subscribedSymbol,
+          provider,
+          dataType: 'REPLAY',
+        });
 
         if (!hasReplayAccess) {
-          console.warn(`[DeepChart Server] Denied REPLAY for '${session.subscribedSymbol}': user '${userId}' lacks REPLAY entitlement`);
+          console.warn(`[DeepChart Server] Denied REPLAY for '${session.subscribedSymbol}': user '${session.user?.id || 'guest'}' lacks REPLAY entitlement`);
           session.send({
             type: 'ERROR',
             code: 'ENTITLEMENT_DENIED',
-            message: `User '${userId}' lacks REPLAY entitlement for ${session.subscribedSymbol}`,
+            message: `User '${session.user?.id || 'guest'}' lacks REPLAY entitlement for ${session.subscribedSymbol}`,
           });
           return;
         }
@@ -560,7 +562,10 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
           if (!session.replaySession) {
             const sym = session.subscribedSymbol;
             const inst = FUTURES_INSTRUMENTS[sym] || FUTURES_INSTRUMENTS.ES;
-            const ticks = contextManager.getTicksForReplay(sym);
+            let ticks = marketDataStore.queryTrades({ provider, symbol: sym, limit: 5000 }).trades;
+            if (ticks.length === 0) {
+              ticks = contextManager.getTicksForReplay(sym);
+            }
             session.replaySession = new ReplaySession(session, sym, inst, session.subscribedTimeframe, ticks);
           }
         }
@@ -583,27 +588,31 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
       } else if (msg.type === 'FETCH_HISTORY') {
         const symbol = typeof msg.symbol === 'string' ? msg.symbol : session.subscribedSymbol;
         const timeframe = typeof msg.timeframe === 'string' ? msg.timeframe : session.subscribedTimeframe || '1m';
+        const provider = typeof msg.provider === 'string' ? msg.provider : (symbol === 'BTCUSDT' ? 'binance' : (process.env.FUTURES_PROVIDER || 'none'));
         const beforeTime = typeof msg.beforeTime === 'number' && Number.isFinite(msg.beforeTime) ? msg.beforeTime : undefined;
         const limit = typeof msg.limit === 'number' && Number.isFinite(msg.limit) ? msg.limit : 300;
         const requestId = typeof msg.requestId === 'string' ? msg.requestId : undefined;
 
-        const userId = session.user?.id || 'guest';
-        const isFreeCrypto = symbol === 'BTCUSDT' && process.env.AUTH_REQUIRED !== '1';
-        const devBypass = process.env.DEV_HOOKS === '1' && process.env.AUTH_REQUIRED !== '1';
-        const hasAccess = devBypass || isFreeCrypto || entitlementService.hasEntitlement(userId, symbol, 'BARS');
+        const hasAccess = AccessPolicy.isAuthorized({
+          user: session.user,
+          symbol,
+          provider,
+          dataType: 'BARS',
+        });
 
         if (!hasAccess) {
           session.send({
             type: 'ERROR',
             code: 'ENTITLEMENT_DENIED',
-            message: `User '${userId}' lacks BARS entitlement for ${symbol}`,
+            message: `User '${session.user?.id || 'guest'}' lacks BARS entitlement for ${symbol}`,
           });
           return;
         }
 
-        const result = marketDataStore.queryBars(symbol, timeframe, { beforeTime, limit });
+        const result = marketDataStore.queryBars({ provider, symbol, timeframe, beforeTime, limit });
         session.send({
           type: 'HISTORY_RESPONSE',
+          provider,
           symbol,
           timeframe,
           bars: result.bars,

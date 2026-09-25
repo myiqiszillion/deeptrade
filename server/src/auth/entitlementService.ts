@@ -1,5 +1,6 @@
 import { FUTURES_INSTRUMENTS, parseContractSymbol } from '../futuresConfig.js';
 import { DataType, Entitlement } from './types.js';
+import { marketDataStore } from '../storage/marketDataStore.js';
 
 type RevocationListener = (userId: string, revokedEntitlement: Entitlement) => void;
 
@@ -8,11 +9,10 @@ export class EntitlementService {
   private revocationListeners: RevocationListener[] = [];
 
   /**
-   * Grant an entitlement to a user.
+   * Grant an entitlement to a user and persist to store.
    */
   public grant(entitlement: Entitlement): void {
     const list = this.entitlements.get(entitlement.userId) || [];
-    // Replace if same ID exists
     const idx = list.findIndex((e) => e.id === entitlement.id);
     if (idx >= 0) {
       list[idx] = entitlement;
@@ -20,6 +20,12 @@ export class EntitlementService {
       list.push(entitlement);
     }
     this.entitlements.set(entitlement.userId, list);
+
+    try {
+      marketDataStore.saveEntitlement(entitlement);
+    } catch {
+      // Ignore if store uninitialized in unit tests
+    }
   }
 
   /**
@@ -27,22 +33,33 @@ export class EntitlementService {
    */
   public revoke(userId: string, entitlementId: string): boolean {
     const list = this.entitlements.get(userId);
-    if (!list) return false;
+    let removed: Entitlement | undefined;
 
-    const idx = list.findIndex((e) => e.id === entitlementId);
-    if (idx === -1) return false;
-
-    const [removed] = list.splice(idx, 1);
-    this.entitlements.set(userId, list);
-
-    for (const listener of this.revocationListeners) {
-      try {
-        listener(userId, removed);
-      } catch (err) {
-        console.error('[EntitlementService] Error in revocation listener:', err);
+    if (list) {
+      const idx = list.findIndex((e) => e.id === entitlementId);
+      if (idx >= 0) {
+        [removed] = list.splice(idx, 1);
+        this.entitlements.set(userId, list);
       }
     }
-    return true;
+
+    try {
+      marketDataStore.deleteEntitlement(entitlementId);
+    } catch {
+      // Ignore
+    }
+
+    if (removed) {
+      for (const listener of this.revocationListeners) {
+        try {
+          listener(userId, removed);
+        } catch (err) {
+          console.error('[EntitlementService] Error in revocation listener:', err);
+        }
+      }
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -51,6 +68,13 @@ export class EntitlementService {
   public revokeAll(userId: string): void {
     const list = this.entitlements.get(userId) || [];
     this.entitlements.delete(userId);
+
+    try {
+      marketDataStore.deleteUserEntitlements(userId);
+    } catch {
+      // Ignore
+    }
+
     for (const ent of list) {
       for (const listener of this.revocationListeners) {
         try {
@@ -63,20 +87,40 @@ export class EntitlementService {
   }
 
   /**
-   * Get all active entitlements for a user.
+   * Get all active entitlements for a user (with persistent store fallback).
    */
   public getUserEntitlements(userId: string): Entitlement[] {
     const now = Date.now();
-    const list = this.entitlements.get(userId) || [];
+    let list = this.entitlements.get(userId);
+
+    if (!list) {
+      try {
+        list = marketDataStore.getEntitlementsForUser(userId);
+        this.entitlements.set(userId, list);
+      } catch {
+        list = [];
+      }
+    }
+
     return list.filter((e) => e.validUntil > now);
   }
 
   /**
    * Check whether a user is entitled to receive data for a given symbol and data type.
-   * FAIL-CLOSED: returns false if user has no matching valid entitlement.
+   * FAIL-CLOSED: returns false if user has no matching valid entitlement or is suspended.
    */
   public hasEntitlement(userId: string, symbol: string, dataType: DataType): boolean {
     if (!userId || !symbol) return false;
+
+    // Check user status from persistent store if available
+    try {
+      const user = marketDataStore.getUser(userId);
+      if (user && user.status === 'suspended') {
+        return false;
+      }
+    } catch {
+      // Ignore
+    }
 
     const parsed = parseContractSymbol(symbol);
     const instrument = FUTURES_INSTRUMENTS[symbol] || FUTURES_INSTRUMENTS[parsed.root];

@@ -3,8 +3,12 @@ import { resolve } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { FootprintBar, HistoricalBar, Tick } from '../types.js';
 import { MarketTrade } from '../marketData/types.js';
+import { Entitlement, User } from '../auth/types.js';
 
 export interface BarQueryOptions {
+  provider: string;
+  symbol: string;
+  timeframe: string;
   beforeTime?: number;
   limit?: number;
 }
@@ -12,10 +16,17 @@ export interface BarQueryOptions {
 export interface BarQueryResult {
   bars: HistoricalBar[];
   hasMore: boolean;
-  cursor?: number;
+  cursor?: {
+    provider: string;
+    symbol: string;
+    timeframe: string;
+    beforeTime: number;
+  };
 }
 
 export interface TradeQueryOptions {
+  provider: string;
+  symbol: string;
   beforeTime?: number;
   beforeId?: string;
   limit?: number;
@@ -24,7 +35,12 @@ export interface TradeQueryOptions {
 export interface TradeQueryResult {
   trades: Tick[];
   hasMore: boolean;
-  cursor?: { beforeTime: number; beforeId: string };
+  cursor?: {
+    provider: string;
+    symbol: string;
+    beforeTime: number;
+    beforeId: string;
+  };
 }
 
 export interface GapRecord {
@@ -89,7 +105,7 @@ export class MarketDataStore {
         PRIMARY KEY (provider, symbol, trade_id)
       );
 
-      CREATE INDEX IF NOT EXISTS idx_trades_query ON trades(symbol, ts DESC, trade_id DESC);
+      CREATE INDEX IF NOT EXISTS idx_trades_query_scoped ON trades(provider, symbol, ts DESC, trade_id DESC);
 
       CREATE TABLE IF NOT EXISTS bars (
         provider TEXT NOT NULL,
@@ -108,7 +124,7 @@ export class MarketDataStore {
         PRIMARY KEY (provider, symbol, timeframe, time)
       );
 
-      CREATE INDEX IF NOT EXISTS idx_bars_query ON bars(symbol, timeframe, time DESC);
+      CREATE INDEX IF NOT EXISTS idx_bars_query_scoped ON bars(provider, symbol, timeframe, time DESC);
 
       CREATE TABLE IF NOT EXISTS gaps (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,6 +137,36 @@ export class MarketDataStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_gaps_lookup ON gaps(symbol, from_ts DESC);
+
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        role TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS entitlements (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        exchange TEXT,
+        symbol_pattern TEXT,
+        data_types TEXT NOT NULL,
+        valid_until INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_entitlements_user ON entitlements(user_id, valid_until);
+
+      CREATE TABLE IF NOT EXISTS revoked_tokens (
+        jti TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        revoked_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_revoked_tokens_exp ON revoked_tokens(expires_at);
     `);
 
     this.insertTradeStmt = this.db.prepare(`
@@ -144,7 +190,7 @@ export class MarketDataStore {
   }
 
   /**
-   * Batch insert trades into the persistent store. Deduplication is enforced by PRIMARY KEY.
+   * Batch insert trades into the persistent store. Deduplication is enforced by PRIMARY KEY (provider, symbol, trade_id).
    */
   public saveTrades(trades: (MarketTrade | Tick)[], symbol: string, provider: string): void {
     if (trades.length === 0) return;
@@ -215,27 +261,23 @@ export class MarketDataStore {
   }
 
   /**
-   * Query historical bars descending by open time, with stable cursor pagination.
-   * Returns bars in ASCENDING chronological order for chart display.
+   * Query historical bars descending by open time with provider-scoped filtering.
+   * Returns bars in ASCENDING chronological order for chart rendering.
    */
-  public queryBars(
-    symbol: string,
-    timeframe: string,
-    options: BarQueryOptions = {}
-  ): BarQueryResult {
+  public queryBars(options: BarQueryOptions): BarQueryResult {
+    const { provider, symbol, timeframe } = options;
     const limit = Math.min(Math.max(options.limit ?? 300, 1), 1000);
     const beforeTime = options.beforeTime ?? Number.MAX_SAFE_INTEGER;
 
-    // Fetch limit + 1 to determine if there are more bars
     const stmt = this.db.prepare(`
       SELECT time, open, high, low, close, volume, buy_volume, sell_volume, delta, is_partial
       FROM bars
-      WHERE symbol = ? AND timeframe = ? AND time < ?
+      WHERE provider = ? AND symbol = ? AND timeframe = ? AND time < ?
       ORDER BY time DESC
       LIMIT ?
     `);
 
-    const rows = stmt.all(symbol, timeframe, beforeTime, limit + 1) as Array<{
+    const rows = stmt.all(provider, symbol, timeframe, beforeTime, limit + 1) as Array<{
       time: number;
       open: number;
       high: number;
@@ -267,10 +309,14 @@ export class MarketDataStore {
       return b;
     });
 
-    // Return in ascending order for rendering
     bars.sort((a, b) => a.time - b.time);
 
-    const cursor = bars.length > 0 ? bars[0].time : undefined;
+    const cursor = bars.length > 0 ? {
+      provider,
+      symbol,
+      timeframe,
+      beforeTime: bars[0].time,
+    } : undefined;
 
     return {
       bars,
@@ -280,26 +326,24 @@ export class MarketDataStore {
   }
 
   /**
-   * Query historical trades with stable composite cursor (beforeTime, beforeId).
+   * Query historical trades with provider-scoped composite cursor (beforeTime, beforeId).
    */
-  public queryTrades(
-    symbol: string,
-    options: TradeQueryOptions = {}
-  ): TradeQueryResult {
+  public queryTrades(options: TradeQueryOptions): TradeQueryResult {
+    const { provider, symbol } = options;
     const limit = Math.min(Math.max(options.limit ?? 500, 1), 5000);
     const beforeTime = options.beforeTime ?? Number.MAX_SAFE_INTEGER;
     const beforeId = options.beforeId ?? '';
 
-    let sql = `
+    const sql = `
       SELECT trade_id, ts, price, size, side, aggressor_provenance, receive_ts, sequence_id, source_provider, is_coalesced
       FROM trades
-      WHERE symbol = ? AND (ts < ? OR (ts = ? AND trade_id < ?))
+      WHERE provider = ? AND symbol = ? AND (ts < ? OR (ts = ? AND trade_id < ?))
       ORDER BY ts DESC, trade_id DESC
       LIMIT ?
     `;
 
     const stmt = this.db.prepare(sql);
-    const rows = stmt.all(symbol, beforeTime, beforeTime, beforeId, limit + 1) as Array<{
+    const rows = stmt.all(provider, symbol, beforeTime, beforeTime, beforeId, limit + 1) as Array<{
       trade_id: string;
       ts: number;
       price: number;
@@ -334,7 +378,12 @@ export class MarketDataStore {
     });
 
     const oldest = trades.length > 0 ? trades[0] : undefined;
-    const cursor = oldest ? { beforeTime: oldest.timestamp, beforeId: oldest.id } : undefined;
+    const cursor = oldest ? {
+      provider,
+      symbol,
+      beforeTime: oldest.timestamp,
+      beforeId: oldest.id,
+    } : undefined;
 
     return {
       trades,
@@ -380,6 +429,94 @@ export class MarketDataStore {
       reason: r.reason,
       createdAt: Number(r.created_at),
     }));
+  }
+
+  // User Management
+  public saveUser(user: User): void {
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO users (id, username, role, status, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    stmt.run(user.id, user.username, user.role, user.status, Date.now());
+  }
+
+  public getUser(id: string): User | null {
+    const stmt = this.db.prepare(`SELECT id, username, role, status FROM users WHERE id = ?`);
+    const row = stmt.get(id) as any;
+    if (!row) return null;
+    return {
+      id: row.id,
+      username: row.username,
+      role: row.role,
+      status: row.status,
+    };
+  }
+
+  // Entitlement Management
+  public saveEntitlement(ent: Entitlement): void {
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO entitlements (id, user_id, provider, exchange, symbol_pattern, data_types, valid_until, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      ent.id,
+      ent.userId,
+      ent.provider,
+      ent.exchange ?? null,
+      ent.symbolPattern ?? null,
+      JSON.stringify(ent.dataTypes),
+      ent.validUntil,
+      ent.createdAt
+    );
+  }
+
+  public deleteEntitlement(id: string): void {
+    const stmt = this.db.prepare(`DELETE FROM entitlements WHERE id = ?`);
+    stmt.run(id);
+  }
+
+  public deleteUserEntitlements(userId: string): void {
+    const stmt = this.db.prepare(`DELETE FROM entitlements WHERE user_id = ?`);
+    stmt.run(userId);
+  }
+
+  public getEntitlementsForUser(userId: string): Entitlement[] {
+    const now = Date.now();
+    const stmt = this.db.prepare(`
+      SELECT id, user_id, provider, exchange, symbol_pattern, data_types, valid_until, created_at
+      FROM entitlements
+      WHERE user_id = ? AND valid_until > ?
+    `);
+    const rows = stmt.all(userId, now) as any[];
+    return rows.map((r) => ({
+      id: r.id,
+      userId: r.user_id,
+      provider: r.provider,
+      exchange: r.exchange ?? undefined,
+      symbolPattern: r.symbol_pattern ?? undefined,
+      dataTypes: JSON.parse(r.data_types),
+      validUntil: Number(r.valid_until),
+      createdAt: Number(r.created_at),
+    }));
+  }
+
+  // Token Revocation Management
+  public revokeTokenJti(jti: string, userId: string, expiresAt: number): void {
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO revoked_tokens (jti, user_id, expires_at, revoked_at)
+      VALUES (?, ?, ?, ?)
+    `);
+    stmt.run(jti, userId, expiresAt, Date.now());
+  }
+
+  public isTokenJtiRevoked(jti: string): boolean {
+    const stmt = this.db.prepare(`SELECT 1 FROM revoked_tokens WHERE jti = ?`);
+    return !!stmt.get(jti);
+  }
+
+  public purgeExpiredRevocations(): void {
+    const nowSec = Math.floor(Date.now() / 1000);
+    this.db.exec(`DELETE FROM revoked_tokens WHERE expires_at < ${nowSec}`);
   }
 
   /**

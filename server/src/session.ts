@@ -68,7 +68,8 @@ export class ChartSession {
   public send(msg: WSServerMessage): void {
     if (!this.isOpen) return;
     // Backpressure protection: disconnect abnormally slow clients to prevent server memory bloat
-    if (this.socket.bufferedAmount > 2 * 1024 * 1024) {
+    const maxBuffered = parseInt(process.env.MAX_BUFFERED_BYTES || '16777216', 10);
+    if (this.socket.bufferedAmount > maxBuffered) {
       console.warn(`[ChartSession] Client ${this.id} buffer overflow (${this.socket.bufferedAmount} bytes). Disconnecting.`);
       this.socket.close(1008, 'Client buffer overflow');
       return;
@@ -92,9 +93,6 @@ export class ChartSession {
     return true;
   }
 }
-
-/** Backward-compatible alias for any residual imports during migration. */
-export type TradingSession = ChartSession;
 
 export const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '500', 10);
 export const MAX_SESSIONS_PER_USER = parseInt(process.env.MAX_SESSIONS_PER_USER || '3', 10);

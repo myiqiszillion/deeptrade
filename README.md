@@ -52,27 +52,34 @@
 
 ---
 
-## 🌐 Nguồn Dữ Liệu & Khả Năng Nguồn
+## 🌐 Nguồn Dữ Liệu & Bảng Khả Năng (Capability Matrix)
 
-| Thị trường | Nguồn | Trạng thái & Ghi chú |
-|---|---|---|
-| **BTCUSDT** (Bitcoin Perpetual) | Binance USD-M Futures | ✅ **LIVE**: WebSocket `aggTrade` & `depth20` + REST history đầy đủ |
-| **CME Futures** (ES, NQ, YM, RTY, GC, CL, NG) | Tradovate Adapter | ✅ **THẬT** khi có credential (`FUTURES_PROVIDER=tradovate`). Chưa cấu hình $\rightarrow$ `FEED: UNAVAILABLE` (fail-closed) |
-| **Gamma Exposure (GEX)** | CBOE Delayed Chain | ✅ **THẬT**: Tính từ chain quyền chọn SPX/SPY/NDX/QQQ trễ ~15 phút |
-| **Options Flow** | Options Tape | Bảng hiển thị sweeps/blocks khi kết nối feed quyền chọn (để trống khi không có feed) |
+| Instrument | Provider | History | Realtime | Footprint | DOM |
+|---|---|---|---|---|---|
+| **BTCUSDT** | Binance | ticks | aggTrade | có giới hạn | depth20 |
+| **ES/MES/NQ/MNQ** | none (mặc định) | none | unavailable | unavailable | unavailable |
+| **CME qua Tradovate** | Tradovate | bars/quote-based | tùy credential | partial | vendor-dependent |
+| **CME qua Databento** | chưa triển khai (scaffold) | unavailable | unavailable | unavailable | unavailable |
+
+> **Chính sách Fail-Closed:** Khi chưa có license/credential cho nhà cung cấp futures, toàn bộ feed và lịch sử CME mặc định là `UNAVAILABLE`. Hệ thống tuyệt đối không sinh dữ liệu giả hay nến giả.
 
 ---
 
 ## 🚀 Hướng Dẫn Cài Đặt & Khởi Chạy
 
 ### Yêu cầu môi trường
-- Node.js >= 20 (khuyến nghị Node 20 hoặc 22 LTS)
-- pnpm >= 9
+- **Node.js >= 22.5** (bắt buộc cho `node:sqlite` DatabaseSync built-in)
+- **pnpm >= 9**
 
 ### Cài đặt dependencies
 ```bash
 pnpm install
 ```
+
+### Biến môi trường & Bảo mật (Security)
+- `AUTH_REQUIRED=1`: Bắt buộc kích hoạt trong production để bảo vệ dữ liệu và endpoint.
+- `AUTH_JWT_SECRET`: Khóa ký JWT tối thiểu 32 ký tự, bắt buộc phải thiết lập khi chạy production (hệ thống sẽ fail-fast và dừng ngay nếu thiếu).
+- `DEV_HOOKS=1`: Chỉ được phép bật ở môi trường phát triển (development), bị vô hiệu hóa hoàn toàn trong production.
 
 ### Chạy môi trường phát triển (Development)
 ```bash
@@ -82,36 +89,30 @@ pnpm dev
 - **WebSocket Server**: `ws://localhost:8080`
 
 ### Đóng gói & Chạy bản Production (1 Port duy nhất)
-Server Node.js được thiết kế để phục vụ cả WebSocket và client build tĩnh trên cùng một cổng (`8080`):
+Server Node.js được thiết kế để phục vụ cả WebSocket, REST API và client build tĩnh trên cùng một cổng (`8080`):
 ```bash
 pnpm build
 node server/dist/index.js
 ```
 - **Truy cập Terminal**: http://localhost:8080
 - **Health check API**: http://localhost:8080/healthz
+- **Metrics API**: http://localhost:8080/metrics
 
 ---
 
-## 🧪 Bộ Kiểm Thử (Verification Suites)
+## 🧪 Bộ Kiểm Thử (Unified Test Suites)
 
-DeepChart có hệ thống test toàn diện để bảo vệ tính đúng đắn của dữ liệu và engine:
+DeepChart có hệ thống test phân tầng rõ ràng (Unit, Integration, Protocol) để bảo vệ tính toàn vẹn:
 
 | Lệnh kiểm thử | Mục đích |
 |---|---|
 | `pnpm typecheck` | Kiểm tra TypeScript cho cả server và client (0 lỗi) |
-| `pnpm verify:types` | Chống protocol drift giữa server và client WebSocket messages |
-| `pnpm verify:footprint` | Kiểm chứng footprint: open candle, ask imbalance, stacked imbalance, unfinished auction |
-| `pnpm verify:replay` | Kiểm chứng isolated market replay: buffer, step, seek index, seek timestamp, consistency |
-| `pnpm verify:lifecycle` | 24 test kiểm tra chu kỳ sống feed, chuyển tab/mã, chống lẫn bar/depth |
-| `pnpm verify:feed` | Kiểm tra tính đúng đắn dữ liệu: fail-closed, validator, không chấp nhận feed rác |
-| `pnpm verify:tradovate` | 150 test offline adapter Tradovate (mapping, deduplication, fail-closed) |
-| `pnpm verify:p0` | 13 test bảo vệ tính toàn vẹn server (rate limit, protocol rejection) |
-| `pnpm verify:chart-smoke` | Smoke test kiểm tra HTTP server, WebSocket handshake và static assets |
-
-Chạy toàn bộ kiểm thử:
-```bash
-pnpm typecheck && pnpm verify:types && pnpm verify:footprint && pnpm verify:replay && pnpm verify:lifecycle
-```
+| `pnpm test` | Chạy toàn bộ test suite: protocol drift, unit tests và integration tests |
+| `pnpm test:unit` | Chạy unit tests: auth, entitlement, marketDataStore, sessionCalendar, footprintEngine, replaySession, validate |
+| `pnpm test:integration` | Chạy integration tests: chartSmoke, historyApi, websocket, tradovateAdapter, lifecycle |
+| `pnpm test:protocol` | Chống protocol drift giữa server và client WebSocket messages (`scripts/check-protocol-drift.mjs`) |
+| `pnpm verify:p0` | 13 test kiểm tra tính toàn vẹn server và rate limiting |
+| `pnpm test:offline` | Alias của `pnpm test` |
 
 ---
 

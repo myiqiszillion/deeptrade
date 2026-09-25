@@ -8,10 +8,10 @@
  * A real LIVE state still requires a validated event from the real vendor (see verify_p0 TEST 10).
  */
 import WebSocket from 'ws';
-import { FUTURES_INSTRUMENTS } from './futuresConfig.js';
-import { BinanceFuturesFeed, DataFeedCallbacks, SocketFactory } from './dataFeeds/binanceFeed.js';
-import { BinanceMarketDataFeed, LegacyFeedFactory, LegacyFeedLike } from './marketData/binanceAdapter.js';
-import { FeedStatusEvent, MarketDepthEvent, MarketTrade } from './marketData/types.js';
+import { FUTURES_INSTRUMENTS } from '../../src/futuresConfig.js';
+import { BinanceFuturesFeed, DataFeedCallbacks, SocketFactory } from '../../src/dataFeeds/binanceFeed.js';
+import { BinanceMarketDataFeed, LegacyFeedFactory, LegacyFeedLike } from '../../src/marketData/binanceAdapter.js';
+import { FeedStatusEvent, MarketDepthEvent, MarketTrade } from '../../src/marketData/types.js';
 
 let passed = 0;
 let failed = 0;

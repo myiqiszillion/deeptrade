@@ -20,13 +20,17 @@ RUN pnpm install --prod --frozen-lockfile --filter @deepchart/server...
 COPY --from=build /app/server/dist server/dist
 COPY --from=build /app/client/dist client/dist
 
+# Prepare persistent data directory with proper permissions
+RUN mkdir -p /app/data && chown -R node:node /app/data
+VOLUME ["/app/data"]
+
 # Run as non-root user for container security
 USER node
 
-# 0.0.0.0 is required so the container is reachable from outside; put auth/rate limits in
-# front of it before exposing the terminal publicly.
 ENV HOST=0.0.0.0
 ENV PORT=8080
+ENV STORAGE_PATH=/app/data/market_data.sqlite
+ENV AUTH_REQUIRED=1
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \

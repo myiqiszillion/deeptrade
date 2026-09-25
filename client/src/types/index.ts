@@ -205,42 +205,13 @@ export interface AbsorptionAlert {
   description: string;
 }
 
-export interface SlaveAccount {
-  id: string;
-  name: string;
-  multiplier: number;
-  enabled: boolean;
-  status: 'connected' | 'idle' | 'error';
-  lastCopiedOrder?: string;
-  latencyMs?: number;
-}
-
-export interface JournalTrade {
-  id: string;
-  symbol: string;
-  timestamp: number;
-  exitTimestamp?: number;
-  side: 'LONG' | 'SHORT';
-  entryPrice: number;
-  exitPrice?: number;
-  size: number;
-  pnl?: number;
-  pnlPercent?: number;
-  fee: number;
-  status: 'OPEN' | 'CLOSED';
-  mae: number;
-  mfe: number;
-  notes: string;
-  imbalanceContext?: string;
-}
-
-export interface RestingOrder {
-  id: string;
-  symbol: string;
-  side: 'LONG' | 'SHORT';
-  price: number;
-  size: number;
-  createdAt: number;
+export interface DataCoverage {
+  provider: string;
+  realtime: 'LIVE' | 'UNAVAILABLE' | 'DEGRADED';
+  history: 'NONE' | 'BARS' | 'TICKS';
+  footprint: 'AVAILABLE' | 'UNAVAILABLE' | 'PARTIAL';
+  orderbook: 'NONE' | 'L2' | 'MBO' | 'PARTIAL';
+  gapStatus: 'NONE' | 'DETECTED' | 'RECOVERED' | 'UNRECOVERED';
 }
 
 export interface ReplayProgress {
@@ -296,40 +267,6 @@ export interface OptionsFlowTrade {
   source: 'LIVE';
 }
 
-export type TrailingMode = 'INTRADAY_PEAK' | 'END_OF_DAY';
-
-export interface PropAccountConfig {
-  accountName: string;
-  firmName: 'Topstep' | 'Apex' | 'MyFundedFutures' | 'Bulenox' | 'FTMO';
-  initialBalance: number;
-  profitTarget: number;
-  maxTrailingDrawdown: number;
-  dailyLossLimit: number;
-  maxContractsMini: number;
-  maxContractsMicro: number;
-  trailingMode: TrailingMode;
-  consistencyTargetPercent: number;
-}
-
-export interface PropAccountState {
-  balance: number;
-  equity: number;
-  peakHighWaterMark: number;
-  trailingThreshold: number;
-  trailingBufferRemaining: number;
-  trailingBufferPercent: number;
-  todayPnL: number;
-  dailyLossRemaining: number;
-  dailyLossPercent: number;
-  profitTargetProgressPercent: number;
-  highestDayProfit: number;
-  consistencyPercent: number;
-  isDailyLossBreached: boolean;
-  isDrawdownBreached: boolean;
-  isLockedOut: boolean;
-  openContractsCount: number;
-}
-
 export type WSClientMessage =
   | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'binance' | 'simulator' | 'cme' }
   | {
@@ -338,7 +275,7 @@ export type WSClientMessage =
       speed?: number;
       timestamp?: number;
     }
-  | { type: 'FETCH_HISTORY'; symbol: string; timeframe: string; beforeTime?: number; limit?: number; requestId?: string };
+  | { type: 'FETCH_HISTORY'; symbol: string; timeframe: string; provider?: string; beforeTime?: number; limit?: number; requestId?: string };
 
 export type WSServerMessage =
   | {
@@ -374,5 +311,5 @@ export type WSServerMessage =
   | { type: 'OPTIONS_FLOW'; trade: OptionsFlowTrade }
   | { type: 'REPLAY_STATE'; progress: ReplayProgress }
   | { type: 'ERROR'; code: string; message: string }
-  | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number; requestId?: string };
+  | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; provider?: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number | { provider: string; symbol: string; timeframe?: string; beforeTime: number; beforeId?: string }; requestId?: string };
 

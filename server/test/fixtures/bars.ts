@@ -1,0 +1,48 @@
+import { HistoricalBar } from '../../src/types.js';
+
+export const sampleHistoricalBars: HistoricalBar[] = [
+  {
+    time: 1700000000000,
+    open: 5000.0,
+    high: 5010.0,
+    low: 4995.0,
+    close: 5005.0,
+    volume: 100,
+    buyVolume: 60,
+    sellVolume: 40,
+    delta: 20,
+  },
+  {
+    time: 1700000060000,
+    open: 5005.0,
+    high: 5015.0,
+    low: 5002.0,
+    close: 5012.0,
+    volume: 150,
+    buyVolume: 80,
+    sellVolume: 70,
+    delta: 10,
+  },
+  {
+    time: 1700000120000,
+    open: 5012.0,
+    high: 5020.0,
+    low: 5010.0,
+    close: 5018.0,
+    volume: 200,
+    buyVolume: 110,
+    sellVolume: 90,
+    delta: 20,
+  },
+  {
+    time: 1700000180000,
+    open: 5018.0,
+    high: 5025.0,
+    low: 5015.0,
+    close: 5022.0,
+    volume: 180,
+    buyVolume: 90,
+    sellVolume: 90,
+    delta: 0,
+  },
+];
