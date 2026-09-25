@@ -33,7 +33,7 @@ export const SpeedOfTapeWidget: React.FC<SpeedOfTapeWidgetProps> = ({
       </div>
 
       {/* Speed Metrics */}
-      <div className="p-3 border-b border-brand-border bg-brand-bg/40 space-y-2">
+      {recentTicks.length > 0 && <div className="p-3 border-b border-brand-border bg-brand-bg/40 space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-slate-400">Tape Speed:</span>
           <div className="flex items-center gap-1 font-bold text-sm">
@@ -64,7 +64,7 @@ export const SpeedOfTapeWidget: React.FC<SpeedOfTapeWidgetProps> = ({
             />
           </div>
         </div>
-      </div>
+      </div>}
 
       {/* Deep Trades (Whale Tracker) Section */}
       {deepTrades.length > 0 && (
@@ -92,8 +92,9 @@ export const SpeedOfTapeWidget: React.FC<SpeedOfTapeWidgetProps> = ({
 
       {/* Time & Sales Ticker Stream */}
       <div className="flex-1 overflow-y-auto divide-y divide-brand-border/10 text-[10px]">
+        {recentTicks.length === 0 && <div className="p-6 text-center text-slate-500">Waiting for trades. Tape metrics appear after market records arrive.</div>}
         {recentTicks.slice(0, 50).map((tick) => {
-          const isBuy = !tick.isBuyerMaker;
+          const sideColor = tick.side === 'buy' ? 'text-emerald-400' : tick.side === 'sell' ? 'text-rose-400' : 'text-slate-400';
           const timeStr = new Date(tick.timestamp).toTimeString().split(' ')[0] + '.' + String(tick.timestamp % 1000).padStart(3, '0');
 
           return (
@@ -104,7 +105,7 @@ export const SpeedOfTapeWidget: React.FC<SpeedOfTapeWidgetProps> = ({
               }`}
             >
               <span className="text-slate-500">{timeStr}</span>
-              <span className={isBuy ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-semibold'}>
+              <span className={`${sideColor} font-semibold`}>
                 {formatPrice(tick.price, tickSize)}
               </span>
               <span className="text-slate-300">{tick.size.toFixed(3)}</span>

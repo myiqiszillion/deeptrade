@@ -67,6 +67,7 @@ export class DeepChartWSClient {
   private listeners: WSListeners = {};
   private isConnected = false;
   private reconnectTimer: any = null;
+  private disconnectTimer: any = null;
   private intentionalClose = false;
 
   constructor(url?: string) {
@@ -92,15 +93,30 @@ export class DeepChartWSClient {
 
   public connect() {
     this.intentionalClose = false;
+    if (this.disconnectTimer) {
+      clearTimeout(this.disconnectTimer);
+      this.disconnectTimer = null;
+    }
+
     if (this.ws) {
-      // Detach handlers from the previous socket first: otherwise its close event would
-      // schedule a reconnect and leave two live connections. React StrictMode double-mounts
-      // effects in dev, so this matters.
+      // Re-use an already open or connecting socket (e.g. React 18 StrictMode remount)
+      if (this.ws.readyState === WebSocket.OPEN) {
+        this.isConnected = true;
+        this.listeners.onConnectionChange?.(true);
+        return;
+      }
+      if (this.ws.readyState === WebSocket.CONNECTING) {
+        return;
+      }
+      // Detach handlers from closed/stale socket before creating a new one
       this.ws.onopen = null;
       this.ws.onmessage = null;
       this.ws.onclose = null;
       this.ws.onerror = null;
-      this.ws.close();
+      try {
+        this.ws.close();
+      } catch {}
+      this.ws = null;
     }
 
     try {
@@ -239,15 +255,38 @@ export class DeepChartWSClient {
 
   public disconnect() {
     this.intentionalClose = true;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    if (this.ws) {
-      this.ws.onopen = null;
-      this.ws.onmessage = null;
-      this.ws.onclose = null;
-      this.ws.onerror = null;
-      this.ws.close();
-      this.ws = null;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
+    if (this.disconnectTimer) {
+      clearTimeout(this.disconnectTimer);
+      this.disconnectTimer = null;
+    }
+
+    // Debounce close to prevent React 18 StrictMode double-mount from aborting
+    // an in-flight handshake with "WebSocket is closed before the connection is established".
+    this.disconnectTimer = setTimeout(() => {
+      this.disconnectTimer = null;
+      if (this.ws) {
+        const socket = this.ws;
+        this.ws = null;
+        this.isConnected = false;
+        this.listeners.onConnectionChange?.(false);
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onclose = null;
+        socket.onerror = null;
+
+        if (socket.readyState === WebSocket.CONNECTING) {
+          socket.onopen = () => {
+            try { socket.close(); } catch {}
+          };
+        } else {
+          try { socket.close(); } catch {}
+        }
+      }
+    }, 50);
   }
 }
 

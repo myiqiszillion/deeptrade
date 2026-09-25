@@ -36,10 +36,14 @@ export const DOMLadder: React.FC<DOMLadderProps> = ({
       <div className="flex items-center justify-between border-b border-brand-border px-3 py-2 bg-brand-surfaceHover">
         <span className="font-bold text-slate-200">DOM LADDER (VIEW ONLY)</span>
         <span
-          className="text-[10px] px-1.5 py-0.5 bg-emerald-500/20 text-emerald-400 rounded font-semibold"
-          title={symbol === 'BTCUSDT' ? 'Live Binance depth stream' : 'Market depth stream'}
+          className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
+            orderbook.bids.length + orderbook.asks.length > 0
+              ? 'bg-emerald-500/20 text-emerald-400'
+              : 'bg-amber-500/20 text-amber-400'
+          }`}
+          title="Depth snapshot; connection status is shown in the workspace footer"
         >
-          {symbol === 'BTCUSDT' ? 'Live L2' : 'Market L2'}
+          {orderbook.bids.length + orderbook.asks.length > 0 ? 'DEPTH SNAPSHOT' : 'NO DEPTH'}
         </span>
       </div>
 
@@ -52,6 +56,7 @@ export const DOMLadder: React.FC<DOMLadderProps> = ({
 
       {/* DOM Rows */}
       <div className="flex-1 overflow-y-auto divide-y divide-brand-border/20 text-[11px]">
+        {bids.length + asks.length === 0 && <div className="p-6 text-center text-slate-500">No depth data for {symbol}. Waiting for a valid order book.</div>}
         {/* Asks (Red side) */}
         {asks.slice(-20).map((ask) => {
           const depthPercent = (ask.size / maxBookSize) * 100;
@@ -92,7 +97,7 @@ export const DOMLadder: React.FC<DOMLadderProps> = ({
           <span className="text-[10px] font-normal text-amber-400/80">
             {spread !== null ? `SPREAD: ${formatPrice(spread, tickSize)}` : 'SPREAD: —'}
           </span>
-          <span>CURRENT: {formatPrice(currentPrice, tickSize)}</span>
+          <span>CURRENT: {currentPrice > 0 ? formatPrice(currentPrice, tickSize) : '—'}</span>
           <span className="text-[10px] font-normal text-amber-400/80">
             {bids.length + asks.length} LVLS
           </span>

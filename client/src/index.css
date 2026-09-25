@@ -46,3 +46,45 @@ body {
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
+
+.terminal-shell { display: flex; flex-direction: column; height: 100dvh; width: 100%; overflow: hidden; background: #0c0e12; color: #cbd5e1; }
+.terminal-header { display: flex; align-items: center; gap: 16px; min-height: 54px; padding: 8px 16px; background: #14171f; border-bottom: 1px solid #232936; }
+.terminal-brand { display: flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; color: #f1f5f9; letter-spacing: -.5px; }
+.brand-mark { display: grid; place-items: center; width: 28px; height: 28px; background: #2dd4bf; color: #0c0e12; border-radius: 7px; }
+.terminal-select { height: 29px; background: #0c0e12; border: 1px solid #2a3142; border-radius: 5px; padding: 0 8px; font-size: 11px; color: #e2e8f0; }
+.instrument-select { width: 210px; font-weight: 600; }
+.terminal-button, .terminal-icon, .segmented-control button { display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; border: 1px solid transparent; border-radius: 4px; padding: 5px 9px; font-size: 11px; color: #94a3b8; transition: background .15s, color .15s; }
+.terminal-icon { padding: 6px; flex-shrink: 0; }
+.terminal-button:hover, .terminal-icon:hover, .segmented-control button:hover { background: #232936; color: #f1f5f9; }
+.terminal-button[aria-pressed="true"], .segmented-control button[aria-pressed="true"] { background: #213139; color: #5eead4; border-color: #325057; }
+button:focus-visible, select:focus-visible { outline: 2px solid #5eead4; outline-offset: 2px; }
+.connection-dot { width: 6px; height: 6px; border-radius: 50%; background: #f59e0b; }
+.connection-dot.connected { background: #34d399; }
+.chart-toolbar { display: flex; align-items: center; gap: 6px; min-height: 43px; padding: 6px 12px; border-bottom: 1px solid #232936; overflow-x: auto; flex-shrink: 0; }
+.chart-toolbar > * { flex-shrink: 0; }
+.segmented-control { display: flex; padding: 2px; background: #14171f; border: 1px solid #232936; border-radius: 6px; }
+.toolbar-divider { width: 1px; height: 18px; margin: 0 4px; background: #232936; }
+.workspace { position: relative; }
+.analytics-dock { width: 340px; max-width: 40vw; flex-shrink: 0; display: flex; flex-direction: column; border-left: 1px solid #232936; background: #14171f; }
+.dock-title { height: 37px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; font-size: 11px; font-weight: 600; border-bottom: 1px solid #232936; }
+.dock-content { flex: 1; min-height: 0; overflow: hidden; }
+.dock-content > div { width: 100%; border-left: 0; }
+.dock-content > div > div:first-child { flex-wrap: wrap; gap: 5px; }
+.terminal-status { display: flex; gap: 18px; align-items: center; flex-shrink: 0; min-height: 28px; padding: 5px 14px; border-top: 1px solid #232936; font-size: 10px; color: #64748b; white-space: nowrap; overflow-x: auto; }
+.help-strip { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px; background: #15242a; color: #a5c8cd; font-size: 11px; }
+.chart-empty-state { position: absolute; inset: 60px 0 35px; display: grid; place-items: center; pointer-events: none; padding: 20px; }
+.empty-state-card { max-width: 350px; text-align: center; background: #0c0e12ed; padding: 25px; border: 1px solid #232936; border-radius: 10px; }
+.empty-state-eyebrow { font-size: 10px; letter-spacing: 2px; color: #64748b; }
+.empty-state-card h2 { margin: 12px 0 8px; font-size: 17px; font-weight: 500; color: #e2e8f0; }
+.empty-state-card p { font-size: 12px; color: #94a3b8; margin-bottom: 12px; }
+@media (max-width: 900px) {
+  .terminal-header { gap: 10px; padding: 8px 10px; }
+  .terminal-brand > span:last-child { display: none; }
+  .instrument-select { width: 150px; }
+  .analytics-dock { width: 300px; max-width: 45vw; }
+}
+@media (max-width: 640px) {
+  .terminal-header { flex-wrap: wrap; }
+  .analytics-dock { position: absolute; right: 0; top: 0; bottom: 0; z-index: 25; width: 320px; max-width: 90vw; box-shadow: -12px 0 30px #0008; }
+  .terminal-status { gap: 12px; }
+}

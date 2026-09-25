@@ -21,7 +21,9 @@ export const GEXPanel: React.FC<GEXPanelProps> = ({ profile, currentPrice }) => 
     );
   }
 
-  const levels = profile.levels;
+  const levels = show0DteOnly
+    ? profile.levels.filter((level) => level.zeroDteGex !== 0)
+    : profile.levels;
   const maxGex = Math.max(1, ...levels.map((l) => Math.max(l.callGex, Math.abs(l.putGex))));
 
   return (
@@ -100,7 +102,11 @@ export const GEXPanel: React.FC<GEXPanelProps> = ({ profile, currentPrice }) => 
 
       {/* Strike by Strike GEX Distribution */}
       <div className="flex-1 overflow-y-auto divide-y divide-brand-border/20 text-[10px]">
-        {levels.map((lvl) => {
+        {levels.length === 0 ? (
+          <div className="p-6 text-center text-slate-500">
+            No 0DTE gamma levels are available in this option chain.
+          </div>
+        ) : levels.map((lvl) => {
           const isCallWall = lvl.strike === profile.callWall;
           const isPutWall = lvl.strike === profile.putWall;
           const isZeroFlip = lvl.strike === profile.zeroGammaFlip;

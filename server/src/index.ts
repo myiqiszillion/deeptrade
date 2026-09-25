@@ -1,4 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { extname, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
@@ -13,6 +14,14 @@ import { marketDataStore } from './storage/marketDataStore.js';
 import { ReplaySession } from './replaySession.js';
 import { MAX_SESSIONS, MAX_SESSIONS_PER_USER, ChartSession } from './session.js';
 import { Tick, WSClientMessage, WSServerMessage } from './types.js';
+
+try {
+  process.loadEnvFile?.();
+} catch {
+  try {
+    process.loadEnvFile?.('../.env');
+  } catch {}
+}
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -145,7 +154,22 @@ entitlementService.onRevocation((userId, revoked) => {
 // Setup HTTP + WebSocket server on ONE port so a free host only needs to expose 8080:
 // the built client is served as static files, /healthz reports status, and the WS upgrade
 // happens on the same listener.
-const CLIENT_DIST = resolve(process.cwd(), process.env.CLIENT_DIST || fileURLToPath(new URL('../../client/dist', import.meta.url)));
+function resolveClientDist(): string {
+  const custom = process.env.CLIENT_DIST;
+  if (custom) {
+    const candidates = [
+      resolve(process.cwd(), custom),
+      resolve(process.cwd(), '..', custom),
+      resolve(fileURLToPath(new URL('../../', import.meta.url)), custom),
+    ];
+    for (const c of candidates) {
+      if (existsSync(c)) return c;
+    }
+  }
+  return fileURLToPath(new URL('../../client/dist', import.meta.url));
+}
+
+const CLIENT_DIST = resolveClientDist();
 const MAX_PAYLOAD_BYTES = parseInt(process.env.MAX_PAYLOAD_BYTES || '65536', 10);
 
 const MIME_TYPES: Record<string, string> = {

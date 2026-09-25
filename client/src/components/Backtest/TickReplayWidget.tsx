@@ -53,7 +53,7 @@ export const TickReplayWidget: React.FC<TickReplayWidgetProps> = ({
   };
 
   return (
-    <div className="flex items-center gap-3 px-3 py-1.5 bg-brand-surface border-t border-brand-border text-xs select-none">
+    <div className="flex shrink-0 items-center gap-3 px-3 py-1.5 bg-brand-surface border-t border-brand-border text-xs select-none overflow-x-auto whitespace-nowrap">
       <div className="flex items-center gap-1.5 font-bold text-amber-400">
         <FastForward size={14} />
         <span>REPLAY (ISOLATED)</span>

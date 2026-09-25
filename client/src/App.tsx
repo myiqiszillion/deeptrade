@@ -23,19 +23,10 @@ import { DOMScalper } from './components/DOM/DOMScalper';
 import { ProfileOverlay } from './components/Profile/ProfileOverlay';
 import { SpeedOfTapeWidget } from './components/Tape/SpeedOfTapeWidget';
 import { TickReplayWidget } from './components/Backtest/TickReplayWidget';
-import { OnboardingCard } from './components/Help/OnboardingCard';
 import { GEXPanel } from './components/Options/GEXPanel';
 import { OptionsFlowWidget } from './components/Options/OptionsFlowWidget';
 import { formatPrice } from './services/priceFormat';
-import {
-  Activity,
-  Layers,
-  BarChart2,
-  Wifi,
-  WifiOff,
-  Shield,
-  Flame,
-} from 'lucide-react';
+import { RotateCcw, X, PanelRight, HelpCircle } from 'lucide-react';
 
 const POPULAR_FUTURES = [
   { symbol: 'ES', name: 'E-mini S&P 500' },
@@ -53,6 +44,7 @@ const POPULAR_FUTURES = [
 const SETTINGS_STORAGE_KEY = 'deepchart_free_settings_v1';
 
 interface SavedSettings {
+  activePanel?: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | null;
   symbol?: string;
   timeframe?: string;
   chartMode?: 'footprint' | 'candles';
@@ -194,11 +186,12 @@ export const App: React.FC = () => {
   const hasMoreHistoryRef = useRef(true);
 
   // Features & Panels Toggles (restored from browser storage)
-  const [showDOM, setShowDOM] = useState(savedSettings.showDOM ?? true);
-  const [showProfile, setShowProfile] = useState(savedSettings.showProfile ?? true);
-  const [showTape, setShowTape] = useState(savedSettings.showTape ?? false);
-  const [showGEX, setShowGEX] = useState(savedSettings.showGEX ?? true);
-  const [showOptionsFlow, setShowOptionsFlow] = useState(savedSettings.showOptionsFlow ?? false);
+  const [activePanel, setActivePanel] = useState<SavedSettings['activePanel']>(
+    savedSettings.activePanel === null ? null :
+      ['DOM', 'Profile', 'Tape', 'GEX', 'Flow'].includes(savedSettings.activePanel ?? '') ? savedSettings.activePanel : 'DOM'
+  );
+  const [showHelp, setShowHelp] = useState(false);
+  const [showReplay, setShowReplay] = useState(false);
   const [showVWAP, setShowVWAP] = useState(savedSettings.showVWAP ?? true);
   const [showImbalances, setShowImbalances] = useState(savedSettings.showImbalances ?? true);
   const [showDeltaNumbers, setShowDeltaNumbers] = useState(savedSettings.showDeltaNumbers ?? true);
@@ -210,11 +203,7 @@ export const App: React.FC = () => {
       symbol,
       timeframe,
       chartMode,
-      showDOM,
-      showProfile,
-      showTape,
-      showGEX,
-      showOptionsFlow,
+      activePanel,
       showVWAP,
       showImbalances,
       showDeltaNumbers,
@@ -223,11 +212,7 @@ export const App: React.FC = () => {
     symbol,
     timeframe,
     chartMode,
-    showDOM,
-    showProfile,
-    showTape,
-    showGEX,
-    showOptionsFlow,
+    activePanel,
     showVWAP,
     showImbalances,
     showDeltaNumbers,
@@ -236,7 +221,10 @@ export const App: React.FC = () => {
   // Connect WebSocket & Register Listeners
   useEffect(() => {
     wsClient.setListeners({
-      onConnectionChange: (connected) => setIsConnected(connected),
+      onConnectionChange: (connected) => {
+        setIsConnected(connected);
+        if (!connected) setFeedStatus('UNAVAILABLE');
+      },
       onInitState: (data) => {
         // After a reconnect the server may be back on its default contract or timeframe. Ask it to
         // switch instead of silently reverting the UI.
@@ -373,6 +361,10 @@ export const App: React.FC = () => {
           hasMoreHistoryRef.current = false;
           setHasMoreHistory(false);
         }
+        if (resp.hasMore && resp.bars.length > 0) {
+          hasMoreHistoryRef.current = true;
+          setHasMoreHistory(true);
+        }
         if (resp.bars.length > 0) {
           setHistoryBars((prev) => {
             const seenTimes = new Set<number>(prev.map((b) => b.time));
@@ -409,6 +401,13 @@ export const App: React.FC = () => {
     setHasMoreHistory(true);
     setIsLoadingHistory(false);
     setSymbol(sym);
+    setFeedStatus('UNAVAILABLE');
+    setHistorySource('NONE');
+    setOrderbook({ bids: [], asks: [], timestamp: 0, lastUpdateId: 0 });
+    setVolumeProfile({ poc: 0, vah: 0, val: 0, totalVolume: 0, levels: [] });
+    setTpoProfile({ poc: 0, vah: 0, val: 0, initialBalance: { high: 0, low: 0 }, brackets: [], priceLevels: {} });
+    setCurrentCVD(0);
+    setVwapPoints([]);
     setBars([]);
     setHistoryBars([]);
     setCurrentPrice(0);
@@ -461,198 +460,41 @@ export const App: React.FC = () => {
   }, [viewport.panX, viewport.barWidth, viewport.barSpacing, historyBars, bars]);
 
   return (
-    <div className="relative flex flex-col w-screen h-screen bg-brand-bg text-brand-text font-sans overflow-hidden select-none">
-      {/* Top Header Bar */}
-      <header className="h-12 border-b border-brand-border bg-brand-surface px-4 flex items-center justify-between z-20">
-        {/* Left: Brand & Symbol Selector */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded bg-gradient-to-tr from-amber-500 to-rose-500 flex items-center justify-center font-bold text-black text-sm shadow">
-              DC
-            </div>
-            <span className="font-extrabold text-base tracking-wider text-white">
-              DEEP<span className="text-amber-400">CHART</span>
-            </span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 font-bold border border-emerald-500/30">
-              FREE · ORDER FLOW
-            </span>
-          </div>
-
-          <div className="h-5 w-px bg-brand-border" />
-
-          {/* Futures Symbol Selector */}
-          <div className="flex items-center gap-1 bg-brand-bg p-0.5 rounded border border-brand-border text-xs">
-            {POPULAR_FUTURES.map((f) => (
-              <button
-                key={f.symbol}
-                onClick={() => handleSelectSymbol(f.symbol)}
-                className={`px-2 py-1 rounded font-mono font-bold transition-all ${
-                  symbol === f.symbol
-                    ? 'bg-amber-500 text-black shadow'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-                title={f.name}
-              >
-                {f.symbol}
-              </button>
-            ))}
-          </div>
-
-          {/* Chart Mode Toggle */}
-          <div className="flex items-center bg-brand-bg p-0.5 rounded border border-brand-border text-xs">
-            <button
-              onClick={() => setChartMode('footprint')}
-              className={`px-2 py-1 rounded font-semibold transition-all ${
-                chartMode === 'footprint'
-                  ? 'bg-amber-500 text-black shadow'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-              title="Footprint Bid × Ask Clusters"
-            >
-              Footprint
-            </button>
-            <button
-              onClick={() => setChartMode('candles')}
-              className={`px-2 py-1 rounded font-semibold transition-all ${
-                chartMode === 'candles'
-                  ? 'bg-amber-500 text-black shadow'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-              title="Standard Candlesticks with Order Flow Delta"
-            >
-              Candles
-            </button>
-          </div>
-
-          {/* Current Price Badge */}
-          <span className="px-2.5 py-1 rounded bg-amber-500/15 text-amber-400 font-bold font-mono text-sm border border-amber-500/30">
-            {formatPrice(currentPrice, instrument?.tickSize)}
-          </span>
-        </div>
-
-        {/* Center: Quick Chart Toggles */}
-        <div className="flex items-center gap-1 bg-brand-surfaceHover p-1 rounded-lg border border-brand-border text-xs">
-          <button
-            onClick={() => setShowImbalances(!showImbalances)}
-            className={`px-2 py-0.5 rounded font-medium ${
-              showImbalances ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' : 'text-slate-400'
-            }`}
-          >
-            Imbalance 300%
-          </button>
-          <button
-            onClick={() => setShowVWAP(!showVWAP)}
-            className={`px-2 py-0.5 rounded font-medium ${
-              showVWAP ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40' : 'text-slate-400'
-            }`}
-          >
-            VWAP Bands
-          </button>
-          <button
-            onClick={() => setShowDeltaNumbers(!showDeltaNumbers)}
-            className={`px-2 py-0.5 rounded font-medium ${
-              showDeltaNumbers ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : 'text-slate-400'
-            }`}
-          >
-            Delta Bar
-          </button>
-
-          <div className="h-4 w-px bg-brand-border" />
-
-          {/* Footprint bar timeframe (server rebuilds the bar engine) */}
-          <div className="flex items-center gap-1">
-            <span className="text-slate-500 text-[10px]">TF</span>
-            {['1s', '5s', '15s', '1m', '5m'].map((tf) => (
-              <button
-                key={tf}
-                onClick={() => handleTimeframeChange(tf)}
-                className={`px-1.5 py-0.5 rounded font-mono text-[10px] ${
-                  timeframe === tf ? 'bg-amber-500 text-black font-bold' : 'text-slate-400 hover:text-white'
-                }`}
-                title={`Footprint bar duration: ${tf}`}
-              >
-                {tf}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Right: Panels & Tool Toggles */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowGEX(!showGEX)}
-            className={`px-2 py-1 rounded flex items-center gap-1 text-xs font-semibold ${
-              showGEX ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' : 'text-slate-400 hover:bg-slate-800'
-            }`}
-            title="Toggle Gamma Exposure (GEX) Panel"
-          >
-            <Shield size={14} />
-            <span>GEX</span>
-          </button>
-
-          <button
-            onClick={() => setShowOptionsFlow(!showOptionsFlow)}
-            className={`px-2 py-1 rounded flex items-center gap-1 text-xs font-semibold ${
-              showOptionsFlow ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40' : 'text-slate-400 hover:bg-slate-800'
-            }`}
-            title="Toggle Options Flow Scanner"
-          >
-            <Flame size={14} />
-            <span>Flow</span>
-          </button>
-
-          <button
-            onClick={() => setShowDOM(!showDOM)}
-            className={`px-2 py-1 rounded flex items-center gap-1 text-xs ${
-              showDOM ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-800'
-            }`}
-            title="Toggle DOM Ladder"
-          >
-            <Layers size={14} />
-            <span>DOM</span>
-          </button>
-
-          <button
-            onClick={() => setShowProfile(!showProfile)}
-            className={`px-2 py-1 rounded flex items-center gap-1 text-xs ${
-              showProfile ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-800'
-            }`}
-            title="Toggle Volume & Market Profile"
-          >
-            <BarChart2 size={14} />
-            <span>Profile</span>
-          </button>
-
-          <button
-            onClick={() => setShowTape(!showTape)}
-            className={`px-2 py-1 rounded flex items-center gap-1 text-xs ${
-              showTape ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-800'
-            }`}
-            title="Toggle Speed of Tape"
-          >
-            <Activity size={14} />
-            <span>Tape</span>
-          </button>
-
-          <div className="h-5 w-px bg-brand-border" />
-
-          {/* WS Connection Status */}
-          <div className="pl-1">
-            {isConnected ? (
-              <span className="text-emerald-400" title="Connected to DeepChart Real Engine">
-                <Wifi size={14} />
-              </span>
-            ) : (
-              <span className="text-rose-500" title="Disconnected">
-                <WifiOff size={14} />
-              </span>
-            )}
-          </div>
+    <div className="terminal-shell">
+      <header className="terminal-header">
+        <div className="terminal-brand"><span className="brand-mark">D</span><span>Deep<span className="text-slate-400">Chart</span></span></div>
+        <select aria-label="Instrument" value={symbol} onChange={(e) => handleSelectSymbol(e.target.value)} className="terminal-select instrument-select">
+          {POPULAR_FUTURES.map((f) => <option key={f.symbol} value={f.symbol}>{f.symbol} · {f.name}</option>)}
+        </select>
+        <span className="font-mono text-sm tabular-nums text-slate-100">{currentPrice > 0 ? formatPrice(currentPrice, instrument?.tickSize) : '—'}</span>
+        <span className="hidden xl:inline text-[11px] text-slate-500">{instrument?.exchange ?? 'Market data'}</span>
+        <div className="ml-auto flex items-center gap-2 shrink-0">
+          <span className={isConnected ? 'connection-dot connected' : 'connection-dot'} title={isConnected ? 'Engine connected — not a market-feed guarantee' : 'Engine disconnected'} />
+          <span className="hidden sm:inline text-[11px] text-slate-400">{isConnected ? 'Connected' : 'Disconnected'}</span>
+          <button className="terminal-button" aria-pressed={showReplay} onClick={() => setShowReplay(!showReplay)}>Replay</button>
+          <button className="terminal-icon" aria-label="Chart help" aria-expanded={showHelp} onClick={() => setShowHelp(!showHelp)}><HelpCircle size={15} /></button>
+          <button className="terminal-icon" aria-label="Toggle analytics panel" aria-expanded={!!activePanel} onClick={() => setActivePanel(activePanel ? null : 'DOM')}><PanelRight size={15} /></button>
         </div>
       </header>
-
+      <nav className="chart-toolbar" aria-label="Chart controls">
+        <div className="segmented-control">
+          {(['footprint', 'candles'] as const).map((mode) => <button key={mode} aria-pressed={chartMode === mode} onClick={() => setChartMode(mode)}>{mode === 'footprint' ? 'Footprint' : 'Candles'}</button>)}
+        </div>
+        <select aria-label="Timeframe" value={timeframe} onChange={(e) => handleTimeframeChange(e.target.value)} className="terminal-select">
+          {['1s', '5s', '15s', '1m', '5m'].map((tf) => <option key={tf}>{tf}</option>)}
+        </select>
+        <span className="toolbar-divider" />
+        <button className="terminal-button" aria-pressed={showImbalances} onClick={() => setShowImbalances(!showImbalances)}>Imbalance</button>
+        <button className="terminal-button" aria-pressed={showVWAP} onClick={() => setShowVWAP(!showVWAP)}>VWAP</button>
+        <button className="terminal-button" aria-pressed={showDeltaNumbers} onClick={() => setShowDeltaNumbers(!showDeltaNumbers)}>Delta</button>
+        <button className="terminal-icon" title="Reset chart view" aria-label="Reset chart view" onClick={() => setViewport((prev) => ({ ...prev, panX: 0, panY: 300, barWidth: 80, priceScale: 6, autoFollow: true, anchorPrice: undefined }))}><RotateCcw size={14} /></button>
+        <div className="ml-auto flex gap-1">
+          {(['DOM', 'Profile', 'Tape', 'GEX', 'Flow'] as const).map((panel) => <button key={panel} className="terminal-button" aria-pressed={activePanel === panel} onClick={() => setActivePanel(activePanel === panel ? null : panel)}>{panel}</button>)}
+        </div>
+      </nav>
+      {showHelp && <div className="help-strip"><span>Drag to pan ? Scroll to zoom ? Fit view to reset ? Analytics tabs open one panel at a time. Historical candles do not contain footprint data.</span><button className="terminal-icon" aria-label="Close help" onClick={() => setShowHelp(false)}><X size={14} /></button></div>}
       {/* Main Content Workspace */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="workspace flex-1 min-h-0 flex overflow-hidden">
         {/* Center: Main Footprint Canvas & CVD Panel */}
         <div className="flex-1 flex flex-col min-w-0 h-full">
           <div className="flex-1 min-h-0 relative">
@@ -679,6 +521,7 @@ export const App: React.FC = () => {
               crosshairX={crosshairX}
               onCrosshairChange={setCrosshairX}
             />
+            {bars.length === 0 && historyBars.length === 0 && <div className="chart-empty-state"><div className="empty-state-card"><span className="empty-state-eyebrow">{symbol} / {timeframe}</span><h2>Waiting for market data</h2><p>{isConnected ? 'No validated market records are available for this instrument.' : 'Connecting to the chart engine.'}</p><span className="text-[11px] text-slate-500">{symbol === 'BTCUSDT' ? 'Binance public market data is unavailable.' : 'Databento CME access, contract permissions, or market-data configuration is unavailable.'} No simulated data is displayed.</span></div></div>}
           </div>
 
           <CVDPanel
@@ -691,71 +534,61 @@ export const App: React.FC = () => {
           />
         </div>
 
-        {/* Right Side Panels */}
-        {showGEX && <GEXPanel profile={gexProfile} currentPrice={currentPrice} />}
+        {/* Right Side Dock: horizontally scrollable so multiple analytics panels never crush the chart. */}
+        <aside className={activePanel ? "analytics-dock" : "hidden"} aria-label="Analytics"><div className="dock-title"><span>{activePanel} <span className="text-slate-500 font-normal">/ {symbol}</span></span><button className="terminal-icon" aria-label="Close analytics panel" onClick={() => setActivePanel(null)}><X size={14} /></button></div><div className="dock-content">
+          {activePanel === 'GEX' && <GEXPanel profile={gexProfile} currentPrice={currentPrice} />}
 
-        {showOptionsFlow && <OptionsFlowWidget flowTrades={optionsFlow} />}
+          {activePanel === 'Flow' && <OptionsFlowWidget flowTrades={optionsFlow} />}
 
-        {showProfile && (
-          <ProfileOverlay
-            volumeProfile={volumeProfile}
-            tpoProfile={tpoProfile}
-            currentPrice={currentPrice}
-            tickSize={instrument?.tickSize}
-          />
-        )}
+          {activePanel === 'Profile' && (
+            <ProfileOverlay
+              volumeProfile={volumeProfile}
+              tpoProfile={tpoProfile}
+              currentPrice={currentPrice}
+              tickSize={instrument?.tickSize}
+            />
+          )}
 
-        {showDOM && (
-          <DOMScalper
-            orderbook={orderbook}
-            currentPrice={currentPrice}
-            symbol={symbol}
-            isFutures={symbol !== 'BTCUSDT'}
-            tickSize={instrument?.tickSize}
-          />
-        )}
+          {activePanel === 'DOM' && (
+            <DOMScalper
+              orderbook={orderbook}
+              currentPrice={currentPrice}
+              symbol={symbol}
+              isFutures={symbol !== 'BTCUSDT'}
+              tickSize={instrument?.tickSize}
+            />
+          )}
 
-        {showTape && (
-          <SpeedOfTapeWidget
-            tape={tape}
-            recentTicks={recentTicks}
-            deepTrades={deepTrades}
-            symbol={symbol}
-            deepTradeThresholdUsd={deepTradeThresholdUsd}
-            tickSize={instrument?.tickSize}
-          />
-        )}
+          {activePanel === 'Tape' && (
+            <SpeedOfTapeWidget
+              tape={tape}
+              recentTicks={recentTicks}
+              deepTrades={deepTrades}
+              symbol={symbol}
+              deepTradeThresholdUsd={deepTradeThresholdUsd}
+              tickSize={instrument?.tickSize}
+            />
+          )}
+        </div></aside>
       </div>
 
       {/* Bottom Footer: Backtest Every Tick + data provenance */}
-      <TickReplayWidget
+      {showReplay && <TickReplayWidget
         progress={replayProgress}
         symbol={symbol}
         isCrypto={symbol === 'BTCUSDT'}
         feedStatus={feedStatus}
         historySource={historySource}
         gexSource={gexProfile?.dataSource}
-      />
+      />}
 
-      {/* Real-only guard: never render fabricated market data for feedless instruments */}
-      {feedStatus === 'UNAVAILABLE' && bars.length === 0 && historyBars.length === 0 && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none">
-          <div className="max-w-[560px] mx-4 px-5 py-4 rounded-lg border border-amber-500/40 bg-brand-surface/95 shadow-2xl text-center space-y-2">
-            <div className="text-sm font-bold text-amber-400">FEED: UNAVAILABLE — {symbol}</div>
-            <div className="text-[11px] text-slate-300">
-              Real-time market data is unavailable (configuration, entitlement or connection). DeepChart is real-only: it
-              will not display simulated ticks, generated depth, a reconstructed footprint or a synthetic volume
-              profile.
-            </div>
-            <div className="text-[10px] text-slate-500">
-              Configure Tradovate API access and market-data permissions for futures. BTCUSDT uses the public Binance feed.
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* First-run primer (dismissible, remembered locally) */}
-      <OnboardingCard symbol={symbol} />
+      <footer className="terminal-status">
+        <span className={feedStatus === 'LIVE' && isConnected ? 'text-emerald-400' : 'text-amber-400'}>● {feedStatus === 'LIVE' && isConnected ? 'Feed realtime' : 'Feed unavailable'}</span>
+        <span>History: {historySource === 'REAL_TICKS' ? 'real ticks' : historySource === 'REAL_BARS' ? 'real bars' : 'none'}</span>
+        {isLoadingHistory && <span className="text-sky-400">Loading history…</span>}
+        {!hasMoreHistory && <span>History limit reached</span>}
+        <span className="ml-auto">{sessionMode === 'LIVE' ? 'Chart workspace' : sessionMode.replaceAll('_', ' ')}</span>
+      </footer>
     </div>
   );
 };

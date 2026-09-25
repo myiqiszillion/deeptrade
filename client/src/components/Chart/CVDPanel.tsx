@@ -60,15 +60,26 @@ export const CVDPanel: React.FC<CVDPanelProps> = ({
     }
   };
 
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    if (!viewport || !onViewportChange) return;
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.1 : 0.9;
-    onViewportChange({
-      ...viewport,
-      barWidth: Math.max(40, Math.min(180, viewport.barWidth * factor)),
-    });
-  };
+  // Zoom on wheel (attached via non-passive native listener so preventDefault prevents page scrolling)
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const onWheel = (e: WheelEvent) => {
+      if (!viewport || !onViewportChange) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 0.9;
+      onViewportChange({
+        ...viewport,
+        barWidth: Math.max(40, Math.min(180, viewport.barWidth * factor)),
+      });
+    };
+
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      canvas.removeEventListener('wheel', onWheel);
+    };
+  }, [viewport, onViewportChange]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -191,7 +202,6 @@ export const CVDPanel: React.FC<CVDPanelProps> = ({
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
-        onWheel={handleWheel}
         className="w-full h-full block cursor-crosshair"
       />
     </div>

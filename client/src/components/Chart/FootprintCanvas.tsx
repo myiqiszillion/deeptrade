@@ -231,24 +231,35 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     }
   };
 
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    if (e.shiftKey) {
-      // Zoom Y (price scale)
-      const factor = e.deltaY < 0 ? 1.1 : 0.9;
-      updateViewport((prev) => ({
-        ...prev,
-        priceScale: clampScale(prev.priceScale, factor, 2, 25),
-      }));
-    } else {
-      // Zoom X (bar width)
-      const factor = e.deltaY < 0 ? 1.1 : 0.9;
-      updateViewport((prev) => ({
-        ...prev,
-        barWidth: clampScale(prev.barWidth, factor, 40, 180),
-      }));
-    }
-  };
+  // Zoom on wheel (attached via non-passive native listener so preventDefault prevents page scrolling)
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (e.shiftKey) {
+        // Zoom Y (price scale)
+        const factor = e.deltaY < 0 ? 1.1 : 0.9;
+        updateViewport((prev) => ({
+          ...prev,
+          priceScale: clampScale(prev.priceScale, factor, 2, 25),
+        }));
+      } else {
+        // Zoom X (bar width)
+        const factor = e.deltaY < 0 ? 1.1 : 0.9;
+        updateViewport((prev) => ({
+          ...prev,
+          barWidth: clampScale(prev.barWidth, factor, 40, 180),
+        }));
+      }
+    };
+
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      canvas.removeEventListener('wheel', onWheel);
+    };
+  }, [updateViewport]);
 
   // Convert Price to Canvas Y: anchored to viewport.anchorPrice so live ticks don't jump the chart
   const priceToY = useCallback(
@@ -768,7 +779,6 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
-        onWheel={handleWheel}
         className="w-full h-full cursor-crosshair block"
       />
 
