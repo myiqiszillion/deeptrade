@@ -208,7 +208,7 @@ export class DeepChartWSClient {
     }
   }
 
-  public subscribe(symbol: string, source?: 'binance' | 'simulator' | 'cme', timeframe?: string) {
+  public subscribe(symbol: string, source?: 'cme' | 'databento' | 'tradovate' | string, timeframe?: string) {
     this.send({
       type: 'SUBSCRIBE',
       symbol,
@@ -229,6 +229,11 @@ export class DeepChartWSClient {
   /** Advance the replay playhead by exactly one tick. */
   public stepReplay() {
     this.send({ type: 'REPLAY_CONTROL', action: 'STEP' });
+  }
+
+  /** Seek the replay playhead to a specific tick index or epoch timestamp. */
+  public seekReplay(target: number) {
+    this.controlReplay('SEEK', undefined, Math.floor(target));
   }
 
   /** Exit replay mode and return to the live market stream. */

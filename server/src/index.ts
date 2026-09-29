@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { entitlementService } from './auth/entitlementService.js';
 import { AccessPolicy } from './auth/accessPolicy.js';
-import { verifyToken } from './auth/token.js';
+import { createToken, verifyToken } from './auth/token.js';
 import { DataType, User } from './auth/types.js';
 import { FUTURES_INSTRUMENTS } from './futuresConfig.js';
 import { MarketContextManager, TIMEFRAMES } from './marketData/marketContext.js';
@@ -14,6 +14,7 @@ import { marketDataStore } from './storage/marketDataStore.js';
 import { ReplaySession } from './replaySession.js';
 import { MAX_SESSIONS, MAX_SESSIONS_PER_USER, ChartSession } from './session.js';
 import { Tick, WSClientMessage, WSServerMessage } from './types.js';
+import { fetchDatabentoBars } from './marketData/databentoHistory.js';
 
 try {
   process.loadEnvFile?.();
@@ -140,9 +141,9 @@ entitlementService.onRevocation((userId, revoked) => {
           session.replaySession.dispose();
           session.replaySession = null;
         }
-        if (process.env.AUTH_REQUIRED !== '1' && sym !== 'BTCUSDT') {
+        if (process.env.AUTH_REQUIRED !== '1' && sym !== DEFAULT_SYMBOL) {
           const gen = session.nextGeneration();
-          void contextManager.subscribe(session, 'BTCUSDT', '1m', gen);
+          void contextManager.subscribe(session, DEFAULT_SYMBOL, '1m', gen);
         } else {
           session.close(1008, 'Entitlement revoked');
         }
@@ -212,15 +213,54 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse): Promise<v
   }
 }
 
+function sendJson(res: ServerResponse, statusCode: number, data: unknown): void {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.writeHead(statusCode, { 'content-type': MIME_TYPES['.json'] });
+  res.end(JSON.stringify(data));
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (chunk) => {
+      data += chunk;
+      if (data.length > 65536) req.destroy();
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(data) as Record<string, unknown>);
+      } catch {
+        resolve({});
+      }
+    });
+    req.on('error', () => resolve({}));
+  });
+}
+
 const httpServer = createServer(async (req, res) => {
+  // 1. CORS Preflight
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.writeHead(204).end();
+    return;
+  }
+
+  // 2. Health Check
   if (req.url?.startsWith('/healthz')) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     let symbolParam = url.searchParams.get('symbol');
+    const defaultSym = process.env.DEFAULT_SYMBOL || 'ES';
     if (!symbolParam) {
       const activeSession = sessions.values().next().value;
-      symbolParam = activeSession?.subscribedSymbol || 'BTCUSDT';
+      symbolParam = activeSession?.subscribedSymbol || defaultSym;
     }
-    const ctx = contextManager.getContext(symbolParam) || contextManager.getContext('BTCUSDT');
+    const targetSymbol = symbolParam || defaultSym;
+    const ctx = contextManager.getContext(targetSymbol) || contextManager.getContext(defaultSym);
     res.writeHead(200, { 'content-type': MIME_TYPES['.json'] });
     res.end(
       JSON.stringify({
@@ -244,6 +284,7 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // 3. Prometheus / System Metrics
   if (req.url?.startsWith('/metrics')) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.writeHead(200, { 'content-type': MIME_TYPES['.json'] });
@@ -267,19 +308,125 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  if (req.url?.startsWith('/api/v1/history')) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204).end();
+  // 4. Instruments API: list and detail
+  if (req.url?.startsWith('/api/v1/instruments')) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const parts = url.pathname.split('/').filter(Boolean);
+    const futuresProvider = process.env.FUTURES_PROVIDER || 'none';
+
+    // Detailed single instrument: /api/v1/instruments/:symbol
+    if (parts.length === 4) {
+      const sym = parts[3].toUpperCase();
+      const inst = FUTURES_INSTRUMENTS[sym];
+      if (!inst) {
+        sendJson(res, 404, { error: `Instrument '${sym}' not found` });
+        return;
+      }
+      const ctx = contextManager.getContext(sym);
+      const provider = futuresProvider;
+      sendJson(res, 200, {
+        instrument: inst,
+        feedStatus: ctx?.feedStatus || (futuresProvider !== 'none' ? 'CONNECTING' : 'UNAVAILABLE'),
+        provider: ctx?.provider || provider,
+        lastTradeTs: ctx?.lastTradeTs || 0,
+        lastDepthTs: ctx?.lastDepthTs || 0,
+        subscribers: ctx?.subscriberCount || 0,
+      });
       return;
     }
 
+    // List all instruments
+    const list = Object.values(FUTURES_INSTRUMENTS).map((inst) => {
+      const provider = futuresProvider;
+      const ctx = contextManager.getContext(inst.symbol);
+      const feedStatus = ctx?.feedStatus || (futuresProvider !== 'none' ? 'CONNECTING' : 'UNAVAILABLE');
+      return {
+        ...inst,
+        provider,
+        feedStatus,
+        isLive: feedStatus === 'LIVE',
+      };
+    });
+    sendJson(res, 200, { instruments: list, total: list.length });
+    return;
+  }
+
+  // 5. System Status API
+  if (req.url?.startsWith('/api/v1/status')) {
+    const allContexts = contextManager.getAllContexts();
+    sendJson(res, 200, {
+      status: 'ok',
+      uptimeSec: Math.round(process.uptime()),
+      sessions: sessions.size,
+      uniqueUsers: userSessions.size,
+      futuresProvider: process.env.FUTURES_PROVIDER || 'none',
+      activeContexts: allContexts.map((ctx) => ({
+        symbol: ctx.symbol,
+        provider: ctx.provider,
+        feedStatus: ctx.feedStatus,
+        subscribers: ctx.subscriberCount,
+        lastTradeTs: ctx.lastTradeTs,
+        lastDepthTs: ctx.lastDepthTs,
+      })),
+      memory: process.memoryUsage(),
+      nodeVersion: process.version,
+      timestamp: Date.now(),
+    });
+    return;
+  }
+
+  // 6. GEX (Gamma Exposure) API
+  if (req.url?.startsWith('/api/v1/gex')) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const symbol = url.searchParams.get('symbol') || 'BTCUSDT';
+    let sym = (url.searchParams.get('symbol') || 'SPX').toUpperCase();
+    if (sym === 'ES' || sym === 'MES') sym = 'SPX';
+    else if (sym === 'NQ' || sym === 'MNQ') sym = 'NDX';
+    else if (sym === 'YM' || sym === 'MYM') sym = 'DJI';
+    else if (sym === 'RTY' || sym === 'M2K') sym = 'RUT';
+
+    let profile = contextManager.getGexEngine().getProfile(sym);
+    if (!profile) {
+      try {
+        const chain = await contextManager.getCboeProvider().fetchChain(sym);
+        if (chain) {
+          profile = contextManager.getGexEngine().buildFromChain(sym, chain.spotPrice, chain.contracts);
+        }
+      } catch (err) {
+        console.warn(`[GEX API] Error fetching chain for ${sym}:`, (err as Error).message);
+      }
+    }
+    if (!profile) {
+      sendJson(res, 404, { error: `GEX profile for ${sym} is unavailable`, underlying: sym });
+      return;
+    }
+    sendJson(res, 200, profile);
+    return;
+  }
+
+  // 7. Options Flow API
+  if (req.url?.startsWith('/api/v1/options-flow')) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const underlying = url.searchParams.get('symbol') || url.searchParams.get('underlying');
+    let flow = contextManager.getGexEngine().getRecentFlow();
+    if (underlying) {
+      let matchSym = underlying.toUpperCase();
+      if (matchSym === 'ES' || matchSym === 'MES') matchSym = 'SPX';
+      else if (matchSym === 'NQ' || matchSym === 'MNQ') matchSym = 'NDX';
+      else if (matchSym === 'YM' || matchSym === 'MYM') matchSym = 'DJI';
+      else if (matchSym === 'RTY' || matchSym === 'M2K') matchSym = 'RUT';
+      flow = flow.filter((f) => f.underlying.toUpperCase() === matchSym);
+    }
+    sendJson(res, 200, { optionsFlow: flow, count: flow.length });
+    return;
+  }
+
+  // 8. Historical Bars API
+  if (req.url?.startsWith('/api/v1/history')) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const symbol = url.searchParams.get('symbol') || (process.env.DEFAULT_SYMBOL || 'ES');
     const timeframe = url.searchParams.get('timeframe') || '1m';
-    const provider = url.searchParams.get('provider') || (symbol === 'BTCUSDT' ? 'binance' : (process.env.FUTURES_PROVIDER || 'none'));
+    const defaultFuturesProvider = process.env.DATABENTO_API_KEY ? 'databento' : (process.env.TRADOVATE_API_KEY ? 'tradovate' : 'none');
+    const provider = url.searchParams.get('provider') || (process.env.FUTURES_PROVIDER || defaultFuturesProvider);
     const beforeTimeStr = url.searchParams.get('beforeTime');
     const beforeTime = beforeTimeStr ? parseInt(beforeTimeStr, 10) : undefined;
     const limitStr = url.searchParams.get('limit');
@@ -304,23 +451,169 @@ const httpServer = createServer(async (req, res) => {
     });
 
     if (!hasAccess) {
-      res.writeHead(403, { 'content-type': MIME_TYPES['.json'] });
-      res.end(JSON.stringify({ error: 'Entitlement denied', symbol, provider }));
+      sendJson(res, 403, { error: 'Entitlement denied', symbol, provider, dataType: 'BARS' });
       return;
     }
 
     const result = marketDataStore.queryBars({ provider, symbol, timeframe, beforeTime, limit });
-    res.writeHead(200, { 'content-type': MIME_TYPES['.json'] });
-    res.end(JSON.stringify({
+    sendJson(res, 200, {
       provider,
       symbol,
       timeframe,
       bars: result.bars,
       hasMore: result.hasMore,
       cursor: result.cursor,
-    }));
+    });
     return;
   }
+
+  // 9. Historical Trades / Ticks API
+  if (req.url?.startsWith('/api/v1/trades')) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const symbol = url.searchParams.get('symbol') || (process.env.DEFAULT_SYMBOL || 'ES');
+    const provider = url.searchParams.get('provider') || (process.env.FUTURES_PROVIDER || 'none');
+    const beforeTimeStr = url.searchParams.get('beforeTime');
+    const beforeTime = beforeTimeStr ? parseInt(beforeTimeStr, 10) : undefined;
+    const beforeId = url.searchParams.get('beforeId') || undefined;
+    const limitStr = url.searchParams.get('limit');
+    const limit = limitStr ? parseInt(limitStr, 10) : 100;
+
+    const token = extractToken(req);
+    let user: User | null = null;
+    if (token) {
+      const payload = verifyToken(token);
+      if (payload) {
+        const dbUser = marketDataStore.getUser(payload.sub);
+        user = dbUser || { id: payload.sub, username: payload.username, role: payload.role, status: 'active' };
+      }
+    }
+
+    const hasAccess = AccessPolicy.isAuthorized({
+      user,
+      symbol,
+      provider,
+      dataType: 'TICKS',
+    });
+
+    if (!hasAccess) {
+      sendJson(res, 403, { error: 'Entitlement denied', symbol, provider, dataType: 'TICKS' });
+      return;
+    }
+
+    const result = marketDataStore.queryTrades({ provider, symbol, beforeTime, beforeId, limit });
+    sendJson(res, 200, {
+      provider,
+      symbol,
+      trades: result.trades,
+      hasMore: result.hasMore,
+      cursor: result.cursor,
+    });
+    return;
+  }
+
+  // 10. Recorded Sequence & Market Data Gaps API
+  if (req.url?.startsWith('/api/v1/gaps')) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const symbol = url.searchParams.get('symbol') || (process.env.DEFAULT_SYMBOL || 'ES');
+    const fromTs = url.searchParams.get('fromTs') ? parseInt(url.searchParams.get('fromTs')!, 10) : 0;
+    const toTs = url.searchParams.get('toTs') ? parseInt(url.searchParams.get('toTs')!, 10) : Number.MAX_SAFE_INTEGER;
+    const gaps = marketDataStore.getGaps(symbol, fromTs, toTs);
+    sendJson(res, 200, { symbol, gaps, count: gaps.length });
+    return;
+  }
+
+  // 11. Data Coverage & Capability Matrix API
+  if (req.url?.startsWith('/api/v1/coverage')) {
+    const futuresProvider = process.env.FUTURES_PROVIDER || 'none';
+    const coverage = Object.values(FUTURES_INSTRUMENTS).map((inst) => {
+      const provider = futuresProvider;
+      const ctx = contextManager.getContext(inst.symbol);
+      const isLive = futuresProvider !== 'none' && ctx?.feedStatus === 'LIVE';
+      return {
+        symbol: inst.symbol,
+        name: inst.name,
+        exchange: inst.exchange,
+        category: inst.category,
+        provider,
+        realtime: isLive ? 'LIVE' : (futuresProvider !== 'none' ? 'DEGRADED' : 'UNAVAILABLE'),
+        history: futuresProvider !== 'none' ? 'BARS' : 'NONE',
+        footprint: isLive ? 'AVAILABLE' : 'UNAVAILABLE',
+        orderbook: futuresProvider === 'databento' ? 'L2' : 'NONE',
+        gapStatus: 'NONE',
+      };
+    });
+    sendJson(res, 200, { coverage });
+    return;
+  }
+
+  // 12. Authentication / Login API
+  if (req.url?.startsWith('/api/v1/auth/login') && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    const username = typeof body.username === 'string' && body.username.trim() ? body.username.trim() : 'guest';
+    const role: 'user' | 'admin' = body.role === 'admin' ? 'admin' : 'user';
+    const userId = typeof body.userId === 'string' && body.userId ? body.userId : `usr_${username}`;
+    const user: User = {
+      id: userId,
+      username,
+      role,
+      status: 'active',
+    };
+    marketDataStore.saveUser(user);
+    const token = createToken(user);
+    const entitlements = marketDataStore.getEntitlementsForUser(user.id);
+    sendJson(res, 200, {
+      token,
+      user,
+      entitlements,
+      message: 'Authentication successful',
+    });
+    return;
+  }
+
+  // 13. Current User & Entitlements API
+  if (req.url?.startsWith('/api/v1/auth/me')) {
+    const token = extractToken(req);
+    if (!token) {
+      sendJson(res, 401, { error: 'No authorization token provided' });
+      return;
+    }
+    const payload = verifyToken(token);
+    if (!payload) {
+      sendJson(res, 401, { error: 'Invalid or expired token' });
+      return;
+    }
+    const dbUser = marketDataStore.getUser(payload.sub);
+    const user = dbUser || { id: payload.sub, username: payload.username, role: payload.role, status: 'active' };
+    const entitlements = marketDataStore.getEntitlementsForUser(user.id);
+    sendJson(res, 200, { user, entitlements, sessionPayload: payload });
+    return;
+  }
+
+  // 14. Replay Statistics & Dataset Range API
+  if (req.url?.startsWith('/api/v1/replay/stats')) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const symbol = url.searchParams.get('symbol') || (process.env.DEFAULT_SYMBOL || 'ES');
+    const provider = url.searchParams.get('provider') || (process.env.FUTURES_PROVIDER || 'none');
+    const trades = marketDataStore.queryTrades({ provider, symbol, limit: 5000 }).trades;
+    const ctx = contextManager.getContext(symbol);
+    const liveTicks = ctx ? ctx.getHistoryTicks() : [];
+    const totalTicks = Math.max(trades.length, liveTicks.length);
+    const minTs = trades.length > 0 ? trades[0].timestamp : (liveTicks[0]?.timestamp || 0);
+    const maxTs = trades.length > 0 ? trades[trades.length - 1].timestamp : (liveTicks[liveTicks.length - 1]?.timestamp || 0);
+
+    sendJson(res, 200, {
+      symbol,
+      provider,
+      storedTicksCount: trades.length,
+      memoryTicksCount: liveTicks.length,
+      availableTicksCount: totalTicks,
+      earliestTimestamp: minTs,
+      latestTimestamp: maxTs,
+      canReplay: totalTicks > 0,
+    });
+    return;
+  }
+
   await serveStatic(req, res);
 });
 
@@ -330,8 +623,9 @@ interface ExtWebSocket extends WebSocket {
 
 const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD_BYTES });
 
-// Warm default market context for BTCUSDT
-void contextManager.getOrCreateContext('BTCUSDT');
+// Warm default market context for primary CME instrument
+const DEFAULT_SYMBOL = process.env.DEFAULT_SYMBOL || 'ES';
+void contextManager.getOrCreateContext(DEFAULT_SYMBOL);
 
 // Heartbeat to detect and clean up zombie connections
 const heartbeatInterval = setInterval(() => {
@@ -429,9 +723,10 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
     console.log(`[DeepChart Server] Client disconnected (${session.id}). Active sessions: ${sessions.size}`);
   });
 
-  // Subscribe new connection to default BTCUSDT (1m)
+  // Subscribe new connection to default symbol (1m)
+  const defaultSym = process.env.DEFAULT_SYMBOL || 'ES';
   const gen = session.nextGeneration();
-  void contextManager.subscribe(session, 'BTCUSDT', '1m', gen);
+  void contextManager.subscribe(session, defaultSym, '1m', gen);
 
   ws.on('message', async (raw: WebSocket.Data) => {
     try {
@@ -478,7 +773,8 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
         }
 
         // Entitlement check via centralized AccessPolicy
-        const provider = requestedSymbol === 'BTCUSDT' ? 'binance' : (process.env.FUTURES_PROVIDER || 'none');
+        const defaultFuturesProvider = process.env.DATABENTO_API_KEY ? 'databento' : (process.env.TRADOVATE_API_KEY ? 'tradovate' : 'none');
+        const provider = process.env.FUTURES_PROVIDER || defaultFuturesProvider;
         const hasAccess = AccessPolicy.isAuthorized({
           user: session.user,
           symbol: requestedSymbol,
@@ -526,7 +822,8 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
         }
 
         // Entitlement check for REPLAY via centralized AccessPolicy
-        const provider = session.subscribedSymbol === 'BTCUSDT' ? 'binance' : (process.env.FUTURES_PROVIDER || 'none');
+        const defaultFuturesProvider = process.env.DATABENTO_API_KEY ? 'databento' : (process.env.TRADOVATE_API_KEY ? 'tradovate' : 'none');
+        const provider = process.env.FUTURES_PROVIDER || defaultFuturesProvider;
         const hasReplayAccess = AccessPolicy.isAuthorized({
           user: session.user,
           symbol: session.subscribedSymbol,
@@ -590,6 +887,21 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
             if (ticks.length === 0) {
               ticks = contextManager.getTicksForReplay(sym);
             }
+            if (ticks.length === 0) {
+              const ctx = contextManager.getContext(sym);
+              ticks = ctx ? ctx.getHistoryTicks() : [];
+            }
+            if (ticks.length === 0) {
+              const now = Date.now();
+              const baseP = inst.basePrice || 5000;
+              ticks = Array.from({ length: 50 }, (_, i) => ({
+                id: `replay_seed_${i}`,
+                timestamp: now - (50 - i) * 1000,
+                price: baseP + (i % 5) * inst.tickSize,
+                size: 1 + (i % 3),
+                side: i % 2 === 0 ? 'buy' : 'sell',
+              }));
+            }
             session.replaySession = new ReplaySession(session, sym, inst, session.subscribedTimeframe, ticks);
           }
         }
@@ -612,7 +924,8 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
       } else if (msg.type === 'FETCH_HISTORY') {
         const symbol = typeof msg.symbol === 'string' ? msg.symbol : session.subscribedSymbol;
         const timeframe = typeof msg.timeframe === 'string' ? msg.timeframe : session.subscribedTimeframe || '1m';
-        const provider = typeof msg.provider === 'string' ? msg.provider : (symbol === 'BTCUSDT' ? 'binance' : (process.env.FUTURES_PROVIDER || 'none'));
+        const defaultFuturesProvider = process.env.DATABENTO_API_KEY ? 'databento' : (process.env.TRADOVATE_API_KEY ? 'tradovate' : 'none');
+        const provider = typeof msg.provider === 'string' ? msg.provider : (process.env.FUTURES_PROVIDER || defaultFuturesProvider);
         const beforeTime = typeof msg.beforeTime === 'number' && Number.isFinite(msg.beforeTime) ? msg.beforeTime : undefined;
         const limit = typeof msg.limit === 'number' && Number.isFinite(msg.limit) ? msg.limit : 300;
         const requestId = typeof msg.requestId === 'string' ? msg.requestId : undefined;
@@ -633,7 +946,28 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
           return;
         }
 
-        const result = marketDataStore.queryBars({ provider, symbol, timeframe, beforeTime, limit });
+        let result = marketDataStore.queryBars({ provider, symbol, timeframe, beforeTime, limit });
+        if (result.bars.length < limit && provider === 'databento' && process.env.DATABENTO_API_KEY) {
+          const tfMs = TIMEFRAMES[timeframe] || 60000;
+          const barMinutes = Math.max(Math.floor(tfMs / 60000), 1);
+          try {
+            const olderBars = await fetchDatabentoBars(
+              symbol,
+              {
+                apiKey: process.env.DATABENTO_API_KEY,
+                dataset: process.env.DATABENTO_DATASET,
+                stypeIn: process.env.DATABENTO_STYPE_IN,
+              },
+              { barMinutes, elements: limit, beforeTime }
+            );
+            if (olderBars.length > 0) {
+              marketDataStore.saveBars(olderBars, symbol, timeframe, provider);
+              result = marketDataStore.queryBars({ provider, symbol, timeframe, beforeTime, limit });
+            }
+          } catch (fetchErr) {
+            console.warn(`[History:databento] Pagination fetch failed for ${symbol}:`, (fetchErr as Error).message);
+          }
+        }
         session.send({
           type: 'HISTORY_RESPONSE',
           provider,

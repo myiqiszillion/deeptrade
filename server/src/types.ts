@@ -4,7 +4,7 @@ import { GEXProfile, OptionsFlowTrade } from './gexEngine.js';
 export type OrderSide = 'buy' | 'sell' | 'unknown';
 
 export type AggressorProvenance =
-  | 'EXCHANGE_NATIVE' // Native flag from exchange (e.g. Binance isBuyerMaker, CME MBO)
+  | 'EXCHANGE_NATIVE' // Native flag from exchange (e.g. CME MBO)
   | 'INFERRED_QUOTE'  // Derived via Lee-Ready quote rule (bid/offer comparison)
   | 'INFERRED_TICK'   // Derived via tick rule (uptick/downtick vs previous price)
   | 'UNKNOWN';        // Undecidable or not provided
@@ -15,7 +15,7 @@ export interface Tick {
   price: number;
   size: number;
   side: OrderSide;
-  isBuyerMaker?: boolean; // true = sell market order (buyer was maker), false = buy market order, undefined = unknown
+  isBuyerMaker?: boolean; // true = sell aggressor, false = buy aggressor
   receiveTs?: number; // Server receive timestamp (epoch ms)
   aggressorProvenance?: AggressorProvenance;
   sequenceId?: string;
@@ -188,7 +188,7 @@ export interface DataCoverage {
 }
 
 export type WSClientMessage =
-  | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'binance' | 'simulator' | 'cme' }
+  | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'cme' | 'databento' | 'tradovate' | string }
   | { type: 'REPLAY_CONTROL'; action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP' | 'RETURN_TO_LIVE'; speed?: number; timestamp?: number }
   | { type: 'FETCH_HISTORY'; symbol: string; timeframe: string; provider?: string; beforeTime?: number; limit?: number; requestId?: string };
 
@@ -218,6 +218,7 @@ export type WSServerMessage =
        * candles and the live footprint starts where real ticks start.
        */
       historyBars?: HistoricalBar[];
+      recentTicks?: Tick[];
       /** 'LIVE' when a real feed streams this instrument, 'UNAVAILABLE' when none is wired. */
       feedStatus?: 'LIVE' | 'UNAVAILABLE';
       mode?: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';

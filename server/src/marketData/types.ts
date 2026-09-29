@@ -1,7 +1,7 @@
 export type TradeSide = 'BUY' | 'SELL' | 'UNKNOWN';
 
 export type AggressorProvenance =
-  | 'EXCHANGE_NATIVE' // From exchange native flag (e.g. Binance isBuyerMaker, CME MBO flag)
+  | 'EXCHANGE_NATIVE' // From exchange native flag (e.g. CME MBO action/side flag)
   | 'INFERRED_QUOTE'  // Derived via Lee-Ready quote rule (bid/offer comparison)
   | 'INFERRED_TICK'   // Derived via tick rule (uptick/downtick vs previous price)
   | 'UNKNOWN';        // Undecidable or not provided
@@ -32,7 +32,7 @@ export interface MarketTrade {
   aggressorProvenance?: AggressorProvenance;
   /** Sequence identifier from vendor for gap detection. */
   sequenceId?: number | string;
-  /** Data source provider identifier (e.g. 'binance', 'tradovate', 'databento', 'fixture'). */
+  /** Data source provider identifier (e.g. 'tradovate', 'databento', 'fixture'). */
   sourceProvider?: string;
   /** Quality metadata flags. */
   qualityFlags?: TradeQualityFlags;

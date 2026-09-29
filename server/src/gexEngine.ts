@@ -1,4 +1,4 @@
-﻿export interface GEXStrikeLevel {
+export interface GEXStrikeLevel {
   strike: number;
   callGex: number; // Millions USD per 1% move
   putGex: number;
@@ -193,6 +193,37 @@ export class GEXEngine {
     };
 
     this.currentProfiles.set(underlying, profile);
+
+    // Extract notable flow trades from CBOE active contracts
+    const notableRows = [...rows]
+      .filter((r) => r.volume >= 50 && r.openInterest > 0)
+      .sort((a, b) => b.volume - a.volume)
+      .slice(0, 20);
+
+    for (const r of notableRows) {
+      const estPrice = Math.max(0.5, spotPrice * (Math.abs(r.gamma) || 0.005) * 1.5);
+      const premiumUsd = r.volume * estPrice * CONTRACT_MULTIPLIER;
+      this.addFlowTrade({
+        id: `flow_${underlying}_${r.strike}_${r.type}_${r.dte}`,
+        timestamp: Date.now() - r.dte * 1000,
+        underlying,
+        contractType: r.type,
+        strike: r.strike,
+        expiration: `${r.dte}D`,
+        dte: r.dte,
+        orderType: r.volume >= 1000 ? 'SWEEP' : 'BLOCK',
+        sentiment:
+          (r.type === 'CALL' && r.strike >= spotPrice) || (r.type === 'PUT' && r.strike < spotPrice)
+            ? 'BULLISH'
+            : 'BEARISH',
+        size: r.volume,
+        price: Math.round(estPrice * 100) / 100,
+        premiumUsd: Math.round(premiumUsd),
+        spotPrice,
+        source: 'LIVE',
+      });
+    }
+
     return profile;
   }
 

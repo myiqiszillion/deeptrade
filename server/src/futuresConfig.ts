@@ -1,13 +1,13 @@
-export type AssetClass = 'EQUITY_INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND' | 'CRYPTO';
+export type AssetClass = 'EQUITY_INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND';
 export type ContractType = 'CONTINUOUS' | 'SPECIFIC';
 
 export interface FuturesInstrument {
   symbol: string;
   rootSymbol: string;
   name: string;
-  category: 'INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND' | 'CRYPTO';
+  category: 'INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND';
   assetClass: AssetClass;
-  exchange: 'CME' | 'NYMEX' | 'COMEX' | 'CBOT' | 'BINANCE';
+  exchange: 'CME' | 'NYMEX' | 'COMEX' | 'CBOT';
   tickSize: number;
   pointValue: number; // USD per full point move
   tickValue: number;  // USD per minimum tick move
@@ -315,26 +315,6 @@ export const FUTURES_INSTRUMENTS: Record<string, FuturesInstrument> = {
     contractType: 'CONTINUOUS',
     sessionScheduleId: 'NYMEX_ENERGY',
   },
-  BTCUSDT: {
-    symbol: 'BTCUSDT',
-    rootSymbol: 'BTCUSDT',
-    name: 'Bitcoin Perpetual',
-    category: 'CRYPTO',
-    assetClass: 'CRYPTO',
-    exchange: 'BINANCE',
-    tickSize: 0.1,
-    pointValue: 1.0,
-    tickValue: 0.1,
-    initialMargin: 1000,
-    dayTradingMargin: 100,
-    basePrice: 65000.0,
-    timezone: 'UTC',
-    currency: 'USDT',
-    multiplier: 1.0,
-    isMicro: false,
-    contractType: 'CONTINUOUS',
-    sessionScheduleId: 'BINANCE_24_7',
-  },
 };
 
 /**
@@ -410,14 +390,10 @@ export function getParentSymbol(symbol: string): string | undefined {
 
 /** Format a symbol for vendor-specific requests according to official specifications. */
 export function formatVendorSymbol(
-  vendor: 'tradovate' | 'databento' | 'binance',
+  vendor: 'tradovate' | 'databento',
   symbol: string,
   contractMonth?: string
 ): string {
-  if (vendor === 'binance') {
-    return symbol.toUpperCase();
-  }
-
   if (vendor === 'tradovate') {
     // Tradovate uses @ROOT for continuous front-month, or ROOT + MONTH + YEAR (e.g. ESH6)
     if (contractMonth) {

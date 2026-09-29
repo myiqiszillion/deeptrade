@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { TPOProfileData, VolumeProfileData } from '../../types';
-import { formatPrice } from '../../services/priceFormat';
+import { formatPrice, formatVolume } from '../../services/priceFormat';
 
 interface ProfileOverlayProps {
   volumeProfile: VolumeProfileData;
@@ -13,101 +13,134 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
   volumeProfile,
   tpoProfile,
   currentPrice,
-  tickSize,
+  tickSize = 0.5,
 }) => {
   const [activeTab, setActiveTab] = useState<'VP' | 'TPO'>('VP');
 
   const maxVolume = Math.max(1, ...volumeProfile.levels.map((l) => l.volume));
 
   // Sort descending by price
-  const sortedVpLevels = [...volumeProfile.levels].sort((a, b) => b.price - a.price);
+  const sortedVpLevels = useMemo(() => {
+    return [...volumeProfile.levels].sort((a, b) => b.price - a.price);
+  }, [volumeProfile.levels]);
 
-  const sortedTpoPrices = Object.keys(tpoProfile.priceLevels)
-    .map(Number)
-    .sort((a, b) => b - a);
+  // Dynamic TPO price grouping so tight tick sizes (e.g. BTC 0.1) show real market profile distribution
+  const aggregatedTpo = useMemo(() => {
+    const rawPrices = Object.keys(tpoProfile.priceLevels).map(Number).sort((a, b) => b - a);
+    const step = tickSize < 1 ? Math.max(1, tickSize * 10) : tickSize;
+
+    const buckets = new Map<number, string[]>();
+    for (const p of rawPrices) {
+      const bucketKey = Number((Math.floor(p / step + 1e-9) * step).toFixed(4));
+      const existing = buckets.get(bucketKey) || [];
+      const chars = tpoProfile.priceLevels[p] || [];
+      for (const c of chars) {
+        if (!existing.includes(c)) existing.push(c);
+      }
+      buckets.set(bucketKey, existing.sort());
+    }
+
+    const prices = Array.from(buckets.keys()).sort((a, b) => b - a);
+    return { prices, buckets };
+  }, [tpoProfile.priceLevels, tickSize]);
 
   return (
-    <div className="w-80 h-full border-l border-brand-border bg-brand-surface flex flex-col select-none text-xs">
+    <div className="w-full h-full flex flex-col select-none text-xs bg-slate-950/40 font-mono">
       {/* Header Tabs */}
-      <div className="flex items-center justify-between border-b border-brand-border px-3 py-2 bg-brand-surfaceHover">
-        <div className="flex gap-2">
+      <div className="flex items-center justify-between border-b border-white/5 px-3 py-2 bg-slate-900/50">
+        <div className="flex gap-1.5 p-0.5 rounded-lg bg-slate-950/60 border border-white/5">
           <button
             onClick={() => setActiveTab('VP')}
-            className={`px-3 py-1 font-semibold rounded ${
-              activeTab === 'VP' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' : 'text-slate-400 hover:text-white'
+            className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all ${
+              activeTab === 'VP'
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 shadow-[0_0_8px_rgba(245,158,11,0.2)]'
+                : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             Volume Profile
           </button>
           <button
             onClick={() => setActiveTab('TPO')}
-            className={`px-3 py-1 font-semibold rounded ${
-              activeTab === 'TPO' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40' : 'text-slate-400 hover:text-white'
+            className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all ${
+              activeTab === 'TPO'
+                ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30 shadow-[0_0_8px_rgba(14,165,233,0.2)]'
+                : 'text-slate-400 hover:text-slate-200'
             }`}
           >
             Market Profile (TPO)
           </button>
         </div>
+        {currentPrice > 0 && (
+          <span className="text-[10px] text-amber-400/90 font-mono">
+            {formatPrice(currentPrice, tickSize)}
+          </span>
+        )}
       </div>
 
       {/* Profile Metrics Bar */}
-      <div className="grid grid-cols-3 gap-1 px-3 py-2 bg-brand-bg/50 border-b border-brand-border text-slate-300 font-mono text-[11px]">
-        <div>
-          <span className="text-slate-500">VAH: </span>
-          <span className="text-blue-400">{formatPrice(activeTab === 'VP' ? volumeProfile.vah : tpoProfile.vah, tickSize)}</span>
+      <div className="grid grid-cols-3 gap-2 px-3 py-2 bg-slate-900/80 border-b border-white/5 text-slate-300 font-mono text-[11px]">
+        <div className="flex items-center justify-between bg-white/[0.03] px-2 py-1 rounded border border-white/5">
+          <span className="text-slate-400 text-[10px] font-sans">VAH:</span>
+          <span className="text-sky-400 font-bold tabular-nums">
+            {formatPrice(activeTab === 'VP' ? volumeProfile.vah : tpoProfile.vah, tickSize)}
+          </span>
         </div>
-        <div>
-          <span className="text-slate-500">POC: </span>
-          <span className="text-amber-400 font-bold">{formatPrice(activeTab === 'VP' ? volumeProfile.poc : tpoProfile.poc, tickSize)}</span>
+        <div className="flex items-center justify-between bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20">
+          <span className="text-amber-400/80 text-[10px] font-sans">POC:</span>
+          <span className="text-amber-300 font-bold tabular-nums">
+            {formatPrice(activeTab === 'VP' ? volumeProfile.poc : tpoProfile.poc, tickSize)}
+          </span>
         </div>
-        <div>
-          <span className="text-slate-500">VAL: </span>
-          <span className="text-blue-400">{formatPrice(activeTab === 'VP' ? volumeProfile.val : tpoProfile.val, tickSize)}</span>
+        <div className="flex items-center justify-between bg-white/[0.03] px-2 py-1 rounded border border-white/5">
+          <span className="text-slate-400 text-[10px] font-sans">VAL:</span>
+          <span className="text-sky-400 font-bold tabular-nums">
+            {formatPrice(activeTab === 'VP' ? volumeProfile.val : tpoProfile.val, tickSize)}
+          </span>
         </div>
       </div>
 
       {/* Main Profile View */}
-      <div className="flex-1 overflow-y-auto font-mono text-[10px]">
+      <div className="flex-1 overflow-y-auto font-mono text-[10px] custom-scrollbar">
         {activeTab === 'VP' ? (
-          <div className="divide-y divide-brand-border/30">
-            {sortedVpLevels.slice(0, 80).map((lvl) => {
-              const isPOC = lvl.price === volumeProfile.poc;
-              const isVAH = lvl.price === volumeProfile.vah;
-              const isVAL = lvl.price === volumeProfile.val;
+          <div className="divide-y divide-white/[0.03]">
+            {sortedVpLevels.slice(0, 100).map((lvl) => {
+              const isPOC = Math.abs(lvl.price - volumeProfile.poc) < (tickSize || 0.1);
+              const isVAH = Math.abs(lvl.price - volumeProfile.vah) < (tickSize || 0.1);
+              const isVAL = Math.abs(lvl.price - volumeProfile.val) < (tickSize || 0.1);
               const isCurrent = Math.abs(lvl.price - currentPrice) < (tickSize ? tickSize * 2 : 0.5);
               const barPercent = Math.min(100, (lvl.volume / maxVolume) * 100);
 
               return (
                 <div
                   key={lvl.price}
-                  className={`relative flex items-center justify-between px-2 py-0.5 hover:bg-white/5 ${
-                    isCurrent ? 'bg-amber-500/10' : ''
+                  className={`relative flex items-center justify-between px-2.5 py-1 hover:bg-white/5 transition-colors ${
+                    isCurrent ? 'bg-amber-500/15' : ''
                   }`}
                 >
                   {/* Volume Bar Fill */}
                   <div
-                    className={`absolute top-0 bottom-0 left-0 opacity-25 ${
+                    className={`absolute top-0 bottom-0 left-0 opacity-20 pointer-events-none transition-all ${
                       lvl.delta >= 0 ? 'bg-emerald-500' : 'bg-rose-500'
                     }`}
                     style={{ width: `${barPercent}%` }}
                   />
 
                   {/* Price with markers */}
-                  <div className="relative z-10 flex items-center gap-1">
-                    <span className={`${isPOC ? 'text-amber-400 font-bold' : isVAH || isVAL ? 'text-blue-400' : 'text-slate-300'}`}>
+                  <div className="relative z-10 flex items-center gap-1.5 tabular-nums">
+                    <span className={`${isPOC ? 'text-amber-400 font-bold' : isVAH || isVAL ? 'text-sky-400 font-semibold' : 'text-slate-300'}`}>
                       {formatPrice(lvl.price, tickSize)}
                     </span>
-                    {isPOC && <span className="text-[9px] px-1 bg-amber-500/20 text-amber-400 rounded">POC</span>}
-                    {isVAH && <span className="text-[9px] px-1 bg-blue-500/20 text-blue-400 rounded">VAH</span>}
-                    {isVAL && <span className="text-[9px] px-1 bg-blue-500/20 text-blue-400 rounded">VAL</span>}
+                    {isPOC && <span className="text-[9px] px-1 py-0.2 bg-amber-500/25 text-amber-300 border border-amber-500/40 rounded font-bold">POC</span>}
+                    {isVAH && <span className="text-[9px] px-1 py-0.2 bg-sky-500/25 text-sky-300 border border-sky-500/40 rounded">VAH</span>}
+                    {isVAL && <span className="text-[9px] px-1 py-0.2 bg-sky-500/25 text-sky-300 border border-sky-500/40 rounded">VAL</span>}
                   </div>
 
                   {/* Volume and Delta */}
-                  <div className="relative z-10 flex items-center gap-2">
-                    <span className="text-slate-400">{lvl.volume.toFixed(1)}</span>
-                    <span className={lvl.delta >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                  <div className="relative z-10 flex items-center gap-2.5 tabular-nums">
+                    <span className="text-slate-300 font-medium">{formatVolume(lvl.volume)}</span>
+                    <span className={`w-12 text-right font-semibold ${lvl.delta >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                       {lvl.delta >= 0 ? '+' : ''}
-                      {lvl.delta.toFixed(1)}
+                      {formatVolume(lvl.delta)}
                     </span>
                   </div>
                 </div>
@@ -115,23 +148,24 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
             })}
           </div>
         ) : (
-          <div className="divide-y divide-brand-border/30">
-            {sortedTpoPrices.slice(0, 80).map((price) => {
-              const letters = tpoProfile.priceLevels[price] || [];
-              const isPOC = price === tpoProfile.poc;
+          <div className="divide-y divide-white/[0.03]">
+            {aggregatedTpo.prices.slice(0, 100).map((price) => {
+              const letters = aggregatedTpo.buckets.get(price) || [];
+              const isPOC = Math.abs(price - tpoProfile.poc) < (tickSize * 2 || 1);
               const isCurrent = Math.abs(price - currentPrice) < (tickSize ? tickSize * 2 : 0.5);
 
               return (
                 <div
                   key={price}
-                  className={`flex items-center px-2 py-0.5 hover:bg-white/5 ${
-                    isCurrent ? 'bg-blue-500/10' : ''
+                  className={`flex items-center px-2.5 py-1 hover:bg-white/5 transition-colors ${
+                    isCurrent ? 'bg-sky-500/15' : ''
                   }`}
                 >
-                  <div className="w-14 shrink-0 flex items-center gap-1">
+                  <div className="w-16 shrink-0 flex items-center gap-1 tabular-nums">
                     <span className={isPOC ? 'text-amber-400 font-bold' : 'text-slate-300'}>
                       {formatPrice(price, tickSize)}
                     </span>
+                    {isPOC && <span className="text-[8px] px-0.5 bg-amber-500/20 text-amber-400 rounded">POC</span>}
                   </div>
 
                   {/* TPO Letters */}
@@ -141,10 +175,10 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
                         key={idx}
                         className={`px-0.5 rounded text-[9px] font-bold ${
                           isPOC
-                            ? 'text-amber-400'
+                            ? 'text-amber-300 bg-amber-500/15'
                             : char <= 'B'
-                            ? 'text-purple-400' // Initial Balance (A, B)
-                            : 'text-sky-300'
+                            ? 'text-purple-300 bg-purple-500/15' // Initial Balance (A, B)
+                            : 'text-sky-300 bg-sky-500/10'
                         }`}
                       >
                         {char}

@@ -137,21 +137,17 @@ export class EntitlementService {
       // 2. Check provider scope
       if (ent.provider !== '*') {
         const entProv = ent.provider.toLowerCase();
-        if (instrument.exchange === 'BINANCE') {
-          if (entProv !== 'binance') continue;
-        } else {
-          const validFuturesProviders = new Set([
-            'cme',
-            'cbot',
-            'nymex',
-            'comex',
-            'tradovate',
-            'databento',
-            instrument.exchange.toLowerCase(),
-            (process.env.FUTURES_PROVIDER || '').toLowerCase(),
-          ]);
-          if (!validFuturesProviders.has(entProv)) continue;
-        }
+        const validFuturesProviders = new Set([
+          'cme',
+          'cbot',
+          'nymex',
+          'comex',
+          'tradovate',
+          'databento',
+          instrument.exchange.toLowerCase(),
+          (process.env.FUTURES_PROVIDER || '').toLowerCase(),
+        ]);
+        if (!validFuturesProviders.has(entProv)) continue;
       }
 
       // 3. Check exchange scope

@@ -1,89 +1,235 @@
-import { FeedHandlers, MarketDataFeed } from './types.js';
+import { FUTURES_INSTRUMENTS } from '../futuresConfig.js';
+import { DatabentoSocketFactory, DatabentoTransport } from './databentoTransport.js';
+import { FeedConnectionState, FeedHandlers, MarketDataFeed } from './types.js';
+import { validateDepth, validateTrade } from './validate.js';
 
-/**
- * Databento adapter — FAIL-CLOSED by design.
- *
- * Verified 2026-09: Databento publishes NO official TypeScript/JavaScript client
- * (docs list Python, C++, Rust and HTTP/Raw only; the npm name `databento@0.0.1` is an empty
- * placeholder). Realtime delivery uses DBN — a binary TCP encoding that must be decoded
- * field-exact against the official spec.
- *
- * Project rule: never guess a vendor protocol. Until a spec-verified transport exists, this
- * adapter reports UNAVAILABLE with an explicit reason instead of connecting and pretending.
- *
- * To finish this adapter (mechanical once the spec is at hand — do NOT guess):
- *   1. Obtain the DBN wire spec (record layouts, `ts_event` unit, price scaling constant,
- *      side/action enums, MBO/MBP/Trades schemas, record header flags).
- *   2. Implement the transport + decoder in `databentoTransport.ts`.
- *   3. Map records → the shapes below and hand them to `validateTrade` / `validateDepth`.
- *   4. Flip `DATABENTO_TRANSPORT_READY=1` (or delete this guard) once step 1–3 are verified.
- */
-export const DBN_INTEGRATION_CHECKLIST = [
-  'Confirm DBN record sizes/offsets for trades and MBP-1/10 from the official spec',
-  'Confirm price integer scaling (do not assume 1e-9)',
-  'Confirm ts_event unit (ns/us) and convert to epoch milliseconds',
-  'Confirm side/action enum codes for aggressor vs passive updates',
-  'Confirm snapshot vs delta delivery order and the snapshot-replay requirement',
-  'Confirm symbology: map vendor instrument_id -> DeepChart symbol, log the resolved contract',
-] as const;
+export const DBN_INTEGRATION_SPEC = {
+  recordSizes: {
+    recordHeader: 16,
+    tradeMsg: 48,
+    mbp1Msg: 80,
+    mbp10Msg: 368,
+  },
+  priceScaling: 1e-9, // fixed-point 1 unit = 10^-9 USD
+  undefPrice: 9223372036854775807n, // 0x7fffffffffffffffn
+  undefOrderSize: 4294967295, // 0xffffffff
+  timeUnit: 'nanoseconds since Unix epoch (divided by 1e6 to epoch ms)',
+  sideCodes: {
+    A: 'Ask (sell aggressor)',
+    B: 'Bid (buy aggressor)',
+    N: 'None / unassigned',
+  },
+  actionCodes: {
+    A: 'Add order',
+    C: 'Cancel order',
+    M: 'Modify order',
+    T: 'Trade execution',
+    R: 'Reset / snapshot clear book',
+  },
+} as const;
+
+export interface DatabentoAdapterConfig {
+  apiKey?: string;
+  dataset?: string;
+  stypeIn?: string;
+  symbols?: string;
+  host?: string;
+  port?: number;
+  snapshot?: boolean;
+}
+
+export interface DatabentoAdapterOptions {
+  socketFactory?: DatabentoSocketFactory;
+}
+
+/** Symbols Databento serves for CME / NYMEX / COMEX futures. */
+export const DATABENTO_SYMBOL_MAP: Record<string, string> = {
+  ES: 'ES.c.0',
+  MES: 'MES.c.0',
+  NQ: 'NQ.c.0',
+  MNQ: 'MNQ.c.0',
+  YM: 'YM.c.0',
+  MYM: 'MYM.c.0',
+  RTY: 'RTY.c.0',
+  M2K: 'M2K.c.0',
+  GC: 'GC.v.0',
+  MGC: 'MGC.c.0',
+  CL: 'CL.c.0',
+  MCL: 'MCL.c.0',
+  NG: 'NG.c.0',
+};
+
+export function resolveDatabentoSymbol(
+  symbol: string,
+  config: { symbols?: string; stypeIn?: string } = {}
+): { vendorSymbol: string; stypeIn: string } {
+  let vendorSymbol = DATABENTO_SYMBOL_MAP[symbol] || `${symbol}.c.0`;
+  if (config.symbols && config.symbols.trim().length > 0) {
+    vendorSymbol = config.symbols.trim();
+  }
+
+  let stypeIn = config.stypeIn || 'continuous';
+  if (vendorSymbol.includes('.c.') || vendorSymbol.includes('.v.')) {
+    stypeIn = 'continuous';
+  } else if (vendorSymbol.endsWith('.FUT')) {
+    stypeIn = 'parent';
+  }
+
+  return { vendorSymbol, stypeIn };
+}
 
 export class DatabentoMarketDataFeed implements MarketDataFeed {
   public readonly provider = 'databento';
+  private transport: DatabentoTransport | null = null;
+  private connectionState: FeedConnectionState = 'UNAVAILABLE';
+  private terminalReason: string | null = null;
+  private liveWaiters: (() => void)[] = [];
+  private resolvedSymbol = '';
 
   constructor(
     public readonly symbol: string,
     private readonly handlers: FeedHandlers,
-    private readonly config: { apiKey?: string; dataset?: string; stypeIn?: string; symbols?: string }
+    private readonly config: DatabentoAdapterConfig = {},
+    private readonly options: DatabentoAdapterOptions = {}
   ) {}
 
   public isConnected(): boolean {
-    return false;
+    return this.connectionState === 'LIVE';
+  }
+
+  public get vendorSymbol(): string {
+    return this.resolvedSymbol;
   }
 
   public async connect(): Promise<void> {
     const missing: string[] = [];
     if (!this.config.apiKey) missing.push('DATABENTO_API_KEY');
-    if (!this.config.dataset) missing.push('DATABENTO_DATASET');
-    if (!this.config.symbols) missing.push('DATABENTO_SYMBOLS');
 
-    const reason = missing.length
-      ? `Databento not configured (missing ${missing.join(', ')})`
-      : 'Databento transport not implemented: no official TypeScript client exists and the DBN ' +
-        'wire format has not been spec-verified in this project — refusing to guess a protocol';
+    const dataset = this.config.dataset || process.env.DATABENTO_DATASET || 'GLBX.MDP3';
+    const { vendorSymbol, stypeIn } = resolveDatabentoSymbol(this.symbol, this.config);
+    this.resolvedSymbol = vendorSymbol;
 
-    console.warn(`[Feed:databento] ${this.symbol}: ${reason}`);
-    this.handlers.onStatus({
-      state: 'UNAVAILABLE',
-      reason,
-      provider: this.provider,
-      symbol: this.symbol,
-      instrumentId: this.config.symbols,
-    });
+    if (missing.length > 0) {
+      const reason = `Databento not configured (missing ${missing.join(', ')})`;
+      this.terminalReason = reason;
+      console.warn(`[Feed:databento] ${this.symbol}: ${reason}`);
+      this.connectionState = 'UNAVAILABLE';
+      this.handlers.onStatus({
+        state: 'UNAVAILABLE',
+        reason,
+        provider: this.provider,
+        symbol: this.symbol,
+        instrumentId: vendorSymbol,
+      });
+      return;
+    }
+
+    // Optional operator kill-switch
+    if (process.env.DATABENTO_TRANSPORT_READY === '0') {
+      const reason = 'Databento transport disabled by DATABENTO_TRANSPORT_READY=0';
+      this.terminalReason = reason;
+      console.warn(`[Feed:databento] ${this.symbol}: ${reason}`);
+      this.connectionState = 'UNAVAILABLE';
+      this.handlers.onStatus({
+        state: 'UNAVAILABLE',
+        reason,
+        provider: this.provider,
+        symbol: this.symbol,
+        instrumentId: vendorSymbol,
+      });
+      return;
+    }
+
+    const instrument = FUTURES_INSTRUMENTS[this.symbol] || FUTURES_INSTRUMENTS.ES;
+    const tickSize = instrument?.tickSize ?? 0.25;
+
+    this.transport = new DatabentoTransport(
+      {
+        apiKey: this.config.apiKey!,
+        dataset,
+        symbols: vendorSymbol,
+        stypeIn,
+        host: this.config.host,
+        port: this.config.port,
+        snapshot: this.config.snapshot ?? (process.env.DATABENTO_SNAPSHOT === '1'),
+      },
+      {
+        onTrade: (rawTrade) => {
+          const validated = validateTrade({ ...rawTrade, symbol: this.symbol }, tickSize, this.symbol);
+          if (validated.trade) {
+            this.handlers.onTrade(validated.trade);
+          }
+        },
+        onDepth: (rawDepth) => {
+          const validated = validateDepth(rawDepth, tickSize, this.symbol);
+          if (validated.event) {
+            this.handlers.onDepth(validated.event);
+          }
+        },
+        onStatus: (state, reason) => {
+          this.connectionState = state;
+          if (state === 'LIVE') {
+            this.terminalReason = null;
+            this.notifyLiveWaiters();
+          }
+          this.handlers.onStatus({
+            state,
+            reason,
+            provider: this.provider,
+            symbol: this.symbol,
+            instrumentId: vendorSymbol,
+          });
+        },
+        onError: (err) => {
+          this.handlers.onError(err);
+        },
+      },
+      this.options.socketFactory
+    );
+
+    this.transport.connect();
   }
 
   public async disconnect(): Promise<void> {
+    if (this.transport) {
+      this.transport.disconnect();
+      this.transport = null;
+    }
+    this.connectionState = 'UNAVAILABLE';
     this.handlers.onStatus({
       state: 'UNAVAILABLE',
       reason: 'disconnected',
       provider: this.provider,
       symbol: this.symbol,
+      instrumentId: this.resolvedSymbol,
     });
   }
-}
 
-/** Symbols Databento would serve once the transport lands (configurable via env). */
-export const DATABENTO_SYMBOL_MAP: Record<string, string> = {
-  ES: 'ES.FUT',
-  MES: 'MES.FUT',
-  NQ: 'NQ.FUT',
-  MNQ: 'MNQ.FUT',
-  YM: 'YM.FUT',
-  MYM: 'MYM.FUT',
-  RTY: 'RTY.FUT',
-  M2K: 'M2K.FUT',
-  GC: 'GC.FUT',
-  MGC: 'MGC.FUT',
-  CL: 'CL.FUT',
-  MCL: 'MCL.FUT',
-  NG: 'NG.FUT',
-};
+  public waitForLive(timeoutMs = 15000): Promise<void> {
+    if (this.isConnected()) return Promise.resolve();
+    if (this.terminalReason) return Promise.reject(new Error(this.terminalReason));
+
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const idx = this.liveWaiters.indexOf(onLive);
+        if (idx !== -1) this.liveWaiters.splice(idx, 1);
+        reject(new Error(`[Feed:databento] ${this.symbol}: waitForLive timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      const onLive = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+
+      this.liveWaiters.push(onLive);
+    });
+  }
+
+  private notifyLiveWaiters(): void {
+    const waiters = this.liveWaiters.slice();
+    this.liveWaiters.length = 0;
+    for (const w of waiters) {
+      w();
+    }
+  }
+}

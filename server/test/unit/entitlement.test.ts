@@ -10,7 +10,7 @@ export async function runEntitlementTests(): Promise<void> {
 
   // 1. Default Deny
   assert.equal(entitlementService.hasEntitlement('u_none', 'ES', 'FOOTPRINT'), false);
-  assert.equal(entitlementService.hasEntitlement('u_none', 'BTCUSDT', 'FOOTPRINT'), false);
+  assert.equal(entitlementService.hasEntitlement('u_none', 'YM', 'FOOTPRINT'), false);
   assert.equal(entitlementService.hasEntitlement('u_none', 'ES', 'REPLAY'), false);
 
   // 2. Specific Symbol & DataType Grant
@@ -61,7 +61,7 @@ export async function runEntitlementTests(): Promise<void> {
 
   assert.equal(entitlementService.hasEntitlement('u_admin', 'ES', 'FOOTPRINT'), true);
   assert.equal(entitlementService.hasEntitlement('u_admin', 'NQ', 'REPLAY'), true);
-  assert.equal(entitlementService.hasEntitlement('u_admin', 'BTCUSDT', 'L2_BOOK'), true);
+  assert.equal(entitlementService.hasEntitlement('u_admin', 'YM', 'L2_BOOK'), true);
 
   // 5. Expired Entitlement
   entitlementService.grant({
@@ -98,24 +98,31 @@ export async function runEntitlementTests(): Promise<void> {
     'Suspended user must be rejected'
   );
 
-  // Guest access to BTCUSDT when AUTH_REQUIRED !== '1'
+  // Dev hooks bypass when DEV_HOOKS === '1' and AUTH_REQUIRED !== '1'
   const oldAuthReq = process.env.AUTH_REQUIRED;
+  const oldDevHooks = process.env.DEV_HOOKS;
+  const oldNodeEnv = process.env.NODE_ENV;
   try {
     process.env.AUTH_REQUIRED = '0';
+    process.env.DEV_HOOKS = '1';
+    process.env.NODE_ENV = 'development';
     assert.equal(
-      AccessPolicy.isAuthorized({ user: null, symbol: 'BTCUSDT', provider: 'binance', dataType: 'FOOTPRINT' }),
+      AccessPolicy.isAuthorized({ user: null, symbol: 'ES', provider: 'databento', dataType: 'FOOTPRINT' }),
       true,
-      'BTCUSDT public tier allowed when AUTH_REQUIRED !== 1'
+      'Dev bypass allowed in development when DEV_HOOKS=1 and AUTH_REQUIRED!=1'
     );
 
-    // Guest access to CME is denied
+    // Guest access to CME is denied when DEV_HOOKS !== '1'
+    process.env.DEV_HOOKS = '0';
     assert.equal(
-      AccessPolicy.isAuthorized({ user: null, symbol: 'ES', provider: 'tradovate', dataType: 'FOOTPRINT' }),
+      AccessPolicy.isAuthorized({ user: null, symbol: 'ES', provider: 'databento', dataType: 'FOOTPRINT' }),
       false,
-      'Guest access to ES must be denied'
+      'Guest access to ES must be denied without dev bypass'
     );
   } finally {
     process.env.AUTH_REQUIRED = oldAuthReq;
+    process.env.DEV_HOOKS = oldDevHooks;
+    process.env.NODE_ENV = oldNodeEnv;
   }
 
   console.log('  [PASS] All entitlement unit tests passed.');

@@ -43,8 +43,8 @@ export async function runMarketDataStoreTests(): Promise<void> {
     assert.equal(page2.trades[0].id, 't_1');
 
     // 3. Provider Scoping (no cross-provider leakage)
-    const binanceTrades = store.queryTrades({ provider: 'binance', symbol: 'ES', limit: 10 });
-    assert.equal(binanceTrades.trades.length, 0, 'Querying different provider must return 0 trades');
+    const databentoTrades = store.queryTrades({ provider: 'databento', symbol: 'ES', limit: 10 });
+    assert.equal(databentoTrades.trades.length, 0, 'Querying different provider must return 0 trades');
 
     // 4. Bar Persistence & Pagination
     store.saveBars(sampleHistoricalBars, 'ES', '1m', 'tradovate');

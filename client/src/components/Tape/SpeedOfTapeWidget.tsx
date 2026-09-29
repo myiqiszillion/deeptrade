@@ -25,15 +25,20 @@ export const SpeedOfTapeWidget: React.FC<SpeedOfTapeWidgetProps> = ({
       : `≥ $${Math.round(deepTradeThresholdUsd / 1000)}K`
     : '≥ 10 lots';
   return (
-    <div className="w-72 h-full border-l border-brand-border bg-brand-surface flex flex-col select-none font-mono text-xs">
-      {/* Header */}
-      <div className="border-b border-brand-border px-3 py-2 bg-brand-surfaceHover flex items-center justify-between">
-        <span className="font-bold text-slate-200">SPEED OF TAPE</span>
-        <span className="text-[10px] text-slate-400">Time & Sales</span>
+    <div className="w-full h-full flex flex-col select-none font-mono text-xs bg-slate-950/40">
+      {/* Sub-header status strip */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/5 bg-slate-900/50 text-[10px]">
+        <span className="text-slate-400 font-sans font-medium flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.8)]" />
+          Time & Sales Stream
+        </span>
+        <span className="text-slate-400 font-mono text-[9px] bg-slate-800/60 px-1.5 py-0.5 rounded border border-white/5">
+          TAPE BUFFER: 50
+        </span>
       </div>
 
       {/* Speed Metrics */}
-      {recentTicks.length > 0 && <div className="p-3 border-b border-brand-border bg-brand-bg/40 space-y-2">
+      {recentTicks.length > 0 && <div className="p-3 border-b border-white/5 bg-slate-900/80 space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-slate-400">Tape Speed:</span>
           <div className="flex items-center gap-1 font-bold text-sm">

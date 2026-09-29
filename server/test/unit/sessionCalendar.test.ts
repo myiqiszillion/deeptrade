@@ -17,11 +17,7 @@ export async function runSessionCalendarTests(): Promise<void> {
   const satClosedTs = Date.UTC(2026, 0, 10, 18, 0, 0);
   assert.equal(SessionCalendar.getSessionInfo(satClosedTs, 'CME_EQUITY_INDEX').isOpen, false, 'Saturday should be closed');
 
-  // 2. Crypto 24/7 (BTCUSDT is always open)
-  assert.equal(SessionCalendar.getSessionInfo(satClosedTs, 'BINANCE_24_7').isOpen, true, 'Crypto should be open on weekends');
-  assert.equal(SessionCalendar.getSessionInfo(wedHaltTs, 'BINANCE_24_7').isOpen, true, 'Crypto should be open during CME halts');
-
-  // 3. New Session Rollover
+  // 2. New Session Rollover
   // Wednesday 15:00 CT vs Wednesday 18:00 CT (after 17:00 CT rollover)
   const wedAfternoonTs = Date.UTC(2026, 0, 7, 21, 0, 0); // 15:00 CT
   const wedEveningTs = Date.UTC(2026, 0, 8, 0, 0, 0);     // 18:00 CT

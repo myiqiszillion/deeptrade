@@ -1,15 +1,15 @@
 export type OrderSide = 'buy' | 'sell' | 'unknown';
 
-export type AssetClass = 'EQUITY_INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND' | 'CRYPTO';
+export type AssetClass = 'EQUITY_INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND';
 export type ContractType = 'CONTINUOUS' | 'SPECIFIC';
 
 export interface FuturesInstrument {
   symbol: string;
   rootSymbol?: string;
   name: string;
-  category: 'INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND' | 'CRYPTO';
+  category: 'INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND';
   assetClass?: AssetClass;
-  exchange: 'CME' | 'NYMEX' | 'COMEX' | 'CBOT' | 'BINANCE';
+  exchange: 'CME' | 'NYMEX' | 'COMEX' | 'CBOT';
   tickSize: number;
   pointValue: number;
   tickValue: number;
@@ -268,7 +268,7 @@ export interface OptionsFlowTrade {
 }
 
 export type WSClientMessage =
-  | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'binance' | 'simulator' | 'cme' }
+  | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'cme' | 'databento' | 'tradovate' | string }
   | {
       type: 'REPLAY_CONTROL';
       action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP' | 'RETURN_TO_LIVE';
@@ -295,6 +295,7 @@ export type WSServerMessage =
       historySource?: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
       /** REAL vendor bars preceding the live session; plain candles, no per-price breakdown. */
       historyBars?: HistoricalBar[];
+      recentTicks?: Tick[];
       feedStatus?: 'LIVE' | 'UNAVAILABLE';
       mode?: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
     }

@@ -26,7 +26,7 @@ export interface IReplaySession {
 export class ChartSession {
   public readonly id = `s${++sessionCounter}`;
   public readonly createdAt = Date.now();
-  public subscribedSymbol = 'BTCUSDT';
+  public subscribedSymbol = process.env.DEFAULT_SYMBOL || 'ES';
   public subscribedTimeframe = '1m';
   public subscriptionGeneration = 0;
   public replaySession: IReplaySession | null = null;

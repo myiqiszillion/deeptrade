@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useRef, useEffect } from 'react';
 import { OrderbookSnapshot } from '../../types';
-import { formatPrice } from '../../services/priceFormat';
+import { formatPrice, formatVolume } from '../../services/priceFormat';
 
 interface DOMLadderProps {
   orderbook: OrderbookSnapshot;
@@ -14,130 +14,224 @@ export const DOMLadder: React.FC<DOMLadderProps> = ({
   orderbook,
   currentPrice,
   symbol,
-  tickSize,
+  tickSize = 0.5,
 }) => {
-  // Build unified DOM ladder
-  const asks = [...orderbook.asks].reverse(); // Asks sorted high to low down to best ask
-  const bids = [...orderbook.bids]; // Bids sorted highest first
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const spreadRef = useRef<HTMLDivElement | null>(null);
+
+  const isDepthActive = orderbook.bids.length + orderbook.asks.length > 0;
+  let asks = [...orderbook.asks].reverse(); // Asks sorted high to low down to best ask
+  let bids = [...orderbook.bids]; // Bids sorted highest first
+
+  if (!isDepthActive && currentPrice > 0) {
+    const t = tickSize || 0.25;
+    asks = [];
+    for (let i = 20; i >= 1; i--) {
+      asks.push({
+        price: Number((currentPrice + i * t).toFixed(4)),
+        size: 0,
+        pullingStacking: 0,
+      });
+    }
+    bids = [];
+    for (let i = 1; i <= 20; i++) {
+      bids.push({
+        price: Number((currentPrice - i * t).toFixed(4)),
+        size: 0,
+        pullingStacking: 0,
+      });
+    }
+  }
 
   const maxBookSize = Math.max(
     1,
-    ...orderbook.bids.map((b) => b.size),
-    ...orderbook.asks.map((a) => a.size)
+    ...bids.map((b) => b.size),
+    ...asks.map((a) => a.size)
   );
+
+  const totalBidDepth = bids.reduce((acc, b) => acc + b.size, 0);
+  const totalAskDepth = asks.reduce((acc, a) => acc + a.size, 0);
 
   const bestBid = bids[0]?.price ?? null;
   const bestAsk = asks[asks.length - 1]?.price ?? null;
-  const spread = bestBid !== null && bestAsk !== null ? Math.max(0, bestAsk - bestBid) : null;
+  const spread = isDepthActive && bestBid !== null && bestAsk !== null ? Math.max(0, bestAsk - bestBid) : null;
+
+  const scrollToCenter = () => {
+    if (spreadRef.current && containerRef.current) {
+      spreadRef.current.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  };
+
+  useEffect(() => {
+    if (spreadRef.current && containerRef.current) {
+      spreadRef.current.scrollIntoView({ block: 'center' });
+    }
+  }, [symbol]);
 
   return (
-    <div className="w-80 h-full border-l border-brand-border bg-brand-surface flex flex-col select-none font-mono text-xs">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-brand-border px-3 py-2 bg-brand-surfaceHover">
-        <span className="font-bold text-slate-200">DOM LADDER (VIEW ONLY)</span>
-        <span
-          className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
-            orderbook.bids.length + orderbook.asks.length > 0
-              ? 'bg-emerald-500/20 text-emerald-400'
-              : 'bg-amber-500/20 text-amber-400'
-          }`}
-          title="Depth snapshot; connection status is shown in the workspace footer"
-        >
-          {orderbook.bids.length + orderbook.asks.length > 0 ? 'DEPTH SNAPSHOT' : 'NO DEPTH'}
-        </span>
+    <div className="w-full h-full flex flex-col select-none font-mono text-xs bg-slate-950/40">
+      {/* Sub-header status strip */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-white/5 bg-slate-900/50 text-[10px]">
+        <div className="flex items-center gap-1.5 text-slate-400 font-sans font-medium">
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              isDepthActive
+                ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
+                : 'bg-amber-400'
+            }`}
+          />
+          <span>{isDepthActive ? 'Realtime Depth L2' : 'Standby / Price Ladder'}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={scrollToCenter}
+            className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[9px] font-sans font-semibold transition-colors"
+            title="Center DOM on active price"
+          >
+            Center
+          </button>
+          <span
+            className={`px-1.5 py-0.5 rounded font-semibold text-[9px] tracking-wide ${
+              isDepthActive
+                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25'
+                : 'bg-amber-500/15 text-amber-400 border border-amber-500/25'
+            }`}
+          >
+            {isDepthActive ? 'L2 ACTIVE' : 'STANDBY'}
+          </span>
+        </div>
       </div>
 
       {/* Column Headers */}
-      <div className="grid grid-cols-3 text-center py-1.5 border-b border-brand-border bg-brand-surfaceHover text-[10px] text-slate-400 font-semibold">
-        <div>BID SIZE (P&S)</div>
+      <div className="grid grid-cols-3 text-center py-1.5 border-b border-white/5 bg-slate-900/80 text-[10px] text-slate-400 font-semibold tracking-wider">
+        <div className="text-emerald-400/90 text-left pl-3">BID SIZE</div>
         <div>PRICE</div>
-        <div>ASK SIZE (P&S)</div>
+        <div className="text-rose-400/90 text-right pr-3">ASK SIZE</div>
       </div>
 
       {/* DOM Rows */}
-      <div className="flex-1 overflow-y-auto divide-y divide-brand-border/20 text-[11px]">
-        {bids.length + asks.length === 0 && <div className="p-6 text-center text-slate-500">No depth data for {symbol}. Waiting for a valid order book.</div>}
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-y-auto divide-y divide-white/[0.03] text-[11px] custom-scrollbar"
+      >
+        {bids.length + asks.length === 0 && (
+          <div className="p-8 text-center text-slate-500 font-sans text-xs">
+            Waiting for order book depth records for {symbol}...
+          </div>
+        )}
+
         {/* Asks (Red side) */}
-        {asks.slice(-20).map((ask) => {
+        {asks.slice(-25).map((ask) => {
           const depthPercent = (ask.size / maxBookSize) * 100;
           const ps = ask.pullingStacking || 0;
 
           return (
             <div
               key={ask.price}
-              className="grid grid-cols-3 text-center py-0.5 hover:bg-rose-500/10 relative"
+              className="grid grid-cols-3 text-center py-1 hover:bg-rose-500/10 relative transition-colors duration-75"
             >
-              {/* Left blank */}
+              {/* Left blank for asks */}
               <div />
 
               {/* Price */}
-              <div className="text-rose-400 font-bold z-10">{formatPrice(ask.price, tickSize)}</div>
-
-              {/* Ask Size & Pulling/Stacking */}
-              <div className="relative flex items-center justify-end px-2 z-10 gap-1.5">
-                {ps !== 0 && (
-                  <span className={`text-[9px] ${ps > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {ps > 0 ? `+${ps.toFixed(1)}` : ps.toFixed(1)}
-                  </span>
-                )}
-                <span className="text-slate-200">{ask.size.toFixed(2)}</span>
+              <div className="text-rose-400 font-bold z-10 tabular-nums">
+                {formatPrice(ask.price, tickSize)}
               </div>
 
-              {/* Depth bar fill */}
+              {/* Ask Size & Pulling/Stacking */}
+              <div className="relative flex items-center justify-end px-3 z-10 gap-1.5 tabular-nums">
+                {ps !== 0 && (
+                  <span
+                    className={`text-[9px] px-1 rounded font-semibold ${
+                      ps > 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'
+                    }`}
+                  >
+                    {ps > 0 ? `+${formatVolume(ps)}` : formatVolume(ps)}
+                  </span>
+                )}
+                <span className={isDepthActive ? 'text-slate-200 font-medium' : 'text-slate-600 font-mono text-[10px]'}>
+                  {isDepthActive ? formatVolume(ask.size) : '—'}
+                </span>
+              </div>
+
+              {/* Depth bar fill (Smooth gradient right to left) */}
               <div
-                className="absolute top-0 bottom-0 right-0 bg-rose-500/15"
-                style={{ width: `${depthPercent * 0.33}%` }}
+                className="absolute top-0 bottom-0 right-0 bg-gradient-to-l from-rose-500/25 via-rose-500/10 to-transparent pointer-events-none"
+                style={{ width: `${depthPercent * 0.45}%` }}
               />
             </div>
           );
         })}
 
         {/* Current Spread Bar */}
-        <div className="py-1 px-3 bg-amber-500/15 text-center text-amber-400 font-bold border-y border-amber-500/30 text-xs flex items-center justify-between">
-          <span className="text-[10px] font-normal text-amber-400/80">
-            {spread !== null ? `SPREAD: ${formatPrice(spread, tickSize)}` : 'SPREAD: —'}
+        <div
+          ref={spreadRef}
+          className="py-1 px-3 bg-gradient-to-r from-amber-500/15 via-amber-500/20 to-amber-500/15 text-center text-amber-300 font-bold border-y border-amber-500/30 text-xs flex items-center justify-between shadow-[0_0_12px_rgba(245,158,11,0.15)] my-0.5"
+        >
+          <span className="text-[10px] font-mono font-normal text-amber-400/90">
+            {spread !== null ? `SPR: ${formatPrice(spread, tickSize)}` : isDepthActive ? 'SPR: —' : 'STANDBY'}
           </span>
-          <span>CURRENT: {currentPrice > 0 ? formatPrice(currentPrice, tickSize) : '—'}</span>
-          <span className="text-[10px] font-normal text-amber-400/80">
-            {bids.length + asks.length} LVLS
+          <span className="text-[11px] font-mono tracking-tight text-white flex items-center gap-1.5">
+            <span className={`w-1.5 h-1.5 rounded-full ${isDepthActive ? 'bg-amber-400 animate-pulse' : 'bg-amber-400'}`} />
+            {currentPrice > 0 ? formatPrice(currentPrice, tickSize) : '—'}
+          </span>
+          <span className="text-[10px] font-mono font-normal text-amber-400/80">
+            {isDepthActive ? `${bids.length + asks.length} LVLS` : 'PRICE REF'}
           </span>
         </div>
 
         {/* Bids (Green side) */}
-        {bids.slice(0, 20).map((bid) => {
-          const depthPercent = (bid.size / maxBookSize) * 100;
+        {bids.slice(0, 25).map((bid) => {
+          const depthPercent = isDepthActive ? (bid.size / maxBookSize) * 100 : 0;
           const ps = bid.pullingStacking || 0;
 
           return (
             <div
               key={bid.price}
-              className="grid grid-cols-3 text-center py-0.5 hover:bg-emerald-500/10 relative"
+              className="grid grid-cols-3 text-center py-1 hover:bg-emerald-500/10 relative transition-colors duration-75"
             >
               {/* Bid Size & Pulling/Stacking */}
-              <div className="relative flex items-center justify-start px-2 z-10 gap-1.5">
-                <span className="text-slate-200">{bid.size.toFixed(2)}</span>
+              <div className="relative flex items-center justify-start px-3 z-10 gap-1.5 tabular-nums">
+                <span className={isDepthActive ? 'text-slate-200 font-medium' : 'text-slate-600 font-mono text-[10px]'}>
+                  {isDepthActive ? formatVolume(bid.size) : '—'}
+                </span>
                 {ps !== 0 && (
-                  <span className={`text-[9px] ${ps > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {ps > 0 ? `+${ps.toFixed(1)}` : ps.toFixed(1)}
+                  <span
+                    className={`text-[9px] px-1 rounded font-semibold ${
+                      ps > 0 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'
+                    }`}
+                  >
+                    {ps > 0 ? `+${formatVolume(ps)}` : formatVolume(ps)}
                   </span>
                 )}
               </div>
 
               {/* Price */}
-              <div className="text-emerald-400 font-bold z-10">{formatPrice(bid.price, tickSize)}</div>
+              <div className="text-emerald-400 font-bold z-10 tabular-nums">
+                {formatPrice(bid.price, tickSize)}
+              </div>
 
-              {/* Right blank */}
+              {/* Right blank for bids */}
               <div />
 
-              {/* Depth bar fill */}
+              {/* Depth bar fill (Smooth gradient left to right) */}
               <div
-                className="absolute top-0 bottom-0 left-0 bg-emerald-500/15"
-                style={{ width: `${depthPercent * 0.33}%` }}
+                className="absolute top-0 bottom-0 left-0 bg-gradient-to-r from-emerald-500/25 via-emerald-500/10 to-transparent pointer-events-none"
+                style={{ width: `${depthPercent * 0.45}%` }}
               />
             </div>
           );
         })}
       </div>
+
+      {/* Depth Totals Footer */}
+      {isDepthActive && (
+        <div className="flex items-center justify-between px-3 py-1.5 border-t border-white/5 bg-slate-900/60 text-[10px] text-slate-400 font-mono">
+          <span className="text-emerald-400 font-medium">Bids: {formatVolume(totalBidDepth)}</span>
+          <span className="text-slate-500">|</span>
+          <span className="text-rose-400 font-medium">Asks: {formatVolume(totalAskDepth)}</span>
+        </div>
+      )}
     </div>
   );
 };

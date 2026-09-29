@@ -4,8 +4,8 @@ import { TradovateDom, TradovateDomLevel, TradovatePriceSize, TradovateQuote } f
 /**
  * Vendor payload -> DeepChart boundary candidates.
  *
- * Tradovate's quote feed reports STATE, not EVENTS, and — unlike Binance's `aggTrade` — it
- * publishes **no aggressor flag**. Two consequences drive every decision in this file:
+ * Tradovate's quote feed reports STATE, not EVENTS, and publishes **no aggressor flag**.
+ * Two consequences drive every decision in this file:
  *
  * 1. AGGRESSOR SIDE IS DERIVED, NEVER INVENTED.
  *    `entries.Trade` carries price+size only. The side is recovered with the Lee-Ready

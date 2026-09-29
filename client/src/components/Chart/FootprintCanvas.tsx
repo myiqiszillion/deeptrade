@@ -1,20 +1,18 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { AbsorptionAlert, ChartViewport, DeepTrade, FootprintBar, GEXProfile, HistoricalBar, VWAPPoint } from '../../types';
 import { historyBeforeLive } from '../../services/chartHistory';
-import { formatPrice } from '../../services/priceFormat';
+import { formatPrice, formatVolume } from '../../services/priceFormat';
 import {
   calculatePriceToY,
   calculateYToPrice,
   clampScale,
+  getNicePriceStep,
 } from '../../services/viewportMath';
+import { ChartTooltip, TooltipData } from './ChartTooltip';
+import { SignalFilters } from '../Navigation/ChartToolbar';
 
 interface FootprintCanvasProps {
   bars: FootprintBar[];
-  /**
-   * REAL vendor bars that preceded the live session. Rendered as plain candles to the LEFT of
-   * the live footprint, because a bar carries no per-price bid/ask split — there is nothing
-   * honest to draw inside them.
-   */
   historyBars?: HistoricalBar[];
   currentPrice: number;
   vwapPoints: VWAPPoint[];
@@ -24,7 +22,9 @@ interface FootprintCanvasProps {
   showVWAP: boolean;
   showImbalances: boolean;
   showDeltaNumbers: boolean;
+  signalFilters?: SignalFilters;
   tickSize?: number;
+  clusterMultiplier?: 'auto' | 1 | 2 | 4 | 5 | 10 | 25 | 50;
   symbol?: string;
   timeframe?: string;
   isLive?: boolean;
@@ -34,6 +34,37 @@ interface FootprintCanvasProps {
   onViewportChange?: (vp: ChartViewport) => void;
   crosshairX?: number | null;
   onCrosshairChange?: (x: number | null) => void;
+}
+
+interface ClusterRow {
+  price: number;
+  bidVol: number;
+  askVol: number;
+  delta: number;
+  totalVol: number;
+  hasBidImbalance: boolean;
+  hasAskImbalance: boolean;
+  hasStackedBidImbalance: boolean;
+  hasStackedAskImbalance: boolean;
+  isPOC: boolean;
+}
+
+const GUTTER_WIDTH = 76;
+const FOOTER_HEIGHT = 38;
+
+function findBarIndexByTime(time: number, barsList: FootprintBar[]): number {
+  if (barsList.length === 0) return -1;
+  const barInterval = barsList.length >= 2 ? Math.max(1000, barsList[1].time - barsList[0].time) : 60000;
+  for (let i = barsList.length - 1; i >= 0; i--) {
+    if (time >= barsList[i].time && time < barsList[i].time + barInterval) {
+      return i;
+    }
+    if (time >= barsList[i].time) {
+      return i;
+    }
+  }
+  if (Math.abs(time - barsList[0].time) < barInterval) return 0;
+  return -1;
 }
 
 export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
@@ -47,7 +78,9 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   showVWAP,
   showImbalances,
   showDeltaNumbers,
-  tickSize = 0.5,
+  signalFilters = { buyAbs: true, sellAbs: true, gamma: true, whale: true },
+  tickSize = 0.25,
+  clusterMultiplier = 'auto',
   symbol,
   timeframe,
   isLive = false,
@@ -58,21 +91,20 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   crosshairX,
   onCrosshairChange,
 }) => {
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Viewport / Camera fallback state
+  // Default viewport targeting 20-25 visible candles on screen (70px width + 10px spacing = 80px step)
   const [internalViewport, setInternalViewport] = useState<ChartViewport>({
     panX: 0,
-    panY: 0,
-    barWidth: 80,
-    barSpacing: 20,
-    priceScale: 6,
+    panY: 300,
+    barWidth: 70,
+    barSpacing: 10,
+    priceScale: 16,
     autoFollow: true,
   });
 
   const viewport = propsViewport || internalViewport;
-
-  // Cache ref to prevent stale closures in event listeners
   const viewportRef = useRef(viewport);
   const currentPriceRef = useRef<number>(currentPrice);
 
@@ -97,50 +129,83 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     [onViewportChange]
   );
 
-  const autoFollow = viewport.autoFollow;
-  const setAutoFollow = useCallback(
-    (valOrFn: boolean | ((prev: boolean) => boolean)) => {
-      updateViewport((prev) => {
-        const currentVal = prev.autoFollow ?? true;
-        const nextVal = typeof valOrFn === 'function' ? valOrFn(currentVal) : valOrFn;
-        return { ...prev, autoFollow: nextVal };
-      });
-    },
-    [updateViewport]
-  );
+  const autoFollow = viewport.autoFollow ?? true;
 
+  // Interaction refs
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const mousePosRef = useRef<{ x: number; y: number } | null>(null);
   const lastFittedDatasetRef = useRef<string | null>(null);
 
-  // Manual or automatic fit of viewport: center price vertically, anchor on the right.
+  // Tooltip HUD state
+  const [tooltipData, setTooltipData] = useState<TooltipData | null>(null);
+  const [containerDimensions, setContainerDimensions] = useState({ width: 800, height: 600 });
+
+  // Intelligent auto-scaling focused on 15–26 visible candles with clear order flow
   const fitViewport = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const cssWidth = canvas.parentElement?.clientWidth || 800;
     const cssHeight = canvas.parentElement?.clientHeight || 600;
-    const anchor = currentPriceRef.current && currentPriceRef.current > 0
-      ? currentPriceRef.current
-      : (bars[bars.length - 1]?.close ?? historyBars?.[historyBars.length - 1]?.close ?? 100);
-    const totalWidth = bars.length * (viewportRef.current.barWidth + viewportRef.current.barSpacing);
-    const targetPanX = Math.min(cssWidth - 80, cssWidth - totalWidth - 80);
+    const chartWidth = cssWidth - GUTTER_WIDTH;
+
+    // Target 18-24 candles for market context & microstructure scanning
+    const targetBarCount = Math.max(16, Math.min(26, Math.floor(chartWidth / 80)));
+    let focusBars = bars.slice(-targetBarCount);
+    if (focusBars.length === 0 && historyBars && historyBars.length > 0) {
+      focusBars = historyBars.slice(-targetBarCount) as unknown as FootprintBar[];
+    }
+
+    let minPrice = Infinity;
+    let maxPrice = -Infinity;
+
+    for (const b of focusBars) {
+      if (typeof b.high === 'number' && Number.isFinite(b.high) && b.high > maxPrice) maxPrice = b.high;
+      if (typeof b.low === 'number' && Number.isFinite(b.low) && b.low < minPrice) minPrice = b.low;
+    }
+
+    const curP = currentPriceRef.current;
+    if (typeof curP === 'number' && Number.isFinite(curP) && curP > 0) {
+      if (curP > maxPrice) maxPrice = curP;
+      if (curP < minPrice) minPrice = curP;
+    }
+
+    let anchor = curP && curP > 0 ? curP : 100;
+    let newScale = viewportRef.current.priceScale;
+
+    if (maxPrice > -Infinity && minPrice < Infinity) {
+      anchor = (maxPrice + minPrice) / 2;
+      const rawSpan = Math.max(maxPrice - minPrice, tickSize * 8);
+      const usableHeight = (cssHeight - FOOTER_HEIGHT) * 0.72;
+      const totalTicks = rawSpan / tickSize;
+      const computedScale = usableHeight / Math.max(1, totalTicks);
+      newScale = Math.max(10, Math.min(28, computedScale));
+    }
+
+    const barStep = 80;
+    const totalWidth = bars.length * barStep;
+    const targetPanX = bars.length > 0
+      ? Math.min(chartWidth - 50, chartWidth - totalWidth - 40)
+      : chartWidth - 50 + barStep;
+
     updateViewport((prev) => ({
       ...prev,
       anchorPrice: anchor,
-      panY: cssHeight / 2,
+      panY: (cssHeight - FOOTER_HEIGHT) / 2,
       panX: targetPanX,
+      barWidth: 70,
+      barSpacing: 10,
+      priceScale: newScale,
       autoFollow: true,
     }));
-  }, [bars, historyBars, updateViewport]);
+  }, [bars, historyBars, tickSize, updateViewport]);
 
-  // Fit the viewport once per dataset switch (symbol, timeframe, or mode switch),
-  // only after valid price/bars for the current dataset are present.
+  // Fit the viewport once per dataset switch (symbol or timeframe switch)
   useEffect(() => {
     if (!symbol) return;
     const isReplayMode = sessionMode ? sessionMode !== 'LIVE' : !isLive;
     const datasetKey = `${symbol}:${timeframe || ''}:${isReplayMode ? 'replay' : 'live'}`;
-    if (lastFittedDatasetRef.current === datasetKey) return;
+    if (lastFittedDatasetRef.current === datasetKey && viewport.anchorPrice !== undefined) return;
 
     const hasPrice = typeof currentPrice === 'number' && currentPrice > 0;
     const hasBars = bars.length > 0 || (historyBars && historyBars.length > 0);
@@ -148,31 +213,37 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
 
     lastFittedDatasetRef.current = datasetKey;
     fitViewport();
-  }, [symbol, timeframe, sessionMode, isLive, bars.length, historyBars, currentPrice, fitViewport]);
+  }, [symbol, timeframe, sessionMode, isLive, bars.length, historyBars, currentPrice, viewport.anchorPrice, fitViewport]);
 
-  // Auto-follow: pin the newest bar near the right edge while enabled.
+  // Auto-follow: pins newest bar near the right edge
   useEffect(() => {
     if (!autoFollow) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const cssWidth = canvas.parentElement?.clientWidth || 800;
-    const totalWidth = bars.length * (viewport.barWidth + viewport.barSpacing);
-    const nextPanX = cssWidth - totalWidth - 80;
+    const chartWidth = cssWidth - GUTTER_WIDTH;
+    const barStep = viewport.barWidth + viewport.barSpacing;
+    const totalWidth = bars.length * barStep;
+    const nextPanX = bars.length > 0
+      ? chartWidth - totalWidth - 50
+      : chartWidth - 50 + barStep;
     if (Math.abs(nextPanX - viewport.panX) > 1) {
       updateViewport((prev) => ({ ...prev, panX: nextPanX }));
     }
   }, [bars.length, autoFollow, viewport.barWidth, viewport.barSpacing, viewport.panX, updateViewport]);
 
-  // Handle container resize without resetting user pan/zoom
+  // Track parent resize
   useEffect(() => {
     const parent = canvasRef.current?.parentElement;
     if (!parent) return;
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        const { width } = entry.contentRect;
+        const { width, height } = entry.contentRect;
+        setContainerDimensions({ width, height });
         if (autoFollow) {
-          const totalWidth = bars.length * (viewportRef.current.barWidth + viewportRef.current.barSpacing);
-          updateViewport((prev) => ({ ...prev, panX: width - totalWidth - 80 }));
+          const barStep = viewportRef.current.barWidth + viewportRef.current.barSpacing;
+          const totalWidth = bars.length * barStep;
+          updateViewport((prev) => ({ ...prev, panX: width - GUTTER_WIDTH - totalWidth - 50 }));
         }
       }
     });
@@ -180,7 +251,25 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     return () => ro.disconnect();
   }, [autoFollow, bars.length, updateViewport]);
 
-  // Mouse handlers for pan & zoom
+  // Convert Price to Canvas Y
+  const priceToY = useCallback(
+    (price: number) => {
+      const effectiveAnchor = viewport.anchorPrice ?? currentPriceRef.current;
+      return calculatePriceToY(price, effectiveAnchor, viewport.panY, viewport.priceScale, tickSize);
+    },
+    [tickSize, viewport.anchorPrice, viewport.panY, viewport.priceScale]
+  );
+
+  // Convert Canvas Y to Price
+  const yToPrice = useCallback(
+    (y: number) => {
+      const effectiveAnchor = viewport.anchorPrice ?? currentPriceRef.current;
+      return calculateYToPrice(y, effectiveAnchor, viewport.panY, viewport.priceScale, tickSize);
+    },
+    [tickSize, viewport.anchorPrice, viewport.panY, viewport.priceScale]
+  );
+
+  // Mouse interaction handlers
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     isDraggingRef.current = true;
     dragStartRef.current = {
@@ -197,18 +286,15 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     const rect = canvas.getBoundingClientRect();
     const curX = e.clientX - rect.left;
     const curY = e.clientY - rect.top;
-    mousePosRef.current = {
-      x: curX,
-      y: curY,
-    };
+    mousePosRef.current = { x: curX, y: curY };
+
     if (onCrosshairChange) {
-      onCrosshairChange(curX < canvas.clientWidth - 65 ? curX : null);
+      onCrosshairChange(curX < canvas.clientWidth - GUTTER_WIDTH ? curX : null);
     }
 
     if (isDraggingRef.current) {
       const dx = e.clientX - dragStartRef.current.x;
       const dy = e.clientY - dragStartRef.current.y;
-      // Manual panning takes over from auto-follow atomically
       const shouldDisableFollow = autoFollow && (Math.abs(dx) > 3 || Math.abs(dy) > 3);
       updateViewport((prev) => ({
         ...prev,
@@ -216,6 +302,175 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         panX: dragStartRef.current.panX + dx,
         panY: dragStartRef.current.panY + dy,
       }));
+      setTooltipData(null);
+      return;
+    }
+
+    // Check hover over attached signals first
+    const barStep = viewport.barWidth + viewport.barSpacing;
+    let hoveredSignalData: TooltipData | null = null;
+
+    if (signalFilters.whale && deepTrades.length > 0) {
+      for (const dt of deepTrades.slice(-25)) {
+        const bIdx = findBarIndexByTime(dt.timestamp, bars);
+        if (bIdx < 0 || bIdx >= bars.length) continue;
+        const b = bars[bIdx];
+        const bX = viewport.panX + bIdx * barStep;
+        const bCenterX = bX + viewport.barWidth / 2;
+        const isBuy = dt.side === 'buy';
+        const highY = priceToY(b.high);
+        const lowY = priceToY(b.low);
+        const mY = isBuy ? (highY - 12) : (lowY + 12);
+        if (Math.abs(curX - bCenterX) <= 9 && Math.abs(curY - mY) <= 9) {
+          hoveredSignalData = {
+            x: curX,
+            y: curY,
+            barX: bX,
+            barWidth: viewport.barWidth,
+            type: 'signal',
+            title: `WHALE TRADE · ${symbol}`,
+            price: dt.price,
+            tickSize,
+            size: dt.size,
+            valueUsd: dt.valueUsd,
+            side: dt.side,
+            description: `Institutional block trade (${formatVolume(dt.size)} contracts)`,
+          };
+          break;
+        }
+      }
+    }
+
+    if (!hoveredSignalData && (signalFilters.buyAbs || signalFilters.sellAbs) && absorptions.length > 0) {
+      for (const abs of absorptions.slice(-25)) {
+        if (abs.side === 'buy_absorption' && !signalFilters.buyAbs) continue;
+        if (abs.side === 'sell_absorption' && !signalFilters.sellAbs) continue;
+        const bIdx = findBarIndexByTime(abs.timestamp, bars);
+        if (bIdx < 0 || bIdx >= bars.length) continue;
+        const b = bars[bIdx];
+        const bX = viewport.panX + bIdx * barStep;
+        const bCenterX = bX + viewport.barWidth / 2;
+        const isBuy = abs.side === 'buy_absorption';
+        const highY = priceToY(b.high);
+        const lowY = priceToY(b.low);
+        const mY = isBuy ? (lowY + 12) : (highY - 12);
+        if (Math.abs(curX - bCenterX) <= 9 && Math.abs(curY - mY) <= 9) {
+          hoveredSignalData = {
+            x: curX,
+            y: curY,
+            barX: bX,
+            barWidth: viewport.barWidth,
+            type: 'signal',
+            title: isBuy ? `BUY ABSORPTION · ${symbol}` : `SELL ABSORPTION · ${symbol}`,
+            price: abs.price,
+            tickSize,
+            size: abs.volume,
+            side: isBuy ? 'buy' : 'sell',
+            description: abs.description,
+          };
+          break;
+        }
+      }
+    }
+
+    if (hoveredSignalData) {
+      setTooltipData(hoveredSignalData);
+      return;
+    }
+
+    // Check hover over footprint bars
+    let hoveredBarIdx = -1;
+    for (let i = 0; i < bars.length; i++) {
+      const bX = viewport.panX + i * barStep;
+      if (curX >= bX && curX <= bX + viewport.barWidth) {
+        hoveredBarIdx = i;
+        break;
+      }
+    }
+
+    if (hoveredBarIdx >= 0 && curY < canvas.clientHeight - FOOTER_HEIGHT) {
+      const bar = bars[hoveredBarIdx];
+      const bX = viewport.panX + hoveredBarIdx * barStep;
+      const hoveredPrice = yToPrice(curY);
+
+      // Snapping to cluster step
+      const baseTick = tickSize > 0 ? tickSize : 0.25;
+      let clusterMultiplierNum = 1;
+      if (!clusterMultiplier || clusterMultiplier === 'auto') {
+        if (viewport.priceScale >= 9) {
+          clusterMultiplierNum = 1;
+        } else {
+          const needed = Math.max(1, Math.ceil(11 / Math.max(0.05, viewport.priceScale)));
+          clusterMultiplierNum = needed <= 1 ? 1 : needed <= 2 ? 2 : needed <= 4 ? 4 : needed <= 8 ? 5 : 10;
+        }
+      } else {
+        clusterMultiplierNum = clusterMultiplier;
+      }
+      const clusterStep = clusterMultiplierNum * baseTick;
+      const bucketPrice = Number((Math.round(hoveredPrice / clusterStep) * clusterStep).toFixed(6));
+
+      // Resolve matching level in bar
+      let matchingLvl = bar.levels[bucketPrice];
+      if (!matchingLvl) {
+        let closestDist = Infinity;
+        for (const [pStr, lvl] of Object.entries(bar.levels)) {
+          const p = Number(pStr);
+          const dist = Math.abs(p - bucketPrice);
+          if (dist < closestDist && dist <= clusterStep * 1.05) {
+            closestDist = dist;
+            matchingLvl = lvl;
+          }
+        }
+      }
+
+      if (matchingLvl) {
+        setTooltipData({
+          x: curX,
+          y: curY,
+          barX: bX,
+          barWidth: viewport.barWidth,
+          type: 'cell',
+          title: `FOOTPRINT LEVEL · ${symbol}`,
+          price: bucketPrice,
+          tickSize,
+          bidVol: matchingLvl.bidVol,
+          askVol: matchingLvl.askVol,
+          cellDelta: matchingLvl.delta,
+          hasBidImbalance: matchingLvl.bidImbalance,
+          hasAskImbalance: matchingLvl.askImbalance,
+          hasStackedBidImbalance: matchingLvl.stackedBidImbalance,
+          hasStackedAskImbalance: matchingLvl.stackedAskImbalance,
+          isPOC: matchingLvl.isPOC || bar.poc === bucketPrice,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+          delta: bar.delta,
+        });
+      } else {
+        setTooltipData({
+          x: curX,
+          y: curY,
+          barX: bX,
+          barWidth: viewport.barWidth,
+          type: 'candle',
+          title: `BAR SUMMARY · ${symbol}`,
+          tickSize,
+          time: bar.time,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+          delta: bar.delta,
+          minDelta: bar.minDelta,
+          maxDelta: bar.maxDelta,
+          poc: bar.poc,
+        });
+      }
+    } else {
+      setTooltipData(null);
     }
   };
 
@@ -226,12 +481,18 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   const handleMouseLeave = () => {
     isDraggingRef.current = false;
     mousePosRef.current = null;
+    setTooltipData(null);
     if (onCrosshairChange) {
       onCrosshairChange(null);
     }
   };
 
-  // Zoom on wheel (attached via non-passive native listener so preventDefault prevents page scrolling)
+  // Double-click = reset/fit view
+  const handleDoubleClick = () => {
+    fitViewport();
+  };
+
+  // Wheel zoom (Shift = Y price scale, Normal = X candle width)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -239,18 +500,16 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       if (e.shiftKey) {
-        // Zoom Y (price scale)
-        const factor = e.deltaY < 0 ? 1.1 : 0.9;
+        const factor = e.deltaY < 0 ? 1.10 : 0.90;
         updateViewport((prev) => ({
           ...prev,
-          priceScale: clampScale(prev.priceScale, factor, 2, 25),
+          priceScale: clampScale(prev.priceScale, factor, 1, 55),
         }));
       } else {
-        // Zoom X (bar width)
-        const factor = e.deltaY < 0 ? 1.1 : 0.9;
+        const factor = e.deltaY < 0 ? 1.10 : 0.90;
         updateViewport((prev) => ({
           ...prev,
-          barWidth: clampScale(prev.barWidth, factor, 40, 180),
+          barWidth: clampScale(prev.barWidth, factor, 40, 260),
         }));
       }
     };
@@ -261,25 +520,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     };
   }, [updateViewport]);
 
-  // Convert Price to Canvas Y: anchored to viewport.anchorPrice so live ticks don't jump the chart
-  const priceToY = useCallback(
-    (price: number, _canvasHeight: number) => {
-      const effectiveAnchor = viewport.anchorPrice ?? currentPriceRef.current;
-      return calculatePriceToY(price, effectiveAnchor, viewport.panY, viewport.priceScale, tickSize);
-    },
-    [tickSize, viewport.anchorPrice, viewport.panY, viewport.priceScale]
-  );
-
-  // Convert Canvas Y to Price
-  const yToPrice = useCallback(
-    (y: number) => {
-      const effectiveAnchor = viewport.anchorPrice ?? currentPriceRef.current;
-      return calculateYToPrice(y, effectiveAnchor, viewport.panY, viewport.priceScale, tickSize);
-    },
-    [tickSize, viewport.anchorPrice, viewport.panY, viewport.priceScale]
-  );
-
-  // Main Render Loop
+  // Main Canvas Render Loop
   useEffect(() => {
     let animationId: number;
 
@@ -289,13 +530,12 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      // High-DPI aware backing store: size the canvas in device pixels and draw in CSS
-      // pixels so text and 1px lines stay crisp on retina/scaled displays.
       const cssWidth = canvas.parentElement?.clientWidth || 800;
       const cssHeight = canvas.parentElement?.clientHeight || 600;
       const dpr = window.devicePixelRatio || 1;
       const pixelWidth = Math.floor(cssWidth * dpr);
       const pixelHeight = Math.floor(cssHeight * dpr);
+
       if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
         canvas.width = pixelWidth;
         canvas.height = pixelHeight;
@@ -303,115 +543,132 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         canvas.style.height = `${cssHeight}px`;
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
       const width = cssWidth;
       const height = cssHeight;
+      const chartWidth = width - GUTTER_WIDTH;
+      const chartHeight = height - FOOTER_HEIGHT;
 
-      // 1. Clear background
-      ctx.fillStyle = '#0c0e12';
+      // 1. Clear background (#080A0D)
+      ctx.fillStyle = '#080A0D';
       ctx.fillRect(0, 0, width, height);
 
-      // 2. Draw Price Grid Lines
-      const priceStep = Math.max(1, Math.round(15 / (viewport.priceScale / tickSize))) * tickSize * 5;
-      const minVisiblePrice = yToPrice(height);
-      const maxVisiblePrice = yToPrice(0);
-      const startPrice = Math.floor(minVisiblePrice / priceStep) * priceStep;
-
-      ctx.strokeStyle = '#1a1f2c';
+      // 2. Price Scale Gutter on Right (#0A0D12)
+      ctx.fillStyle = '#0A0D12';
+      ctx.fillRect(chartWidth, 0, GUTTER_WIDTH, height);
+      ctx.strokeStyle = '#161D26';
       ctx.lineWidth = 1;
-      ctx.fillStyle = '#64748b';
-      ctx.font = '10px JetBrains Mono, monospace';
+      ctx.beginPath();
+      ctx.moveTo(chartWidth, 0);
+      ctx.lineTo(chartWidth, height);
+      ctx.stroke();
 
-      for (let p = startPrice; p <= maxVisiblePrice; p += priceStep) {
-        const y = priceToY(p, height);
+      // 3. Bottom Axis Background & Separator
+      ctx.fillStyle = '#080A0D';
+      ctx.fillRect(0, chartHeight, width, FOOTER_HEIGHT);
+      ctx.strokeStyle = '#161D26';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, chartHeight);
+      ctx.lineTo(width, chartHeight);
+      ctx.stroke();
+
+      // 4. Subtle Price Grid Lines (Exact mathematical alignment with tickSize)
+      const niceStep = getNicePriceStep(tickSize, viewport.priceScale, 32);
+      const minVisiblePrice = yToPrice(chartHeight);
+      const maxVisiblePrice = yToPrice(0);
+      const startIdx = Math.floor(minVisiblePrice / niceStep);
+      const endIdx = Math.ceil(maxVisiblePrice / niceStep);
+
+      const curY = priceToY(currentPrice);
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#64748B';
+      ctx.font = '10px JetBrains Mono, monospace';
+      ctx.textAlign = 'right';
+
+      for (let i = startIdx; i <= endIdx; i++) {
+        const p = Number((i * niceStep).toFixed(6));
+        const y = priceToY(p);
+        if (y < 12 || y > chartHeight - 12) continue;
+
         ctx.beginPath();
         ctx.moveTo(0, y);
-        ctx.lineTo(width - 65, y);
+        ctx.lineTo(chartWidth, y);
         ctx.stroke();
 
-        // Price label on right margin
-        ctx.fillText(formatPrice(p, tickSize), width - 60, y + 3);
+        // Right Gutter Price Label - suppress if overlapping current price marker (within 13px)
+        if (Math.abs(y - curY) > 13) {
+          ctx.fillText(formatPrice(p, tickSize), width - 6, y + 3.5);
+        }
       }
 
-      // 3. Draw VWAP and Bands
+      // 5. Anchored VWAP Overlay (Secondary)
       if (showVWAP && vwapPoints.length > 0) {
         ctx.save();
-        // VWAP Line (Gold)
-        ctx.strokeStyle = '#f59e0b';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        let first = true;
+        const barStep = viewport.barWidth + viewport.barSpacing;
+        const vwapMap = new Map<number, VWAPPoint>();
+        for (const vp of vwapPoints) {
+          const minuteBucket = Math.floor(vp.time / 60000);
+          vwapMap.set(minuteBucket, vp);
+        }
+
+        interface MatchedVwap {
+          x: number;
+          vwapY: number;
+        }
+        const matchedList: MatchedVwap[] = [];
         for (let i = 0; i < bars.length; i++) {
           const bar = bars[i];
-          const vPoint = vwapPoints.find((v) => Math.abs(v.time - bar.time) < 60000);
-          if (vPoint) {
-            const barX = viewport.panX + i * (viewport.barWidth + viewport.barSpacing) + viewport.barWidth / 2;
-            const barY = priceToY(vPoint.vwap, height);
-            if (first) {
-              ctx.moveTo(barX, barY);
-              first = false;
-            } else {
-              ctx.lineTo(barX, barY);
-            }
+          const barX = viewport.panX + i * barStep + viewport.barWidth / 2;
+          if (barX < -50 || barX > chartWidth) continue;
+
+          const minuteBucket = Math.floor(bar.time / 60000);
+          let vp = vwapMap.get(minuteBucket);
+          if (!vp) {
+            vp = vwapMap.get(minuteBucket - 1) || vwapMap.get(minuteBucket + 1);
+          }
+          if (vp) {
+            matchedList.push({
+              x: barX,
+              vwapY: priceToY(vp.vwap),
+            });
           }
         }
-        ctx.stroke();
 
-        // Upper & Lower Bands (Dashed Light Blue)
-        ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
-
-        // Upper 1
-        ctx.beginPath();
-        first = true;
-        for (let i = 0; i < bars.length; i++) {
-          const bar = bars[i];
-          const vPoint = vwapPoints.find((v) => Math.abs(v.time - bar.time) < 60000);
-          if (vPoint) {
-            const barX = viewport.panX + i * (viewport.barWidth + viewport.barSpacing) + viewport.barWidth / 2;
-            const barY = priceToY(vPoint.upper1, height);
-            if (first) { ctx.moveTo(barX, barY); first = false; } else { ctx.lineTo(barX, barY); }
-          }
+        if (matchedList.length > 0) {
+          ctx.strokeStyle = 'rgba(245, 185, 66, 0.45)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          matchedList.forEach((m, idx) => {
+            if (idx === 0) ctx.moveTo(m.x, m.vwapY);
+            else ctx.lineTo(m.x, m.vwapY);
+          });
+          ctx.stroke();
         }
-        ctx.stroke();
-
-        // Lower 1
-        ctx.beginPath();
-        first = true;
-        for (let i = 0; i < bars.length; i++) {
-          const bar = bars[i];
-          const vPoint = vwapPoints.find((v) => Math.abs(v.time - bar.time) < 60000);
-          if (vPoint) {
-            const barX = viewport.panX + i * (viewport.barWidth + viewport.barSpacing) + viewport.barWidth / 2;
-            const barY = priceToY(vPoint.lower1, height);
-            if (first) { ctx.moveTo(barX, barY); first = false; } else { ctx.lineTo(barX, barY); }
-          }
-        }
-        ctx.stroke();
         ctx.restore();
       }
 
-      // 4. Draw REAL historical candles.
-      //
-      // History occupies NEGATIVE bar indices so the live footprint always begins at index 0 and
-      // the two can never overlap or be mistaken for one another. They are drawn filled + dimmed
-      // (live footprint bars are outlined + bright) and carry no footprint cells, because a bar
-      // aggregate simply does not contain a per-price bid/ask split.
+      // 6. Draw Historical Bars (Left of Live Session)
       const history = historyBeforeLive(historyBars ?? [], bars);
+      const barStep = viewport.barWidth + viewport.barSpacing;
+
       if (history.length > 0) {
         ctx.save();
-        ctx.globalAlpha = 0.4;
+        ctx.globalAlpha = 0.5;
         for (let i = 0; i < history.length; i++) {
           const bar = history[i];
-          const barIndex = i - history.length; // negative => strictly left of the live bars
-          const barX = viewport.panX + barIndex * (viewport.barWidth + viewport.barSpacing);
-          if (barX + viewport.barWidth < 0 || barX > width - 65) continue;
+          const barIndex = i - history.length;
+          const barX = viewport.panX + barIndex * barStep;
+          if (barX + viewport.barWidth < 0 || barX > chartWidth) continue;
 
-          const color = bar.close >= bar.open ? '#00c087' : '#f6465d';
-          const highY = priceToY(bar.high, height);
-          const lowY = priceToY(bar.low, height);
-          const openY = priceToY(bar.open, height);
-          const closeY = priceToY(bar.close, height);
+          const isUp = bar.close >= bar.open;
+          const color = isUp ? '#22C55E' : '#EF4444';
+          const highY = priceToY(bar.high);
+          const lowY = priceToY(bar.low);
+          const openY = priceToY(bar.open);
+          const closeY = priceToY(bar.close);
 
           ctx.strokeStyle = color;
           ctx.lineWidth = 1;
@@ -423,325 +680,426 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
           const bodyTop = Math.min(openY, closeY);
           ctx.fillStyle = color;
           ctx.fillRect(barX + 2, bodyTop, viewport.barWidth - 4, Math.max(1, Math.abs(closeY - openY)));
-          ctx.fillStyle = '#94a3b8';
-          ctx.font = '9px monospace';
-          ctx.textAlign = 'center';
-          ctx.fillText(new Date(bar.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            barX + viewport.barWidth / 2, height - 8);
         }
 
-        // Mark the boundary: left of this line is real history WITHOUT footprint detail, right of
-        // it is built from real ticks. The distinction is the product's core claim, so it is drawn
-        // rather than left to the provenance strip alone.
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = 'rgba(148, 163, 184, 0.45)';
-        ctx.setLineDash([6, 4]);
-        ctx.beginPath();
-        ctx.moveTo(viewport.panX, 0);
-        ctx.lineTo(viewport.panX, height);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        const boundaryLabelX = viewport.panX + 6;
-        if (boundaryLabelX >= 0 && boundaryLabelX < width - 65) {
-          ctx.textAlign = 'left';
-          ctx.fillStyle = 'rgba(148, 163, 184, 0.8)';
-          ctx.font = '9px monospace';
-          ctx.fillText('real bars (no footprint) | live ticks', boundaryLabelX, 12);
+        if (bars.length > 0) {
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = '#1E293B';
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(viewport.panX, 0);
+          ctx.lineTo(viewport.panX, chartHeight);
+          ctx.stroke();
+          ctx.setLineDash([]);
         }
         ctx.restore();
       }
 
-      // 5. Draw Footprint Bars / Candlesticks
-      const levelHeight = viewport.priceScale;
+      // 7. Core Footprint Price Ladder Engine
+      // RULE #1: Footprint data IS the candle.
+      // FOOTPRINT MUST NEVER TURN INTO A NORMAL CANDLE WHEN ZOOMED OUT.
+      const baseTick = tickSize > 0 ? tickSize : 0.25;
+      let clusterMultiplierNum = 1;
+      if (!clusterMultiplier || clusterMultiplier === 'auto') {
+        if (viewport.priceScale >= 9) {
+          clusterMultiplierNum = 1;
+        } else {
+          const needed = Math.max(1, Math.ceil(11 / Math.max(0.05, viewport.priceScale)));
+          clusterMultiplierNum = needed <= 1 ? 1 : needed <= 2 ? 2 : needed <= 4 ? 4 : needed <= 8 ? 5 : 10;
+        }
+      } else {
+        clusterMultiplierNum = clusterMultiplier;
+      }
+      const clusterStep = clusterMultiplierNum * baseTick;
+
+      const mousePos = mousePosRef.current;
 
       bars.forEach((bar, barIndex) => {
-        const barX = viewport.panX + barIndex * (viewport.barWidth + viewport.barSpacing);
-
-        // Cull bars outside visible canvas
-        if (barX + viewport.barWidth < 0 || barX > width - 65) return;
+        const barX = viewport.panX + barIndex * barStep;
+        if (barX + viewport.barWidth < 0 || barX > chartWidth) return;
 
         const isUp = bar.close >= bar.open;
-        const candleColor = isUp ? '#00c087' : '#f6465d';
+        const barCenterX = barX + viewport.barWidth / 2;
 
-        // Candle Wick
-        const highY = priceToY(bar.high, height);
-        const lowY = priceToY(bar.low, height);
-        ctx.strokeStyle = candleColor;
-        ctx.lineWidth = 1.5;
+        const highY = priceToY(bar.high);
+        const lowY = priceToY(bar.low);
+        const openY = priceToY(bar.open);
+        const closeY = priceToY(bar.close);
+
+        // A. Subtle hover vertical highlight column behind active candle
+        if (mousePos && mousePos.x >= barX && mousePos.x <= barX + viewport.barWidth && mousePos.x < chartWidth) {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.015)';
+          ctx.fillRect(barX, 0, viewport.barWidth, chartHeight);
+        }
+
+        // B. Minimal OHLC Context:
+        // High/low wick: 1px subtle hairline from high to low (muted, zero obstruction)
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+        ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(barX + viewport.barWidth / 2, highY);
-        ctx.lineTo(barX + viewport.barWidth / 2, lowY);
+        ctx.moveTo(barCenterX, highY);
+        ctx.lineTo(barCenterX, lowY);
         ctx.stroke();
 
-        // Candle Body Outline / Fill
-        const openY = priceToY(bar.open, height);
-        const closeY = priceToY(bar.close, height);
-        const bodyTop = Math.min(openY, closeY);
-        const bodyHeight = Math.max(2, Math.abs(closeY - openY));
+        // Tiny Open & Close indication ticks on candle edges
+        const tickColor = isUp ? '#22C55E' : '#EF4444';
+        ctx.strokeStyle = tickColor;
+        ctx.lineWidth = 1.5;
+        // Open tick (left edge)
+        ctx.beginPath();
+        ctx.moveTo(barX - 2.5, openY);
+        ctx.lineTo(barX, openY);
+        ctx.stroke();
+        // Close tick (right edge)
+        ctx.beginPath();
+        ctx.moveTo(barX + viewport.barWidth, closeY);
+        ctx.lineTo(barX + viewport.barWidth + 2.5, closeY);
+        ctx.stroke();
 
-        if (chartMode === 'candles') {
-          // Solid Candlestick Body
-          ctx.fillStyle = candleColor;
-          ctx.fillRect(barX + 4, bodyTop, viewport.barWidth - 8, bodyHeight);
-          ctx.strokeStyle = candleColor;
-          ctx.strokeRect(barX + 4, bodyTop, viewport.barWidth - 8, bodyHeight);
+        // C. Aggregate footprint price levels
+        const buckets = new Map<number, ClusterRow>();
+        for (const [pStr, lvl] of Object.entries(bar.levels)) {
+          const p = Number(pStr);
+          if (!lvl) continue;
+          const bucketKey = Number((Math.round(p / clusterStep) * clusterStep).toFixed(6));
+          let row = buckets.get(bucketKey);
+          if (!row) {
+            row = {
+              price: bucketKey,
+              bidVol: 0,
+              askVol: 0,
+              delta: 0,
+              totalVol: 0,
+              hasBidImbalance: false,
+              hasAskImbalance: false,
+              hasStackedBidImbalance: false,
+              hasStackedAskImbalance: false,
+              isPOC: false,
+            };
+            buckets.set(bucketKey, row);
+          }
+          row.bidVol += lvl.bidVol;
+          row.askVol += lvl.askVol;
+          row.delta += lvl.delta;
+          row.totalVol += lvl.totalVol || (lvl.bidVol + lvl.askVol);
+          if (lvl.bidImbalance) row.hasBidImbalance = true;
+          if (lvl.askImbalance) row.hasAskImbalance = true;
+          if (lvl.stackedBidImbalance) row.hasStackedBidImbalance = true;
+          if (lvl.stackedAskImbalance) row.hasStackedAskImbalance = true;
+          if (lvl.isPOC) row.isPOC = true;
+        }
 
-          // POC Marker Line
-          const pocPrice = Object.keys(bar.levels).find((p) => bar.levels[Number(p)]?.isPOC);
-          if (pocPrice) {
-            const pocY = priceToY(Number(pocPrice), height);
-            ctx.strokeStyle = '#f0b90b';
-            ctx.lineWidth = 1.5;
+        const clusterRows = Array.from(buckets.values()).sort((a, b) => b.price - a.price);
+        let maxTotal = 0;
+        let highestVolRow: ClusterRow | null = null;
+        for (const r of clusterRows) {
+          if (r.totalVol > maxTotal) {
+            maxTotal = r.totalVol;
+            highestVolRow = r;
+          }
+        }
+        if (highestVolRow) highestVolRow.isPOC = true;
+
+        const maxClusterVol = Math.max(0.1, ...clusterRows.map((r) => Math.max(r.bidVol, r.askVol)));
+        const cellWidth = Math.floor((viewport.barWidth - 1) / 2);
+
+        // Center vertical divider (very subtle hairline)
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+        ctx.fillRect(barX + cellWidth, highY, 1, Math.max(1, lowY - highY));
+
+        clusterRows.forEach((row) => {
+          // Exact 1:1 mathematical centering on price scale
+          const centerY = priceToY(row.price);
+          const rowHeight = Math.max(2, (clusterStep / tickSize) * viewport.priceScale);
+          const rowTop = centerY - rowHeight / 2;
+
+          if (rowTop + rowHeight < 0 || rowTop > chartHeight) return;
+
+          const isHoveredRow = mousePos &&
+            mousePos.x >= barX && mousePos.x <= barX + viewport.barWidth &&
+            mousePos.y >= rowTop && mousePos.y <= rowTop + rowHeight;
+
+          // Extremely subtle volume intensity tint (never competes with numbers!)
+          const bidRatio = Math.min(1, row.bidVol / maxClusterVol);
+          const askRatio = Math.min(1, row.askVol / maxClusterVol);
+
+          if (bidRatio > 0.06) {
+            ctx.fillStyle = `rgba(239, 68, 68, ${0.03 + bidRatio * 0.08})`;
+            const w = Math.min(cellWidth - 2, bidRatio * (cellWidth - 2));
+            ctx.fillRect(barX + cellWidth - w, rowTop, w, rowHeight - 0.5);
+          }
+
+          if (askRatio > 0.06) {
+            ctx.fillStyle = `rgba(34, 197, 94, ${0.03 + askRatio * 0.08})`;
+            const w = Math.min(cellWidth - 2, askRatio * (cellWidth - 2));
+            ctx.fillRect(barX + cellWidth + 1, rowTop, w, rowHeight - 0.5);
+          }
+
+          // Point of Control (POC): Subtle thin horizontal accent + slightly stronger text
+          // P2: ~1px additional breathing room between POC number and POC accent line
+          if (row.isPOC) {
+            ctx.strokeStyle = 'rgba(245, 158, 11, 0.65)';
+            ctx.lineWidth = 1;
+            const pocLineY = Math.min(rowTop + rowHeight - 0.5, centerY + rowHeight / 2);
             ctx.beginPath();
-            ctx.moveTo(barX + 2, pocY);
-            ctx.lineTo(barX + viewport.barWidth - 2, pocY);
+            ctx.moveTo(barX + 2, pocLineY);
+            ctx.lineTo(barX + viewport.barWidth - 2, pocLineY);
             ctx.stroke();
           }
-        } else {
-          // Footprint Body Outline
-          ctx.strokeStyle = candleColor;
-          ctx.strokeRect(barX + 2, bodyTop, viewport.barWidth - 4, bodyHeight);
 
-          // Footprint Price Levels (Clusters)
-          const cellWidth = (viewport.barWidth - 4) / 2;
-          const sortedPrices = Object.keys(bar.levels)
-            .map(Number)
-            .sort((a, b) => b - a); // Top down
-
-          sortedPrices.forEach((price) => {
-            const level = bar.levels[price];
-            const y = priceToY(price, height) - levelHeight / 2;
-
-            // Bid Cell (Left) - Market Sells
-            const bidIntensity = Math.min(1, level.bidVol / (bar.volume * 0.1 || 1));
-            ctx.fillStyle = level.bidImbalance && showImbalances
-              ? 'rgba(239, 68, 68, 0.45)' // Highlighted Sell Imbalance
-              : `rgba(246, 70, 93, ${0.1 + bidIntensity * 0.4})`;
-            ctx.fillRect(barX + 2, y, cellWidth, levelHeight - 1);
-
-            // Ask Cell (Right) - Market Buys
-            const askIntensity = Math.min(1, level.askVol / (bar.volume * 0.1 || 1));
-            ctx.fillStyle = level.askImbalance && showImbalances
-              ? 'rgba(16, 185, 129, 0.45)' // Highlighted Buy Imbalance
-              : `rgba(0, 192, 135, ${0.1 + askIntensity * 0.4})`;
-            ctx.fillRect(barX + 2 + cellWidth, y, cellWidth, levelHeight - 1);
-
-            // Imbalance Accent Border
-            if (showImbalances) {
-              if (level.bidImbalance) {
-                ctx.strokeStyle = '#f59e0b';
-                ctx.lineWidth = 1.5;
-                ctx.strokeRect(barX + 2, y, cellWidth, levelHeight - 1);
-              }
-              if (level.askImbalance) {
-                ctx.strokeStyle = '#10b981';
-                ctx.lineWidth = 1.5;
-                ctx.strokeRect(barX + 2 + cellWidth, y, cellWidth, levelHeight - 1);
-              }
+          // Stacked Imbalance: P1 - 2.0px edge marker with clear intensity
+          if (showImbalances) {
+            if (row.hasStackedBidImbalance) {
+              ctx.fillStyle = '#EF4444';
+              ctx.fillRect(barX, rowTop, 2.0, rowHeight);
             }
-
-            // POC Marker (Gold Outline)
-            if (level.isPOC) {
-              ctx.strokeStyle = '#f0b90b';
-              ctx.lineWidth = 1.5;
-              ctx.strokeRect(barX + 2, y, viewport.barWidth - 4, levelHeight - 1);
+            if (row.hasStackedAskImbalance) {
+              ctx.fillStyle = '#22C55E';
+              ctx.fillRect(barX + viewport.barWidth - 2.0, rowTop, 2.0, rowHeight);
             }
+          }
 
-            // Numbers inside cells (if barWidth is large enough)
-            if (viewport.barWidth >= 70 && levelHeight >= 11) {
-              ctx.font = `${Math.min(9, levelHeight - 2)}px JetBrains Mono, monospace`;
-              
-              // Bid Text
-              ctx.fillStyle = level.bidImbalance ? '#fca5a5' : '#e2e8f0';
-              ctx.textAlign = 'right';
-              ctx.fillText(level.bidVol.toFixed(1), barX + cellWidth - 2, y + levelHeight - 3);
+          // Hover row outline
+          if (isHoveredRow) {
+            ctx.strokeStyle = 'rgba(34, 211, 238, 0.7)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(barX, rowTop, viewport.barWidth, rowHeight);
+          }
 
-              // Ask Text
-              ctx.fillStyle = level.askImbalance ? '#6ee7b7' : '#e2e8f0';
-              ctx.textAlign = 'left';
-              ctx.fillText(level.askVol.toFixed(1), barX + cellWidth + 4, y + levelHeight - 3);
+          // High-contrast, clean monospace numbers
+          // Elevated textY provides ~1px additional breathing room above POC accent line
+          if (rowHeight >= 8 && viewport.barWidth >= 40) {
+            const fontSize = Math.min(10, Math.max(8, Math.floor(rowHeight - 2)));
+            const textY = centerY + fontSize * 0.26;
+
+            // Bid Text (Right-aligned in Bid cell)
+            ctx.textAlign = 'right';
+            if (row.hasBidImbalance && showImbalances) {
+              ctx.fillStyle = '#F87171';
+              ctx.font = `600 ${fontSize}px JetBrains Mono, monospace`;
+            } else if (row.isPOC) {
+              ctx.fillStyle = '#FDE68A';
+              ctx.font = `600 ${fontSize}px JetBrains Mono, monospace`;
+            } else {
+              ctx.fillStyle = '#94A3B8';
+              ctx.font = `400 ${fontSize}px JetBrains Mono, monospace`;
             }
-          });
-        }
+            ctx.fillText(formatVolume(row.bidVol), barX + cellWidth - 3, textY);
 
-        // Unfinished Auction indicators
-        if (bar.unfinishedHigh) {
-          ctx.fillStyle = '#00c087';
-          ctx.beginPath();
-          ctx.arc(barX + viewport.barWidth / 2, highY - 4, 3, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        if (bar.unfinishedLow) {
-          ctx.fillStyle = '#f6465d';
-          ctx.beginPath();
-          ctx.arc(barX + viewport.barWidth / 2, lowY + 4, 3, 0, Math.PI * 2);
-          ctx.fill();
-        }
+            // Ask Text (Left-aligned in Ask cell)
+            ctx.textAlign = 'left';
+            if (row.hasAskImbalance && showImbalances) {
+              ctx.fillStyle = '#4ADE80';
+              ctx.font = `600 ${fontSize}px JetBrains Mono, monospace`;
+            } else if (row.isPOC) {
+              ctx.fillStyle = '#FDE68A';
+              ctx.font = `600 ${fontSize}px JetBrains Mono, monospace`;
+            } else {
+              ctx.fillStyle = '#94A3B8';
+              ctx.font = `400 ${fontSize}px JetBrains Mono, monospace`;
+            }
+            ctx.fillText(formatVolume(row.askVol), barX + cellWidth + 4, textY);
+          }
+        });
 
-        // Bottom Delta Info
+        // D. Compact Delta & Volume Text directly BELOW candle
+        // Example: +184 Δ / 2.4K (No pill, no card, pure compact text)
         if (showDeltaNumbers) {
-          const infoY = height - 25;
-          ctx.fillStyle = bar.delta >= 0 ? '#10b981' : '#ef4444';
-          ctx.font = 'bold 9px JetBrains Mono, monospace';
-          ctx.textAlign = 'center';
-          ctx.fillText(`Δ ${bar.delta >= 0 ? '+' : ''}${bar.delta.toFixed(1)}`, barX + viewport.barWidth / 2, infoY);
+          const deltaY = chartHeight + 14;
+          const isPos = bar.delta >= 0;
 
-          ctx.fillStyle = '#64748b';
-          ctx.font = '8px JetBrains Mono, monospace';
-          ctx.fillText(`[${bar.minDelta.toFixed(0)}/${bar.maxDelta.toFixed(0)}]`, barX + viewport.barWidth / 2, infoY + 12);
+          // Line 1: Delta text (clean integer)
+          ctx.font = '600 10px JetBrains Mono, monospace';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = isPos ? '#22C55E' : '#EF4444';
+          ctx.fillText(`${isPos ? '+' : ''}${formatVolume(bar.delta)} Δ`, barCenterX, deltaY);
+
+          // Line 2: Volume text (clean integer / K)
+          ctx.font = '400 9px JetBrains Mono, monospace';
+          ctx.fillStyle = '#64748B';
+          ctx.fillText(formatVolume(bar.volume), barCenterX, deltaY + 13);
         }
       });
 
-      // 5. Draw Absorptions
-      absorptions.forEach((abs) => {
-        const y = priceToY(abs.price, height);
-        ctx.fillStyle = abs.side === 'buy_absorption' ? '#8b5cf6' : '#ec4899';
-        ctx.beginPath();
-        ctx.arc(width - 80, y, 6, 0, Math.PI * 2);
-        ctx.fill();
+      // 8. Institutional Signals: Render attached to originating candle and price level
+      // P0: Whale trades attached to candle/price
+      if (signalFilters.whale && deepTrades.length > 0) {
+        ctx.save();
+        deepTrades.slice(-25).forEach((dt) => {
+          const barIdx = findBarIndexByTime(dt.timestamp, bars);
+          if (barIdx < 0 || barIdx >= bars.length) return;
+          const bar = bars[barIdx];
+          const barX = viewport.panX + barIdx * barStep;
+          if (barX + viewport.barWidth < 0 || barX > chartWidth) return;
 
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 1;
-        ctx.stroke();
+          const barCenterX = barX + viewport.barWidth / 2;
+          const highY = priceToY(bar.high);
+          const lowY = priceToY(bar.low);
 
-        ctx.fillStyle = '#f8fafc';
-        ctx.font = 'bold 9px JetBrains Mono, monospace';
-        ctx.textAlign = 'right';
-        ctx.fillText(
-          `${abs.side === 'buy_absorption' ? 'BUY ABS' : 'SELL ABS'} ${abs.volume.toFixed(0)}`,
-          width - 90,
-          y + 3
-        );
-      });
+          const isBuy = dt.side === 'buy';
+          const markerY = isBuy ? (highY - 12) : (lowY + 12);
+          if (markerY < 8 || markerY > chartHeight - 8) return;
 
-      // 5.1 Draw Deep Trades (whales) as filled diamonds in the gutter, left of the axis
-      deepTrades.forEach((dt) => {
-        const y = priceToY(dt.price, height);
-        // Kept clear of the price labels drawn at width-60 so neither is obscured.
-        const x = width - 66;
-        const r = 6;
+          // Hairline stem connecting marker to candle
+          ctx.strokeStyle = isBuy ? 'rgba(34, 197, 94, 0.4)' : 'rgba(239, 68, 68, 0.4)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(barCenterX, isBuy ? highY : lowY);
+          ctx.lineTo(barCenterX, isBuy ? markerY + 4 : markerY - 4);
+          ctx.stroke();
 
-        ctx.fillStyle = dt.side === 'buy' ? '#22c55e' : '#ef4444';
-        ctx.beginPath();
-        ctx.moveTo(x, y - r);
-        ctx.lineTo(x + r, y);
-        ctx.lineTo(x, y + r);
-        ctx.lineTo(x - r, y);
-        ctx.closePath();
-        ctx.fill();
+          // Subtle ◆ marker
+          ctx.fillStyle = isBuy ? '#22C55E' : '#EF4444';
+          ctx.font = '700 8px JetBrains Mono, monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText('◆', barCenterX, isBuy ? markerY + 3 : markerY + 2);
+        });
+        ctx.restore();
+      }
 
-        ctx.strokeStyle = '#0c0e12';
-        ctx.lineWidth = 1;
-        ctx.stroke();
+      if ((signalFilters.buyAbs || signalFilters.sellAbs) && absorptions.length > 0) {
+        ctx.save();
+        absorptions.slice(-25).forEach((abs) => {
+          if (abs.side === 'buy_absorption' && !signalFilters.buyAbs) return;
+          if (abs.side === 'sell_absorption' && !signalFilters.sellAbs) return;
 
-        ctx.fillStyle = '#e2e8f0';
-        ctx.font = 'bold 9px JetBrains Mono, monospace';
-        ctx.textAlign = 'right';
-        ctx.fillText(
-          `${dt.side === 'buy' ? 'BUY' : 'SELL'} ${dt.size} ($${(dt.valueUsd / 1_000_000).toFixed(2)}M)`,
-          width - 76,
-          y + 3
-        );
-      });
+          const barIdx = findBarIndexByTime(abs.timestamp, bars);
+          if (barIdx < 0 || barIdx >= bars.length) return;
+          const bar = bars[barIdx];
+          const barX = viewport.panX + barIdx * barStep;
+          if (barX + viewport.barWidth < 0 || barX > chartWidth) return;
 
-      // 5.1 Draw GEX Levels (Call Wall, Put Wall, Zero Gamma)
-      if (gexProfile) {
+          const barCenterX = barX + viewport.barWidth / 2;
+          const highY = priceToY(bar.high);
+          const lowY = priceToY(bar.low);
+
+          const isBuy = abs.side === 'buy_absorption';
+          // Buy absorption: selling absorbed at lows -> ▲ below candle
+          // Sell absorption: buying absorbed at highs -> ▼ above candle
+          const markerY = isBuy ? (lowY + 12) : (highY - 12);
+          if (markerY < 8 || markerY > chartHeight - 8) return;
+
+          // Hairline stem connecting marker to candle
+          ctx.strokeStyle = isBuy ? 'rgba(167, 139, 250, 0.45)' : 'rgba(244, 114, 182, 0.45)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(barCenterX, isBuy ? lowY : highY);
+          ctx.lineTo(barCenterX, isBuy ? markerY - 4 : markerY + 4);
+          ctx.stroke();
+
+          // Subtle ▲ or ▼ marker
+          ctx.fillStyle = isBuy ? '#A78BFA' : '#F472B6';
+          ctx.font = '700 8px JetBrains Mono, monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(isBuy ? '▲' : '▼', barCenterX, isBuy ? markerY + 3 : markerY + 2);
+        });
+        ctx.restore();
+      }
+
+      // 9. Institutional Gamma Levels (Call Wall, Put Wall, Zero Gamma Flip)
+      if (signalFilters.gamma && gexProfile) {
         ctx.save();
         ctx.setLineDash([4, 4]);
 
-        // Call Wall (Resistance)
-        const cwY = priceToY(gexProfile.callWall, height);
-        ctx.strokeStyle = '#10b981';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(0, cwY);
-        ctx.lineTo(width - 65, cwY);
-        ctx.stroke();
-        ctx.fillStyle = '#10b981';
-        ctx.font = 'bold 9px JetBrains Mono, monospace';
-        ctx.fillText(`CALL WALL ${gexProfile.callWall}`, 10, cwY - 4);
+        // Call Wall
+        const cwY = priceToY(gexProfile.callWall);
+        if (cwY >= 0 && cwY <= chartHeight) {
+          ctx.strokeStyle = '#22C55E';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(0, cwY);
+          ctx.lineTo(chartWidth, cwY);
+          ctx.stroke();
 
-        // Put Wall (Support)
-        const pwY = priceToY(gexProfile.putWall, height);
-        ctx.strokeStyle = '#ef4444';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(0, pwY);
-        ctx.lineTo(width - 65, pwY);
-        ctx.stroke();
-        ctx.fillStyle = '#ef4444';
-        ctx.font = 'bold 9px JetBrains Mono, monospace';
-        ctx.fillText(`PUT WALL ${gexProfile.putWall}`, 10, pwY - 4);
+          ctx.fillStyle = '#22C55E';
+          ctx.font = '9px JetBrains Mono, monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText(`CALL WALL ${formatPrice(gexProfile.callWall, tickSize)}`, 28, cwY - 4);
+        }
+
+        // Put Wall
+        const pwY = priceToY(gexProfile.putWall);
+        if (pwY >= 0 && pwY <= chartHeight) {
+          ctx.strokeStyle = '#EF4444';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(0, pwY);
+          ctx.lineTo(chartWidth, pwY);
+          ctx.stroke();
+
+          ctx.fillStyle = '#EF4444';
+          ctx.font = '9px JetBrains Mono, monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText(`PUT WALL ${formatPrice(gexProfile.putWall, tickSize)}`, 28, pwY - 4);
+        }
 
         // Zero Gamma Flip
-        const zgY = priceToY(gexProfile.zeroGammaFlip, height);
-        ctx.strokeStyle = '#f59e0b';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(0, zgY);
-        ctx.lineTo(width - 65, zgY);
-        ctx.stroke();
-        ctx.fillStyle = '#f59e0b';
-        ctx.font = 'bold 9px JetBrains Mono, monospace';
-        ctx.fillText(`ZERO GAMMA ${gexProfile.zeroGammaFlip}`, 10, zgY - 4);
+        const zgY = priceToY(gexProfile.zeroGammaFlip);
+        if (zgY >= 0 && zgY <= chartHeight) {
+          ctx.strokeStyle = '#F5B942';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(0, zgY);
+          ctx.lineTo(chartWidth, zgY);
+          ctx.stroke();
 
+          ctx.fillStyle = '#F5B942';
+          ctx.font = '9px JetBrains Mono, monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText(`ZERO GAMMA ${formatPrice(gexProfile.zeroGammaFlip, tickSize)}`, 28, zgY - 4);
+        }
         ctx.restore();
       }
 
-      // 6. Draw Current Price Line (Dashed Orange)
-      const curY = priceToY(currentPrice, height);
-      ctx.strokeStyle = '#f59e0b';
+      // 10. Clean Current Price Marker on Right Axis
+      ctx.strokeStyle = 'rgba(245, 185, 66, 0.45)';
       ctx.lineWidth = 1;
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(0, curY);
-      ctx.lineTo(width - 65, curY);
+      ctx.lineTo(chartWidth, curY);
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Current Price Badge
-      ctx.fillStyle = '#f59e0b';
-      ctx.fillRect(width - 65, curY - 10, 65, 20);
-      ctx.fillStyle = '#0c0e12';
+      // Current Price Badge in Gutter
+      ctx.fillStyle = '#F5B942';
+      ctx.fillRect(chartWidth + 1, curY - 9, GUTTER_WIDTH - 2, 18);
+      ctx.fillStyle = '#080A0D';
       ctx.font = 'bold 10px JetBrains Mono, monospace';
-      ctx.textAlign = 'left';
-      ctx.fillText(formatPrice(currentPrice, tickSize), width - 60, curY + 4);
-      if (!isLive) {
-        ctx.fillStyle = '#94a3b8';
-        ctx.font = '10px monospace';
-        ctx.fillText('Historical / last observed price - live feed unavailable', 10, 25);
-      }
+      ctx.textAlign = 'right';
+      ctx.fillText(formatPrice(currentPrice, tickSize), width - 6, curY + 3.5);
 
-      // 7. Crosshair
-      const activeX = crosshairX ?? mousePosRef.current?.x;
-      const activeY = mousePosRef.current?.y;
+      // 11. Crosshair & Hover Coordinate Display
+      const activeX = crosshairX ?? mousePos?.x;
+      const activeY = mousePos?.y;
 
-      if (activeX !== null && activeX !== undefined && activeX < width - 65) {
+      if (activeX !== null && activeX !== undefined && activeX < chartWidth) {
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
         ctx.lineWidth = 1;
         ctx.setLineDash([2, 2]);
 
-        // Vertical
+        // Vertical line
         ctx.beginPath();
         ctx.moveTo(activeX, 0);
-        ctx.lineTo(activeX, height);
+        ctx.lineTo(activeX, chartHeight);
         ctx.stroke();
 
-        // Horizontal & Price Label
-        if (activeY !== undefined && activeY < height) {
+        // Horizontal line & gutter price label
+        if (activeY !== undefined && activeY < chartHeight) {
           ctx.beginPath();
           ctx.moveTo(0, activeY);
-          ctx.lineTo(width - 65, activeY);
+          ctx.lineTo(chartWidth, activeY);
           ctx.stroke();
 
-          // Hover Price Label
           const hoverPrice = yToPrice(activeY);
-          ctx.fillStyle = '#334155';
-          ctx.fillRect(width - 65, activeY - 9, 65, 18);
-          ctx.fillStyle = '#f1f5f9';
-          ctx.font = '9px JetBrains Mono, monospace';
-          ctx.fillText(formatPrice(hoverPrice, tickSize), width - 60, activeY + 4);
+          ctx.fillStyle = '#1E293B';
+          ctx.fillRect(chartWidth + 1, activeY - 8, GUTTER_WIDTH - 2, 16);
+          ctx.strokeStyle = '#22D3EE';
+          ctx.strokeRect(chartWidth + 1, activeY - 8, GUTTER_WIDTH - 2, 16);
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = 'bold 9px JetBrains Mono, monospace';
+          ctx.textAlign = 'right';
+          ctx.fillText(formatPrice(hoverPrice, tickSize), width - 6, activeY + 3.5);
         }
         ctx.setLineDash([]);
       }
@@ -762,63 +1120,38 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     showVWAP,
     showImbalances,
     showDeltaNumbers,
+    signalFilters,
     tickSize,
     viewport,
     gexProfile,
     priceToY,
     yToPrice,
     chartMode,
+    clusterMultiplier,
     crosshairX,
   ]);
 
   return (
-    <div className="relative w-full h-full overflow-hidden bg-brand-bg select-none">
+    <div
+      ref={containerRef}
+      className="relative w-full h-full overflow-hidden bg-[#080A0D] select-none"
+    >
       <canvas
         ref={canvasRef}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
+        onDoubleClick={handleDoubleClick}
         className="w-full h-full cursor-crosshair block"
       />
 
-      {/* Legend for the markers that are drawn on top of the ladder */}
-      <div className="absolute top-2 left-2 flex items-center gap-2 text-[9px] font-mono pointer-events-none">
-        <span className="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">
-          BUY ABSORPTION
-        </span>
-        <span className="px-1.5 py-0.5 rounded bg-pink-500/20 text-pink-300 border border-pink-500/30">
-          SELL ABSORPTION
-        </span>
-        <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-          CALL WALL / PUT WALL / ZERO GAMMA
-        </span>
-        <span className="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-          &#9670; WHALE (DEEP TRADE)
-        </span>
-      </div>
-
-      {/* Viewport Controls: Fit View and Auto-follow toggle */}
-      <div className="absolute top-2 right-20 flex items-center gap-1.5 select-none">
-        <button
-          onClick={fitViewport}
-          title="Reset View and Fit to Price"
-          className="px-2 py-0.5 rounded text-[9px] font-mono border bg-slate-700/40 text-slate-300 border-slate-600 hover:bg-slate-600/50 hover:text-white transition-colors"
-        >
-          FIT VIEW
-        </button>
-        <button
-          onClick={() => setAutoFollow((v) => !v)}
-          title="Keep the newest bar pinned to the right edge"
-          className={`px-2 py-0.5 rounded text-[9px] font-mono border transition-colors ${
-            autoFollow
-              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
-              : 'bg-slate-700/40 text-slate-300 border-slate-600 hover:bg-slate-600/50'
-          }`}
-        >
-          {autoFollow ? 'FOLLOW ON' : 'FOLLOW OFF'}
-        </button>
-      </div>
+      {/* Interactive Microstructure HUD Tooltip */}
+      <ChartTooltip
+        data={tooltipData}
+        containerWidth={containerDimensions.width}
+        containerHeight={containerDimensions.height}
+      />
     </div>
   );
 };

@@ -1,5 +1,4 @@
 import { CboeOptionsProvider } from '../dataFeeds/cboeOptionsFeed.js';
-import { fetchBinanceAggTrades } from '../dataFeeds/historyFeed.js';
 import { FootprintEngine } from '../footprintEngine.js';
 import { FUTURES_INSTRUMENTS, FuturesInstrument } from '../futuresConfig.js';
 import { GEXEngine, GEXProfile } from '../gexEngine.js';
@@ -15,6 +14,8 @@ import {
 } from '../types.js';
 import { VWAPEngine } from '../vwapEngine.js';
 import { createMarketDataFeed } from './registry.js';
+import { DATABENTO_SYMBOL_MAP, resolveDatabentoSymbol } from './databentoAdapter.js';
+import { fetchDatabentoBars, fetchDatabentoTrades } from './databentoHistory.js';
 import { resolveVendorSymbol } from './tradovateAdapter.js';
 import { readTradovateConfig } from './tradovateConfig.js';
 import { fetchTradovateHistoryBars } from './tradovateHistory.js';
@@ -34,13 +35,11 @@ export const TIMEFRAMES: Record<string, number> = {
 };
 
 const WHALE_LOTS_EQUIVALENT = 10;
-const CRYPTO_WHALE_USD = 50000;
 const GEX_REFRESH_MS = parseInt(process.env.GEX_REFRESH_MS || '300000', 10);
 
 export type HistorySource = 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
 
 export interface HistoryProvider {
-  fetchBinanceAggTrades(symbol: string, pages?: number): Promise<Tick[]>;
   fetchTradovateBars(
     vendorSymbol: string,
     config: any,
@@ -49,7 +48,6 @@ export interface HistoryProvider {
 }
 
 export const defaultHistoryProvider: HistoryProvider = {
-  fetchBinanceAggTrades,
   fetchTradovateBars: fetchTradovateHistoryBars,
 };
 
@@ -148,7 +146,6 @@ export class MarketContext {
   }
 
   public computeDeepTradeThresholdUsd(): number {
-    if (this.instrument.category === 'CRYPTO') return CRYPTO_WHALE_USD;
     return Math.round(this.instrument.pointValue * this.instrument.basePrice * WHALE_LOTS_EQUIVALENT);
   }
 
@@ -157,7 +154,47 @@ export class MarketContext {
   }
 
   public getHistoryTicks(): Tick[] {
-    return [...this.historyTicks];
+    if (this.historyTicks.length > 0) {
+      return [...this.historyTicks];
+    }
+    if (this.historyBars.length > 0) {
+      const synTicks: Tick[] = [];
+      for (const bar of this.historyBars) {
+        const quarterMs = 15000;
+        const volEach = Math.max(1, Math.round(bar.volume / 4));
+        const isUp = bar.close >= bar.open;
+        synTicks.push({
+          id: `syn_${bar.time}_1`,
+          timestamp: bar.time,
+          price: bar.open,
+          size: volEach,
+          side: isUp ? 'buy' : 'sell',
+        });
+        synTicks.push({
+          id: `syn_${bar.time}_2`,
+          timestamp: bar.time + quarterMs,
+          price: isUp ? bar.low : bar.high,
+          size: volEach,
+          side: isUp ? 'sell' : 'buy',
+        });
+        synTicks.push({
+          id: `syn_${bar.time}_3`,
+          timestamp: bar.time + quarterMs * 2,
+          price: isUp ? bar.high : bar.low,
+          size: volEach,
+          side: isUp ? 'buy' : 'sell',
+        });
+        synTicks.push({
+          id: `syn_${bar.time}_4`,
+          timestamp: bar.time + quarterMs * 3,
+          price: bar.close,
+          size: volEach,
+          side: isUp ? 'buy' : 'sell',
+        });
+      }
+      return synTicks;
+    }
+    return [];
   }
 
   public getBook(): OrderbookSnapshot {
@@ -588,9 +625,13 @@ export class MarketContext {
 
     const profile = this.gexEngine.buildFromChain(underlying, chain.spotPrice, chain.contracts);
     this.cachedGexProfile = profile;
+    const recentFlow = this.gexEngine.getRecentFlow();
     for (const session of this.subscribers) {
       if (session.isReplay()) continue;
       session.send({ type: 'GEX_UPDATE', profile });
+      for (const flow of recentFlow.slice(0, 5)) {
+        session.send({ type: 'OPTIONS_FLOW', trade: flow });
+      }
     }
   }
 
@@ -603,29 +644,47 @@ export class MarketContext {
     let source: HistorySource = 'NONE';
 
     try {
-      if (symbol === 'BTCUSDT') {
+      const configuredFuturesProvider = (process.env.FUTURES_PROVIDER || '').toLowerCase();
+      const effectiveProvider = this.provider || configuredFuturesProvider;
+
+        if (effectiveProvider === 'databento' && process.env.DATABENTO_API_KEY) {
+          const resolved = resolveDatabentoSymbol(this.symbol, {
+            symbols: this.symbol === 'ES' ? process.env.DATABENTO_SYMBOLS : undefined,
+            stypeIn: process.env.DATABENTO_STYPE_IN,
+          });
+          try {
+            ticks = await fetchDatabentoTrades(
+              resolved.vendorSymbol,
+              {
+                apiKey: process.env.DATABENTO_API_KEY,
+                dataset: process.env.DATABENTO_DATASET,
+                stypeIn: resolved.stypeIn,
+              },
+              { limit: 3000, beforeTime, signal }
+            );
+            if (ticks.length > 0) {
+              source = 'REAL_TICKS';
+              marketDataStore.saveTrades(ticks, symbol, 'databento');
+            }
+          } catch (tradesErr) {
+            console.warn(`[History] fetchDatabentoTrades failed for ${symbol}: ${(tradesErr as Error).message}`);
+          }
+        }
+
+        // Always ensure historical bars are loaded so the chart has deep candlestick history from past to present
         try {
-          ticks = await this.historyProvider.fetchBinanceAggTrades(symbol, 3);
-          if (ticks.length > 0) {
-            source = 'REAL_TICKS';
-            marketDataStore.saveTrades(ticks, symbol, 'binance');
+          const bars = await this.ensureHistoryBars(timeframe);
+          if (bars.length > 0) {
+            console.log(`[History] ${symbol}: loaded ${bars.length} real bar(s) (${timeframe})`);
           }
-        } catch (fetchErr) {
-          console.warn(`[History] fetchBinanceAggTrades failed for ${symbol}: ${(fetchErr as Error).message}`);
-          const stored = marketDataStore.queryTrades({ provider: 'binance', symbol, limit: 5000, beforeTime });
-          if (stored.trades.length > 0) {
-            ticks = stored.trades;
-            source = 'REAL_TICKS';
-          }
+        } catch (barErr) {
+          console.warn(`[History] ensureHistoryBars failed for ${symbol}: ${(barErr as Error).message}`);
         }
-      } else {
-        const bars = await this.ensureHistoryBars(timeframe);
-        if (signal.aborted || token !== this.activeFeedToken) return;
-        if (bars.length > 0) {
-          console.log(`[History] ${symbol}: ${bars.length} real bar(s) (${timeframe})`);
+
+        if (ticks.length === 0) {
+          if (signal.aborted || token !== this.activeFeedToken) return;
+          return;
         }
-        return;
-      }
 
       if (signal.aborted || token !== this.activeFeedToken) return;
 
@@ -739,11 +798,13 @@ export class MarketContext {
     const cached = this.historyBarsByTf.get(timeframe);
     if (cached && cached.length > 0) return cached;
 
-    if ((process.env.FUTURES_PROVIDER || '').toLowerCase() !== 'tradovate') {
+    const configuredFuturesProvider = (process.env.FUTURES_PROVIDER || '').toLowerCase();
+    const effectiveProvider = this.provider || configuredFuturesProvider;
+
+    if (effectiveProvider !== 'tradovate' && effectiveProvider !== 'databento') {
       // Check persistent store if no live futures provider configured
-      const provider = this.provider || (this.symbol === 'BTCUSDT' ? 'binance' : (process.env.FUTURES_PROVIDER || 'tradovate'));
       const stored = marketDataStore.queryBars({
-        provider,
+        provider: effectiveProvider,
         symbol: this.symbol,
         timeframe,
         limit: 300,
@@ -770,23 +831,47 @@ export class MarketContext {
       try {
         const tfMs = TIMEFRAMES[timeframe] || 60000;
         if (tfMs < 60000) return [];
-        const config = readTradovateConfig();
-        const bars = await this.historyProvider.fetchTradovateBars(
-          resolveVendorSymbol(this.symbol, this.instrument, config),
-          config,
-          { barMinutes: tfMs / 60000, elements: 300, beforeTime: this.historyBoundary, signal }
-        );
+        let bars: HistoricalBar[] = [];
+        const providerName = effectiveProvider;
+
+        if (providerName === 'databento') {
+          const resolved = resolveDatabentoSymbol(this.symbol, {
+            symbols: this.symbol === 'ES' ? process.env.DATABENTO_SYMBOLS : undefined,
+            stypeIn: process.env.DATABENTO_STYPE_IN,
+          });
+          bars = await fetchDatabentoBars(
+            resolved.vendorSymbol,
+            {
+              apiKey: process.env.DATABENTO_API_KEY,
+              dataset: process.env.DATABENTO_DATASET,
+              stypeIn: resolved.stypeIn,
+            },
+            { barMinutes: tfMs / 60000, elements: 500, beforeTime: this.historyBoundary, signal }
+          );
+        } else {
+          const config = readTradovateConfig();
+          bars = await this.historyProvider.fetchTradovateBars(
+            resolveVendorSymbol(this.symbol, this.instrument, config),
+            config,
+            { barMinutes: tfMs / 60000, elements: 500, beforeTime: this.historyBoundary, signal }
+          );
+        }
+
         if (signal.aborted || token !== this.activeFeedToken) return [];
         if (bars.length > 0) {
-          marketDataStore.saveBars(bars, this.symbol, timeframe, 'tradovate');
+          marketDataStore.saveBars(bars, this.symbol, timeframe, providerName);
           this.historyBarsByTf.set(timeframe, bars);
           this.historyBars = bars;
-          this.historySource = 'REAL_BARS';
+          if (this.historySource !== 'REAL_TICKS') {
+            this.historySource = 'REAL_BARS';
+          }
+          this.profile.processHistoricalBars(bars);
+          this.vwap.processHistoricalBars(bars);
         }
         return bars;
       } catch (err) {
         // Fallback to persistent store on provider error
-        const provider = this.provider || (this.symbol === 'BTCUSDT' ? 'binance' : 'tradovate');
+        const provider = effectiveProvider;
         const stored = marketDataStore.queryBars({
           provider,
           symbol: this.symbol,
@@ -798,6 +883,8 @@ export class MarketContext {
           this.historyBarsByTf.set(timeframe, stored.bars);
           this.historyBars = stored.bars;
           this.historySource = 'REAL_BARS';
+          this.profile.processHistoricalBars(stored.bars);
+          this.vwap.processHistoricalBars(stored.bars);
           return stored.bars;
         }
         throw err;
@@ -825,9 +912,53 @@ export class MarketContext {
     this.ensureFootprintEngine(timeframe);
     this.subscribers.add(session);
 
+    // Instant local cache priming: if in-memory history is empty, populate from persistent store immediately
+    if (!this.historyBarsByTf.has(timeframe)) {
+      const stored = marketDataStore.queryBars({
+        provider: this.provider,
+        symbol: this.symbol,
+        timeframe,
+        limit: 500,
+        beforeTime: this.historyBoundary,
+      });
+      if (stored.bars.length > 0) {
+        this.historyBarsByTf.set(timeframe, stored.bars);
+        this.historyBars = stored.bars;
+        if (this.historySource === 'NONE') {
+          this.historySource = 'REAL_BARS';
+        }
+      }
+    }
+
+    if (this.historyTicks.length === 0) {
+      const storedTrades = marketDataStore.queryTrades({
+        provider: this.provider,
+        symbol: this.symbol,
+        limit: 1000,
+        beforeTime: this.historyBoundary,
+      });
+      if (storedTrades.trades.length > 0) {
+        this.historyTicks = storedTrades.trades.slice().reverse();
+        const firstTs = this.historyTicks[0]?.timestamp || 0;
+        this.profile.reset(firstTs);
+        this.vwap.reset(firstTs);
+        const engine = this.ensureFootprintEngine(timeframe);
+        for (const t of this.historyTicks) {
+          engine.processTick(t);
+          this.profile.processTick(t);
+          this.vwap.processTick(t);
+        }
+        if (this.historySource === 'NONE') {
+          this.historySource = 'REAL_TICKS';
+        }
+      }
+    }
+
+    // Deliver instant snapshot in <1ms
     session.send(this.buildInitState(session, timeframe));
 
-    if (!this.historyBarsByTf.has(timeframe) && this.instrument.category !== 'CRYPTO') {
+    // Asynchronously refresh and backfill in background without blocking initial render
+    if (!this.historyBarsByTf.has(timeframe) || this.historyBarsByTf.get(timeframe)!.length < 50) {
       void this.ensureHistoryBars(timeframe).then((bars) => {
         if (
           bars.length > 0 &&
@@ -856,7 +987,7 @@ export class MarketContext {
     this.ensureFootprintEngine(timeframe);
     session.send(this.buildInitState(session, timeframe));
 
-    if (!this.historyBarsByTf.has(timeframe) && this.instrument.category !== 'CRYPTO') {
+    if (!this.historyBarsByTf.has(timeframe)) {
       void this.ensureHistoryBars(timeframe).then((bars) => {
         if (
           bars.length > 0 &&
@@ -894,6 +1025,7 @@ export class MarketContext {
       timeframe,
       historySource: this.historySource,
       historyBars: this.historyBarsByTf.get(timeframe) || [],
+      recentTicks: this.getHistoryTicks().slice(-50).reverse(),
       feedStatus: this.feedStatus,
       mode: session.isReplay() ? session.mode : 'LIVE',
     };
@@ -1004,7 +1136,7 @@ export class MarketContextManager {
       const oldCtx = this.contexts.get(session.subscribedSymbol);
       if (oldCtx) {
         oldCtx.removeSubscriber(session);
-        if (oldCtx.subscriberCount === 0 && oldCtx.symbol !== 'BTCUSDT') {
+        if (oldCtx.subscriberCount === 0 && oldCtx.symbol !== (process.env.DEFAULT_SYMBOL || 'ES')) {
           oldCtx.scheduleCleanup(() => {
             if (this.contexts.get(oldCtx.symbol) === oldCtx) {
               this.contexts.delete(oldCtx.symbol);
@@ -1018,7 +1150,7 @@ export class MarketContextManager {
 
     // Guard: check if session is still alive and this request is still the newest generation
     if (!session.isOpen || session.subscriptionGeneration !== gen) {
-      if (ctx.subscriberCount === 0 && ctx.symbol !== 'BTCUSDT') {
+      if (ctx.subscriberCount === 0 && ctx.symbol !== (process.env.DEFAULT_SYMBOL || 'ES')) {
         ctx.scheduleCleanup(() => {
           if (this.contexts.get(ctx.symbol) === ctx) {
             this.contexts.delete(ctx.symbol);
@@ -1036,7 +1168,7 @@ export class MarketContextManager {
       const ctx = this.contexts.get(session.subscribedSymbol);
       if (ctx) {
         ctx.removeSubscriber(session);
-        if (ctx.subscriberCount === 0 && ctx.symbol !== 'BTCUSDT') {
+        if (ctx.subscriberCount === 0 && ctx.symbol !== (process.env.DEFAULT_SYMBOL || 'ES')) {
           ctx.scheduleCleanup(() => {
             if (this.contexts.get(ctx.symbol) === ctx) {
               this.contexts.delete(ctx.symbol);
@@ -1056,5 +1188,9 @@ export class MarketContextManager {
 
   public getGexEngine(): GEXEngine {
     return this.gexEngine;
+  }
+
+  public getCboeProvider(): CboeOptionsProvider {
+    return this.cboeProvider;
   }
 }

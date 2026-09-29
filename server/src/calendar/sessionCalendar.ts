@@ -1,6 +1,6 @@
 /**
  * SessionCalendar provides official exchange session schedules, trading hours,
- * and session rollover detection for CME, CBOT, NYMEX, COMEX, and Binance.
+ * and session rollover detection for CME, CBOT, NYMEX, and COMEX.
  */
 
 export interface SessionInfo {
@@ -19,23 +19,6 @@ export class SessionCalendar {
    */
   public static getSessionInfo(timestamp: number, scheduleId = 'CME_EQUITY_INDEX'): SessionInfo {
     const date = new Date(timestamp);
-
-    if (scheduleId === 'BINANCE_24_7') {
-      // 24/7 continuous trading; session boundary at 00:00 UTC
-      const startOfDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-      const endOfDay = new Date(startOfDay.getTime() + 86400000);
-      const dateStr = startOfDay.toISOString().slice(0, 10);
-
-      return {
-        scheduleId,
-        sessionDate: dateStr,
-        isOpen: true,
-        isRth: true,
-        isEth: false,
-        sessionStartTs: startOfDay.getTime(),
-        sessionEndTs: endOfDay.getTime(),
-      };
-    }
 
     // For CME / CBOT: Central Time (CT)
     // For NYMEX / COMEX: Eastern Time (ET)

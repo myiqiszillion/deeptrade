@@ -15,8 +15,7 @@ export class AccessPolicy {
    * Rules:
    * 1. Suspended users are always denied.
    * 2. Development bypass is strictly bounded to non-production environments with DEV_HOOKS=1.
-   * 3. BTCUSDT public demo access is permitted only when AUTH_REQUIRED !== '1'.
-   * 4. In all other scenarios, user must be active and have a matching, non-expired entitlement.
+   * 3. In all other scenarios, user must be active and have a matching, non-expired entitlement.
    */
   public static isAuthorized(ctx: AuthorizationContext): boolean {
     const { user, symbol, dataType } = ctx;
@@ -32,13 +31,7 @@ export class AccessPolicy {
       return true;
     }
 
-    // 3. Public crypto tier for BTCUSDT when auth is not strictly enforced
-    const isFreeCrypto = symbol.toUpperCase() === 'BTCUSDT' && process.env.AUTH_REQUIRED !== '1';
-    if (isFreeCrypto) {
-      return true;
-    }
-
-    // 4. Strict entitlement check
+    // 3. Strict entitlement check
     if (!user) {
       return false;
     }

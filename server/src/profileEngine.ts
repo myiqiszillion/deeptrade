@@ -1,4 +1,4 @@
-import { TPOBracket, TPOProfileData, VolumeProfileData, VolumeProfileLevel, Tick, classifyAggressorSide } from './types.js';
+import { TPOBracket, TPOProfileData, VolumeProfileData, VolumeProfileLevel, Tick, HistoricalBar, classifyAggressorSide } from './types.js';
 import { normalizeToTick } from './priceMath.js';
 
 export class ProfileEngine {
@@ -32,6 +32,73 @@ export class ProfileEngine {
 
   private normalizePrice(price: number): number {
     return normalizeToTick(price, this.tickSize);
+  }
+
+  public processHistoricalBars(bars: HistoricalBar[]): void {
+    if (!bars || bars.length === 0) return;
+    const sorted = [...bars].sort((a, b) => a.time - b.time);
+    if (this.sessionStartTime === 0) {
+      this.sessionStartTime = sorted[0].time;
+    }
+
+    for (const bar of sorted) {
+      const high = this.normalizePrice(bar.high);
+      const low = this.normalizePrice(bar.low);
+      const open = this.normalizePrice(bar.open);
+      const close = this.normalizePrice(bar.close);
+
+      const steps = Math.max(1, Math.round((high - low) / this.tickSize));
+      const volPerStep = bar.volume / (steps + 1);
+      const isUp = close >= open;
+
+      for (let i = 0; i <= steps; i++) {
+        const p = this.normalizePrice(low + i * this.tickSize);
+        let lvl = this.volumeLevels.get(p);
+        if (!lvl) {
+          lvl = { buyVol: 0, sellVol: 0, unknownVol: 0 };
+          this.volumeLevels.set(p, lvl);
+        }
+        if (isUp) {
+          lvl.buyVol += volPerStep * 0.6;
+          lvl.sellVol += volPerStep * 0.4;
+        } else {
+          lvl.buyVol += volPerStep * 0.4;
+          lvl.sellVol += volPerStep * 0.6;
+        }
+        this.totalVolume += volPerStep;
+
+        const elapsed = bar.time - this.sessionStartTime;
+        const bracketIndex = Math.floor(Math.max(0, elapsed) / this.tpoBracketDurationMs);
+        const letter = this.tpoLetters[bracketIndex % this.tpoLetters.length] || 'Z';
+
+        while (this.brackets.length <= bracketIndex) {
+          const bIdx = this.brackets.length;
+          const bLetter = this.tpoLetters[bIdx % this.tpoLetters.length] || 'Z';
+          const bStart = this.sessionStartTime + bIdx * this.tpoBracketDurationMs;
+          this.brackets.push({
+            letter: bLetter,
+            timeStart: bStart,
+            timeEnd: bStart + this.tpoBracketDurationMs,
+            prices: [],
+          });
+        }
+        if (!this.brackets[bracketIndex].prices.includes(p)) {
+          this.brackets[bracketIndex].prices.push(p);
+        }
+
+        if (bracketIndex < 2) {
+          if (p > this.ibHigh) this.ibHigh = p;
+          if (p < this.ibLow) this.ibLow = p;
+        }
+
+        let letterSet = this.tpoPriceLevels.get(p);
+        if (!letterSet) {
+          letterSet = new Set<string>();
+          this.tpoPriceLevels.set(p, letterSet);
+        }
+        letterSet.add(letter);
+      }
+    }
   }
 
   public processTick(tick: Tick) {

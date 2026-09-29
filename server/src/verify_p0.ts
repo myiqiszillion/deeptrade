@@ -7,26 +7,33 @@ import WebSocket from 'ws';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const TEST_PORT = 8089;
-const WS_URL = `ws://localhost:${TEST_PORT}`;
+let TEST_PORT = 8089;
+let WS_URL = `ws://localhost:${TEST_PORT}`;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Guard against silently testing a stale server left over from a previous run.
-function assertPortFree(port: number): Promise<void> {
-  return new Promise((resolve, reject) => {
+async function getFreePort(preferred = 8089): Promise<number> {
+  return new Promise((resolve) => {
     const tester = net.createServer();
-    tester.once('error', (err: NodeJS.ErrnoException) => {
-      reject(new Error(`Port ${port} is already in use (${err.code}). Kill the leftover verify_p0 server and retry.`));
+    tester.once('error', () => {
+      const probe = net.createServer();
+      probe.listen(0, '127.0.0.1', () => {
+        const port = (probe.address() as net.AddressInfo).port;
+        probe.close(() => resolve(port));
+      });
     });
-    tester.once('listening', () => tester.close(() => resolve()));
-    tester.listen(port, '127.0.0.1');
+    tester.once('listening', () => {
+      tester.close(() => resolve(preferred));
+    });
+    tester.listen(preferred, '127.0.0.1');
   });
 }
 
 async function startServer(): Promise<ChildProcess> {
+  TEST_PORT = await getFreePort(parseInt(process.env.TEST_PORT || '8089', 10));
+  WS_URL = `ws://localhost:${TEST_PORT}`;
   console.log(`[verify_p0] Starting test server on port ${TEST_PORT} with DEV_HOOKS=1...`);
   const serverPath = path.resolve(__dirname, 'index.ts');
   // Run tsx through node directly instead of the .cmd shim: spawning a shell wrapper
@@ -39,6 +46,8 @@ async function startServer(): Promise<ChildProcess> {
       PORT: TEST_PORT.toString(),
       DEV_HOOKS: '1',
       DEMO: '0',
+      DATABENTO_TRANSPORT_READY: '0',
+      DEFAULT_SYMBOL: 'ES',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -65,7 +74,15 @@ async function startServer(): Promise<ChildProcess> {
       }
     });
 
-    proc.stdout?.on('data', (d) => { const l = d.toString().trim(); if (l.length > 0 && !l.includes('Ready at')) console.log('[server] ' + l); });
+    proc.stdout?.on('data', (d) => {
+      const lines = d.toString().split('\n');
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (line.length > 0 && !line.includes('Ready at')) {
+          console.log('[server] ' + line);
+        }
+      }
+    });
 
     proc.stderr?.on('data', (data) => {
       // Server rejections/warnings are expected during these tests; route them to stdout
@@ -114,7 +131,6 @@ async function runVerifyP0() {
   let ws: WebSocket | null = null;
 
   try {
-    await assertPortFree(TEST_PORT);
     serverProc = await startServer();
     ws = new WebSocket(WS_URL);
 
@@ -146,7 +162,8 @@ async function runVerifyP0() {
 
         const timer = setTimeout(() => {
           clearInterval(interval);
-          reject(new Error(`Timeout waiting for message matching condition (${timeoutMs}ms)`));
+          const types = receivedMessages.map((m) => m.type + (m.symbol ? `:${m.symbol}` : '') + (m.code ? `:${m.code}` : '')).join(', ');
+          reject(new Error(`Timeout waiting for message matching condition (${timeoutMs}ms). Received: [${types}]`));
         }, timeoutMs);
 
         const interval = setInterval(() => {
@@ -222,8 +239,8 @@ async function runVerifyP0() {
     );
     await sleep(500);
     // Assert server is still responsive by pinging with a valid SUBSCRIBE
-    ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'BTCUSDT', timeframe: '1m' }));
-    const pingInit = await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'BTCUSDT');
+    ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'ES', timeframe: '1m' }));
+    const pingInit = await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'ES');
     if (!pingInit) throw new Error('TEST 2 FAILED: Server unresponsive after receiving deprecated DOM_ORDER');
     console.log('✅ TEST 2 PASSED: Deprecated DOM_ORDER rejected safely without crashing server.');
 
@@ -237,8 +254,8 @@ async function runVerifyP0() {
     ws.send(JSON.stringify({ type: 'CLEAR_JOURNAL' }));
     ws.send(JSON.stringify({ type: 'SET_PROP_CONFIG', config: {} }));
     await sleep(500);
-    ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'BTCUSDT', timeframe: '1m' }));
-    const pingInit3 = await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'BTCUSDT');
+    ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'ES', timeframe: '1m' }));
+    const pingInit3 = await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'ES');
     if (!pingInit3) throw new Error('TEST 3 FAILED: Server unresponsive after receiving deprecated trading messages');
     console.log('✅ TEST 3 PASSED: All deprecated trading messages safely rejected without server errors.');
 
@@ -271,15 +288,16 @@ async function runVerifyP0() {
     console.log('\n--- TEST 6: Whale threshold is derived from the active instrument ---');
     // Real-only: instead of waiting for a whale to print (and never fabricating one), assert
     // the advertised threshold contract and validate any real whale against it.
-    const cryptoThreshold = initMsg.deepTradeThresholdUsd;
-    if (cryptoThreshold !== 50000) {
-      throw new Error(`TEST 6 FAILED: crypto whale threshold should be 50000, got ${cryptoThreshold}.`);
+    const expectedThreshold = Math.round(initMsg.instrument.pointValue * initMsg.instrument.basePrice * 10);
+    const instrumentThreshold = initMsg.deepTradeThresholdUsd;
+    if (instrumentThreshold !== expectedThreshold) {
+      throw new Error(`TEST 6 FAILED: instrument whale threshold should be ${expectedThreshold}, got ${instrumentThreshold}.`);
     }
     const seenWhale = receivedMessages.find((m) => m.type === 'DEEP_TRADE');
     if (seenWhale) {
-      if (seenWhale.trade.valueUsd < cryptoThreshold) {
+      if (seenWhale.trade.valueUsd < instrumentThreshold) {
         throw new Error(
-          `TEST 6 FAILED: DEEP_TRADE $${seenWhale.trade.valueUsd} is below the advertised $${cryptoThreshold} threshold.`
+          `TEST 6 FAILED: DEEP_TRADE $${seenWhale.trade.valueUsd} is below the advertised $${instrumentThreshold} threshold.`
         );
       }
       console.log(
@@ -366,11 +384,11 @@ async function runVerifyP0() {
     // ==========================================
     console.log('\n--- TEST 11: Rate limiting flood protection ---');
     for (let i = 0; i < 60; i++) {
-      ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'BTCUSDT', timeframe: '1m' }));
+      ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'ES', timeframe: '1m' }));
     }
     await sleep(500);
-    ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'BTCUSDT', timeframe: '1m' }));
-    const pingFlood = await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'BTCUSDT');
+    ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'ES', timeframe: '1m' }));
+    const pingFlood = await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'ES');
     if (!pingFlood) throw new Error('TEST 11 FAILED: Server unresponsive after flood');
     console.log('✅ TEST 11 PASSED: Flood protection safely bounds incoming client rate.');
 
@@ -392,14 +410,14 @@ async function runVerifyP0() {
     // TEST 13: real-only availability (no fabricated data for feedless instruments)
     // ==========================================
     console.log('\n--- TEST 13: feedless instrument reports UNAVAILABLE ---');
-    ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'ES', timeframe: '1m' })); liveMark = receivedMessages.length;
-    const esState = await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'ES' && receivedMessages.indexOf(m) >= liveMark);
+    ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'YM', timeframe: '1m' })); liveMark = receivedMessages.length;
+    const ymState = await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'YM' && receivedMessages.indexOf(m) >= liveMark);
 
-    if (esState.feedStatus !== 'UNAVAILABLE') {
-      throw new Error(`TEST 13 FAILED: ES must report feedStatus UNAVAILABLE, got '${esState.feedStatus}'.`);
+    if (ymState.feedStatus !== 'UNAVAILABLE') {
+      throw new Error(`TEST 13 FAILED: YM must report feedStatus UNAVAILABLE, got '${ymState.feedStatus}'.`);
     }
-    if (esState.bars.length !== 0) {
-      throw new Error(`TEST 13 FAILED: ES returned ${esState.bars.length} fabricated bars.`);
+    if (ymState.bars.length !== 0) {
+      throw new Error(`TEST 13 FAILED: YM returned ${ymState.bars.length} fabricated bars.`);
     }
 
     // Let the last in-flight tick from the previous instrument drain before measuring, so the
@@ -417,7 +435,7 @@ async function runVerifyP0() {
       );
     }
     console.log(
-      `ES reported ${esState.feedStatus} with ${esState.bars.length} bars; 0 ticks / 0 book updates in 2.5s.`
+      `YM reported ${ymState.feedStatus} with ${ymState.bars.length} bars; 0 ticks / 0 book updates in 2.5s.`
     );
     console.log('✅ TEST 13 PASSED: nothing is fabricated for an instrument without a real feed.');
 

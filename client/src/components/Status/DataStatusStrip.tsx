@@ -4,7 +4,6 @@ type Tone = 'live' | 'delayed' | 'none';
 
 interface DataStatusStripProps {
   symbol: string;
-  isCrypto: boolean;
   /** Server-reported feed state for this instrument ('LIVE' only after validated data). */
   feedStatus?: 'LIVE' | 'UNAVAILABLE';
   historySource: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
@@ -32,7 +31,6 @@ const Chip: React.FC<{ label: string; value: string; tone: Tone; title?: string 
  */
 export const DataStatusStrip: React.FC<DataStatusStripProps> = ({
   symbol,
-  isCrypto,
   feedStatus,
   historySource,
   gexSource,
@@ -44,12 +42,8 @@ export const DataStatusStrip: React.FC<DataStatusStripProps> = ({
       tone={feedStatus === 'LIVE' ? 'live' : 'none'}
       title={
         feedStatus === 'LIVE'
-          ? isCrypto
-            ? 'Real-time Binance Futures trades + depth'
-            : 'Real-time licensed vendor feed (validated market data)'
-          : isCrypto
-            ? 'Binance stream unavailable'
-            : 'Real-time vendor feed unavailable (configuration, entitlement or connection)'
+          ? 'Real-time CME Globex licensed vendor feed (validated market data)'
+          : 'Real-time vendor feed unavailable (configuration, entitlement or connection)'
       }
     />
     <Chip

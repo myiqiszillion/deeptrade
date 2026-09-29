@@ -49,21 +49,20 @@ export async function runHistoryApiTests(): Promise<void> {
     }
     assert.ok(ready, 'Server should become ready');
 
-    // 1. Query BTCUSDT history (public crypto tier)
-    const btcRes = await fetch(`${base}/api/v1/history?symbol=BTCUSDT&timeframe=1m&limit=10`);
-    assert.equal(btcRes.status, 200, 'BTCUSDT history should return 200');
-    const btcData = (await btcRes.json()) as any;
-    assert.equal(btcData.symbol, 'BTCUSDT');
-    assert.equal(btcData.provider, 'binance');
-    assert.ok(Array.isArray(btcData.bars));
-
-    // 2. Query with options
-    const esRes = await fetch(`${base}/api/v1/history?symbol=ES&timeframe=1m&provider=tradovate&limit=5`);
-    assert.equal(esRes.status, 200);
+    // 1. Query ES history (default CME futures)
+    const esRes = await fetch(`${base}/api/v1/history?symbol=ES&timeframe=1m&limit=10`);
+    assert.equal(esRes.status, 200, 'ES history should return 200');
     const esData = (await esRes.json()) as any;
     assert.equal(esData.symbol, 'ES');
-    assert.equal(esData.provider, 'tradovate');
     assert.ok(Array.isArray(esData.bars));
+
+    // 2. Query with options
+    const nqRes = await fetch(`${base}/api/v1/history?symbol=NQ&timeframe=1m&provider=tradovate&limit=5`);
+    assert.equal(nqRes.status, 200);
+    const nqData = (await nqRes.json()) as any;
+    assert.equal(nqData.symbol, 'NQ');
+    assert.equal(nqData.provider, 'tradovate');
+    assert.ok(Array.isArray(nqData.bars));
 
     console.log('  [PASS] /api/v1/history integration tests passed.');
   } finally {

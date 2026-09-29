@@ -23,8 +23,8 @@ function isFinitePositive(value: unknown): value is number {
 }
 
 function normalizeSide(value: unknown): TradeSide {
-  if (value === 'BUY' || value === 'buy' || value === 'A') return 'BUY';
-  if (value === 'SELL' || value === 'sell' || value === 'B') return 'SELL';
+  if (value === 'BUY' || value === 'buy' || value === 'B') return 'BUY';
+  if (value === 'SELL' || value === 'sell' || value === 'A') return 'SELL';
   return 'UNKNOWN';
 }
 
@@ -112,7 +112,15 @@ function cleanLevels(levels: unknown, tickSize: number): DepthLevel[] {
   if (!Array.isArray(levels)) return [];
   const out: DepthLevel[] = [];
   for (const entry of levels) {
-    const [rawPrice, rawSize] = Array.isArray(entry) ? entry : [undefined, undefined];
+    let rawPrice: unknown;
+    let rawSize: unknown;
+    if (Array.isArray(entry)) {
+      rawPrice = entry[0];
+      rawSize = entry[1];
+    } else if (typeof entry === 'object' && entry !== null) {
+      rawPrice = (entry as { price?: unknown }).price;
+      rawSize = (entry as { size?: unknown }).size;
+    }
     if (!isFinitePositive(rawPrice)) continue;
     if (typeof rawSize !== 'number' || !Number.isFinite(rawSize) || rawSize < 0) continue;
     out.push({ price: normalizeToTick(rawPrice, tickSize), size: rawSize });

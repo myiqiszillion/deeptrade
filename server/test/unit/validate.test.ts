@@ -49,6 +49,11 @@ export async function runValidateTests(): Promise<void> {
   assert.equal(parsed.month, 'H');
   assert.equal(parsed.year, 2026);
 
+  // Vendor symbol formatting
+  assert.equal(formatVendorSymbol('tradovate', 'ES'), '@ES');
+  assert.equal(formatVendorSymbol('tradovate', 'ES', 'H6'), 'ESH6');
+  assert.equal(formatVendorSymbol('databento', 'ES'), 'ES.FUT');
+
   // 4. Trade Validation
   const validRes = validateTrade(
     {

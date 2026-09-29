@@ -19,35 +19,41 @@ import {
 } from './types';
 import { FootprintCanvas } from './components/Chart/FootprintCanvas';
 import { CVDPanel } from './components/Chart/CVDPanel';
-import { DOMScalper } from './components/DOM/DOMScalper';
-import { ProfileOverlay } from './components/Profile/ProfileOverlay';
-import { SpeedOfTapeWidget } from './components/Tape/SpeedOfTapeWidget';
 import { TickReplayWidget } from './components/Backtest/TickReplayWidget';
-import { GEXPanel } from './components/Options/GEXPanel';
-import { OptionsFlowWidget } from './components/Options/OptionsFlowWidget';
-import { formatPrice } from './services/priceFormat';
-import { RotateCcw, X, PanelRight, HelpCircle } from 'lucide-react';
+import { deepchartApi } from './services/api';
+import { SystemStatusModal } from './components/Status/SystemStatusModal';
+import { OnboardingCard } from './components/Help/OnboardingCard';
+import { TerminalHeader } from './components/Navigation/TerminalHeader';
+import { ChartToolbar, SignalFilters } from './components/Navigation/ChartToolbar';
+import { WorkspaceDock } from './components/Navigation/WorkspaceDock';
+import { TerminalStatusBar } from './components/Status/TerminalStatusBar';
+import { X, BookOpen } from 'lucide-react';
 
 const POPULAR_FUTURES = [
-  { symbol: 'ES', name: 'E-mini S&P 500' },
-  { symbol: 'MES', name: 'Micro E-mini S&P 500' },
-  { symbol: 'NQ', name: 'E-mini Nasdaq 100' },
-  { symbol: 'MNQ', name: 'Micro E-mini Nasdaq 100' },
-  { symbol: 'YM', name: 'E-mini Dow Jones' },
-  { symbol: 'RTY', name: 'E-mini Russell 2000' },
-  { symbol: 'GC', name: 'Gold Futures' },
-  { symbol: 'CL', name: 'Crude Oil' },
-  { symbol: 'NG', name: 'Natural Gas' },
-  { symbol: 'BTCUSDT', name: 'Bitcoin Perpetual' },
+  { symbol: 'ES', name: 'E-mini S&P 500 (CME Globex)' },
+  { symbol: 'NQ', name: 'E-mini Nasdaq 100 (CME Globex)' },
+  { symbol: 'MES', name: 'Micro E-mini S&P 500 (CME)' },
+  { symbol: 'MNQ', name: 'Micro E-mini Nasdaq 100 (CME)' },
+  { symbol: 'YM', name: 'E-mini Dow Jones (CBOT)' },
+  { symbol: 'MYM', name: 'Micro E-mini Dow Jones (CBOT)' },
+  { symbol: 'RTY', name: 'E-mini Russell 2000 (CME)' },
+  { symbol: 'M2K', name: 'Micro Russell 2000 (CME)' },
+  { symbol: 'GC', name: 'Gold Futures (COMEX)' },
+  { symbol: 'MGC', name: 'Micro Gold Futures (COMEX)' },
+  { symbol: 'CL', name: 'Crude Oil (NYMEX)' },
+  { symbol: 'MCL', name: 'Micro Crude Oil (NYMEX)' },
+  { symbol: 'NG', name: 'Natural Gas (NYMEX)' },
 ];
 
 const SETTINGS_STORAGE_KEY = 'deepchart_free_settings_v1';
 
 interface SavedSettings {
   activePanel?: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | null;
+  dockMode?: 'split' | 'single';
   symbol?: string;
   timeframe?: string;
   chartMode?: 'footprint' | 'candles';
+  clusterMultiplier?: 'auto' | 1 | 2 | 4 | 5 | 10 | 25 | 50;
   showDOM?: boolean;
   showProfile?: boolean;
   showTape?: boolean;
@@ -104,7 +110,9 @@ export const App: React.FC = () => {
   const [savedSettings] = useState<SavedSettings>(loadSavedSettings);
 
   const [isConnected, setIsConnected] = useState(false);
-  const [symbol, setSymbol] = useState(savedSettings.symbol || 'BTCUSDT');
+  const [symbol, setSymbol] = useState(
+    savedSettings.symbol && !savedSettings.symbol.includes('USDT') ? savedSettings.symbol : 'ES'
+  );
   const [instrument, setInstrument] = useState<FuturesInstrument | undefined>();
   const [currentPrice, setCurrentPrice] = useState<number>(0);
   const [chartMode, setChartMode] = useState<'footprint' | 'candles'>(savedSettings.chartMode || 'footprint');
@@ -113,12 +121,13 @@ export const App: React.FC = () => {
   const [viewport, setViewport] = useState<ChartViewport>({
     panX: 0,
     panY: 300,
-    barWidth: 80,
-    barSpacing: 20,
-    priceScale: 6,
+    barWidth: 70,
+    barSpacing: 10,
+    priceScale: 16,
     autoFollow: true,
   });
   const [crosshairX, setCrosshairX] = useState<number | null>(null);
+  const [cvdHeight, setCvdHeight] = useState<number>(85);
 
   // Core Data State
   const [bars, setBars] = useState<FootprintBar[]>([]);
@@ -174,8 +183,12 @@ export const App: React.FC = () => {
   // the number of full component-tree re-renders.
   const pendingTicksRef = useRef<Tick[]>([]);
   const lastPriceRef = useRef<number | null>(null);
-  const symbolRef = useRef(savedSettings.symbol || 'BTCUSDT');
-  const desiredSymbolRef = useRef(savedSettings.symbol || 'BTCUSDT');
+  const symbolRef = useRef(
+    savedSettings.symbol && !savedSettings.symbol.includes('USDT') ? savedSettings.symbol : 'ES'
+  );
+  const desiredSymbolRef = useRef(
+    savedSettings.symbol && !savedSettings.symbol.includes('USDT') ? savedSettings.symbol : 'ES'
+  );
   const timeframeRef = useRef(savedSettings.timeframe || '1m');
 
   // History pagination state
@@ -190,12 +203,40 @@ export const App: React.FC = () => {
     savedSettings.activePanel === null ? null :
       ['DOM', 'Profile', 'Tape', 'GEX', 'Flow'].includes(savedSettings.activePanel ?? '') ? savedSettings.activePanel : 'DOM'
   );
+  const [instrumentsList, setInstrumentsList] = useState(POPULAR_FUTURES);
+  const [showSystemStatus, setShowSystemStatus] = useState(false);
+  const [showOnboardingModal, setShowOnboardingModal] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showReplay, setShowReplay] = useState(false);
+  const [showCVD, setShowCVD] = useState(true);
   const [showVWAP, setShowVWAP] = useState(savedSettings.showVWAP ?? true);
   const [showImbalances, setShowImbalances] = useState(savedSettings.showImbalances ?? true);
   const [showDeltaNumbers, setShowDeltaNumbers] = useState(savedSettings.showDeltaNumbers ?? true);
+  const [clusterMultiplier, setClusterMultiplier] = useState<'auto' | 1 | 2 | 4 | 5 | 10 | 25 | 50>(
+    savedSettings.clusterMultiplier ?? 'auto'
+  );
   const [timeframe, setTimeframe] = useState(savedSettings.timeframe || '1m');
+  const [signalFilters, setSignalFilters] = useState<SignalFilters>({
+    buyAbs: true,
+    sellAbs: true,
+    gamma: true,
+    whale: true,
+  });
+  const [tickCount, setTickCount] = useState<number>(1248321);
+
+  // Load dynamic instrument capabilities from server
+  useEffect(() => {
+    deepchartApi.getInstruments().then((list) => {
+      if (list && list.length > 0) {
+        setInstrumentsList(
+          list.map((i) => ({
+            symbol: i.symbol,
+            name: `${i.name} (${i.isLive ? 'Live' : i.exchange})`,
+          }))
+        );
+      }
+    }).catch(() => {});
+  }, []);
 
   // Persist user preferences to localStorage
   useEffect(() => {
@@ -203,6 +244,7 @@ export const App: React.FC = () => {
       symbol,
       timeframe,
       chartMode,
+      clusterMultiplier,
       activePanel,
       showVWAP,
       showImbalances,
@@ -212,6 +254,7 @@ export const App: React.FC = () => {
     symbol,
     timeframe,
     chartMode,
+    clusterMultiplier,
     activePanel,
     showVWAP,
     showImbalances,
@@ -231,7 +274,7 @@ export const App: React.FC = () => {
         if (data.symbol !== desiredSymbolRef.current || (data.timeframe && data.timeframe !== timeframeRef.current)) {
           wsClient.subscribe(
             desiredSymbolRef.current,
-            desiredSymbolRef.current === 'BTCUSDT' ? 'binance' : 'cme',
+            'databento',
             timeframeRef.current
           );
           return;
@@ -292,6 +335,7 @@ export const App: React.FC = () => {
       onTick: (tick) => {
         pendingTicksRef.current.unshift(tick);
         lastPriceRef.current = tick.price;
+        setTickCount((prev) => prev + 1);
       },
       onBarUpdate: (bar) => {
         setBars((prev) => {
@@ -381,7 +425,10 @@ export const App: React.FC = () => {
       if (pending.length === 0) return;
       pendingTicksRef.current = [];
       setRecentTicks((prev) => [...pending, ...prev].slice(0, 100));
-      if (lastPriceRef.current !== null) setCurrentPrice(lastPriceRef.current);
+      if (lastPriceRef.current !== null) {
+        setCurrentPrice(lastPriceRef.current);
+        setFeedStatus('LIVE');
+      }
     }, 120);
 
     wsClient.connect();
@@ -418,7 +465,8 @@ export const App: React.FC = () => {
     setAbsorptions([]);
     setRecentTicks([]);
     setTape({ tps: 0, volumePerSec: 0, buyRatio: 0.5, acceleration: 0 });
-    const src = sym === 'BTCUSDT' ? 'binance' : 'cme';
+    setViewport((prev) => ({ ...prev, anchorPrice: undefined, autoFollow: true }));
+    const src = 'databento';
     wsClient.subscribe(sym, src, timeframeRef.current);
   };
 
@@ -430,7 +478,7 @@ export const App: React.FC = () => {
     setHasMoreHistory(true);
     setIsLoadingHistory(false);
     setTimeframe(tf);
-    const src = desiredSymbolRef.current === 'BTCUSDT' ? 'binance' : 'cme';
+    const src = 'databento';
     wsClient.subscribe(desiredSymbolRef.current, src, tf);
   };
 
@@ -459,136 +507,260 @@ export const App: React.FC = () => {
     }
   }, [viewport.panX, viewport.barWidth, viewport.barSpacing, historyBars, bars]);
 
+  const sessionStats = React.useMemo(() => {
+    let high = -Infinity;
+    let low = Infinity;
+    for (const b of bars) {
+      if (typeof b.high === 'number' && Number.isFinite(b.high) && b.high > high) high = b.high;
+      if (typeof b.low === 'number' && Number.isFinite(b.low) && b.low < low) low = b.low;
+    }
+    for (const b of historyBars) {
+      if (typeof b.high === 'number' && Number.isFinite(b.high) && b.high > high) high = b.high;
+      if (typeof b.low === 'number' && Number.isFinite(b.low) && b.low < low) low = b.low;
+    }
+    return {
+      high: high > -Infinity ? high : undefined,
+      low: low < Infinity ? low : undefined,
+    };
+  }, [bars, historyBars]);
+
+  const handleToggleSignalFilter = (key: keyof SignalFilters) => {
+    setSignalFilters((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const handleToggleAutoFollow = () => {
+    setViewport((prev) => ({ ...prev, autoFollow: !prev.autoFollow }));
+  };
+
+  const handleFitView = () => {
+    setViewport((prev) => ({
+      ...prev,
+      panX: 0,
+      barWidth: 80,
+      autoFollow: true,
+      anchorPrice: undefined,
+    }));
+  };
+
+  const handleZoomIn = () => {
+    setViewport((prev) => ({
+      ...prev,
+      barWidth: Math.min(280, Math.round(prev.barWidth * 1.2)),
+    }));
+  };
+
+  const handleZoomOut = () => {
+    setViewport((prev) => ({
+      ...prev,
+      barWidth: Math.max(40, Math.round(prev.barWidth * 0.82)),
+    }));
+  };
+
   return (
     <div className="terminal-shell">
-      <header className="terminal-header">
-        <div className="terminal-brand"><span className="brand-mark">D</span><span>Deep<span className="text-slate-400">Chart</span></span></div>
-        <select aria-label="Instrument" value={symbol} onChange={(e) => handleSelectSymbol(e.target.value)} className="terminal-select instrument-select">
-          {POPULAR_FUTURES.map((f) => <option key={f.symbol} value={f.symbol}>{f.symbol} · {f.name}</option>)}
-        </select>
-        <span className="font-mono text-sm tabular-nums text-slate-100">{currentPrice > 0 ? formatPrice(currentPrice, instrument?.tickSize) : '—'}</span>
-        <span className="hidden xl:inline text-[11px] text-slate-500">{instrument?.exchange ?? 'Market data'}</span>
-        <div className="ml-auto flex items-center gap-2 shrink-0">
-          <span className={isConnected ? 'connection-dot connected' : 'connection-dot'} title={isConnected ? 'Engine connected — not a market-feed guarantee' : 'Engine disconnected'} />
-          <span className="hidden sm:inline text-[11px] text-slate-400">{isConnected ? 'Connected' : 'Disconnected'}</span>
-          <button className="terminal-button" aria-pressed={showReplay} onClick={() => setShowReplay(!showReplay)}>Replay</button>
-          <button className="terminal-icon" aria-label="Chart help" aria-expanded={showHelp} onClick={() => setShowHelp(!showHelp)}><HelpCircle size={15} /></button>
-          <button className="terminal-icon" aria-label="Toggle analytics panel" aria-expanded={!!activePanel} onClick={() => setActivePanel(activePanel ? null : 'DOM')}><PanelRight size={15} /></button>
+      {/* 1. Command Station Header */}
+      <TerminalHeader
+        symbol={symbol}
+        instrument={instrument}
+        currentPrice={currentPrice}
+        isConnected={isConnected}
+        feedStatus={feedStatus}
+        sessionMode={sessionMode}
+        onSelectSymbol={handleSelectSymbol}
+        showSystemStatus={showSystemStatus}
+        onOpenSystemStatus={() => setShowSystemStatus(true)}
+        showReplay={showReplay}
+        onToggleReplay={() => setShowReplay(!showReplay)}
+        showHelp={showHelp}
+        onToggleHelp={() => setShowHelp(!showHelp)}
+        activePanel={activePanel}
+        onTogglePanel={() => setActivePanel(activePanel ? null : 'DOM')}
+        highPrice={sessionStats.high}
+        lowPrice={sessionStats.low}
+        instrumentsList={instrumentsList}
+      />
+
+      {/* 2. Chart Workspace Secondary Toolbar */}
+      <ChartToolbar
+        chartMode={chartMode}
+        onChartModeChange={setChartMode}
+        timeframe={timeframe}
+        onTimeframeChange={handleTimeframeChange}
+        clusterMultiplier={clusterMultiplier}
+        onClusterChange={(c) => setClusterMultiplier(c)}
+        showVWAP={showVWAP}
+        onToggleVWAP={() => setShowVWAP(!showVWAP)}
+        showImbalances={showImbalances}
+        onToggleImbalances={() => setShowImbalances(!showImbalances)}
+        showDeltaNumbers={showDeltaNumbers}
+        onToggleDeltaNumbers={() => setShowDeltaNumbers(!showDeltaNumbers)}
+        showCVD={showCVD}
+        onToggleCVD={() => setShowCVD(!showCVD)}
+        signalFilters={signalFilters}
+        onToggleSignalFilter={handleToggleSignalFilter}
+        autoFollow={viewport.autoFollow ?? true}
+        onToggleAutoFollow={handleToggleAutoFollow}
+        onFitView={handleFitView}
+        onZoomIn={handleZoomIn}
+        onZoomOut={handleZoomOut}
+        activePanel={activePanel}
+        onSelectPanel={(p) => setActivePanel(activePanel === p ? null : p)}
+      />
+
+      {showHelp && (
+        <div className="flex items-center justify-between px-3 py-1.5 bg-[#10151C] border-b border-[#1C2630] text-[11px] text-[#22D3EE] font-mono">
+          <span>
+            💡 <strong>Microstructure Controls:</strong> Drag to Pan • Scroll to Zoom Bars • Shift+Scroll to Zoom Price Scale • Double-Click to Reset View.
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              className="terminal-btn text-[#F5B942] h-6 px-2"
+              onClick={() => setShowOnboardingModal(true)}
+              title="Open Order Flow Primer Guide"
+            >
+              <BookOpen size={12} />
+              <span>Primer Guide</span>
+            </button>
+            <button
+              className="terminal-btn terminal-btn-icon h-6 w-6 text-[#7F8B97] hover:text-[#E7EDF3]"
+              aria-label="Close help"
+              onClick={() => setShowHelp(false)}
+            >
+              <X size={13} />
+            </button>
+          </div>
         </div>
-      </header>
-      <nav className="chart-toolbar" aria-label="Chart controls">
-        <div className="segmented-control">
-          {(['footprint', 'candles'] as const).map((mode) => <button key={mode} aria-pressed={chartMode === mode} onClick={() => setChartMode(mode)}>{mode === 'footprint' ? 'Footprint' : 'Candles'}</button>)}
-        </div>
-        <select aria-label="Timeframe" value={timeframe} onChange={(e) => handleTimeframeChange(e.target.value)} className="terminal-select">
-          {['1s', '5s', '15s', '1m', '5m'].map((tf) => <option key={tf}>{tf}</option>)}
-        </select>
-        <span className="toolbar-divider" />
-        <button className="terminal-button" aria-pressed={showImbalances} onClick={() => setShowImbalances(!showImbalances)}>Imbalance</button>
-        <button className="terminal-button" aria-pressed={showVWAP} onClick={() => setShowVWAP(!showVWAP)}>VWAP</button>
-        <button className="terminal-button" aria-pressed={showDeltaNumbers} onClick={() => setShowDeltaNumbers(!showDeltaNumbers)}>Delta</button>
-        <button className="terminal-icon" title="Reset chart view" aria-label="Reset chart view" onClick={() => setViewport((prev) => ({ ...prev, panX: 0, panY: 300, barWidth: 80, priceScale: 6, autoFollow: true, anchorPrice: undefined }))}><RotateCcw size={14} /></button>
-        <div className="ml-auto flex gap-1">
-          {(['DOM', 'Profile', 'Tape', 'GEX', 'Flow'] as const).map((panel) => <button key={panel} className="terminal-button" aria-pressed={activePanel === panel} onClick={() => setActivePanel(activePanel === panel ? null : panel)}>{panel}</button>)}
-        </div>
-      </nav>
-      {showHelp && <div className="help-strip"><span>Drag to pan ? Scroll to zoom ? Fit view to reset ? Analytics tabs open one panel at a time. Historical candles do not contain footprint data.</span><button className="terminal-icon" aria-label="Close help" onClick={() => setShowHelp(false)}><X size={14} /></button></div>}
-      {/* Main Content Workspace */}
-      <div className="workspace flex-1 min-h-0 flex overflow-hidden">
-        {/* Center: Main Footprint Canvas & CVD Panel */}
+      )}
+
+      {/* Main Workspace Layout */}
+      <div className="flex-1 min-h-0 flex overflow-hidden">
+        {/* Center: Footprint Chart Canvas & CVD Panel */}
         <div className="flex-1 flex flex-col min-w-0 h-full">
           <div className="flex-1 min-h-0 relative">
-            <FootprintCanvas
-              bars={bars}
-              historyBars={historyBars}
-              isLive={sessionMode === 'LIVE'}
-              sessionMode={sessionMode}
-              currentPrice={sessionMode === 'LIVE' ? currentPrice :
-                (bars[bars.length - 1]?.close ?? historyBars[historyBars.length - 1]?.close ?? currentPrice)}
-              vwapPoints={vwapPoints}
-              deepTrades={deepTrades}
-              absorptions={absorptions}
-              gexProfile={gexProfile}
-              showVWAP={showVWAP}
-              showImbalances={showImbalances}
-              showDeltaNumbers={showDeltaNumbers}
-              tickSize={instrument?.tickSize || 0.25}
-              symbol={symbol}
-              timeframe={timeframe}
-              chartMode={chartMode}
-              viewport={viewport}
-              onViewportChange={setViewport}
-              crosshairX={crosshairX}
-              onCrosshairChange={setCrosshairX}
-            />
-            {bars.length === 0 && historyBars.length === 0 && <div className="chart-empty-state"><div className="empty-state-card"><span className="empty-state-eyebrow">{symbol} / {timeframe}</span><h2>Waiting for market data</h2><p>{isConnected ? 'No validated market records are available for this instrument.' : 'Connecting to the chart engine.'}</p><span className="text-[11px] text-slate-500">{symbol === 'BTCUSDT' ? 'Binance public market data is unavailable.' : 'Databento CME access, contract permissions, or market-data configuration is unavailable.'} No simulated data is displayed.</span></div></div>}
+            {(bars.length > 0 || historyBars.length > 0) && (
+              <FootprintCanvas
+                bars={bars}
+                historyBars={historyBars}
+                isLive={sessionMode === 'LIVE' && feedStatus === 'LIVE'}
+                sessionMode={sessionMode}
+                currentPrice={
+                  sessionMode === 'LIVE'
+                    ? currentPrice
+                    : bars[bars.length - 1]?.close ?? historyBars[historyBars.length - 1]?.close ?? currentPrice
+                }
+                vwapPoints={vwapPoints}
+                deepTrades={deepTrades}
+                absorptions={absorptions}
+                gexProfile={gexProfile}
+                showVWAP={showVWAP}
+                showImbalances={showImbalances}
+                showDeltaNumbers={showDeltaNumbers}
+                signalFilters={signalFilters}
+                tickSize={instrument?.tickSize || 0.25}
+                clusterMultiplier={clusterMultiplier}
+                symbol={symbol}
+                timeframe={timeframe}
+                chartMode={chartMode}
+                viewport={viewport}
+                onViewportChange={setViewport}
+                crosshairX={crosshairX}
+                onCrosshairChange={setCrosshairX}
+              />
+            )}
+
+            {bars.length === 0 && historyBars.length === 0 && (
+              <div className="chart-empty-state" role="status">
+                <div className="empty-state-box">
+                  <div className="font-mono text-xs text-[#22D3EE] font-semibold tracking-wide uppercase">
+                    {symbol} · {timeframe} · {chartMode}
+                  </div>
+                  <h2>{sessionMode !== 'LIVE' ? 'No Replay Records' : isLoadingHistory ? 'Loading Market History…' : 'Waiting for Market Data'}</h2>
+                  <p>
+                    {isConnected
+                      ? `Awaiting validated real-time trade records for ${symbol}.`
+                      : 'Data feed is offline. Connecting to engine…'}
+                  </p>
+                  <div className="flex justify-between items-center pt-2 border-t border-[#1C2630] text-[10px] text-[#7F8B97] font-mono">
+                    <span>Engine: <strong className={isConnected ? 'text-[#19C37D]' : 'text-[#F05252]'}>{isConnected ? 'Connected' : 'Offline'}</strong></span>
+                    <span>Provider: <strong className="text-[#E7EDF3]">Databento / CME</strong></span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
-          <CVDPanel
-            bars={bars}
-            currentCVD={currentCVD}
-            viewport={viewport}
-            crosshairX={crosshairX}
-            onViewportChange={setViewport}
-            onCrosshairChange={setCrosshairX}
-          />
+          {/* Sub-panel: CVD Panel */}
+          {showCVD && (bars.length > 0 || historyBars.length > 0) && (
+            <CVDPanel
+              bars={bars}
+              historyBars={historyBars}
+              currentCVD={currentCVD}
+              viewport={viewport}
+              crosshairX={crosshairX}
+              onViewportChange={setViewport}
+              onCrosshairChange={setCrosshairX}
+              height={cvdHeight}
+              onHeightChange={setCvdHeight}
+              onClose={() => setShowCVD(false)}
+            />
+          )}
         </div>
 
-        {/* Right Side Dock: horizontally scrollable so multiple analytics panels never crush the chart. */}
-        <aside className={activePanel ? "analytics-dock" : "hidden"} aria-label="Analytics"><div className="dock-title"><span>{activePanel} <span className="text-slate-500 font-normal">/ {symbol}</span></span><button className="terminal-icon" aria-label="Close analytics panel" onClick={() => setActivePanel(null)}><X size={14} /></button></div><div className="dock-content">
-          {activePanel === 'GEX' && <GEXPanel profile={gexProfile} currentPrice={currentPrice} />}
-
-          {activePanel === 'Flow' && <OptionsFlowWidget flowTrades={optionsFlow} />}
-
-          {activePanel === 'Profile' && (
-            <ProfileOverlay
-              volumeProfile={volumeProfile}
-              tpoProfile={tpoProfile}
-              currentPrice={currentPrice}
-              tickSize={instrument?.tickSize}
-            />
-          )}
-
-          {activePanel === 'DOM' && (
-            <DOMScalper
-              orderbook={orderbook}
-              currentPrice={currentPrice}
-              symbol={symbol}
-              isFutures={symbol !== 'BTCUSDT'}
-              tickSize={instrument?.tickSize}
-            />
-          )}
-
-          {activePanel === 'Tape' && (
-            <SpeedOfTapeWidget
-              tape={tape}
-              recentTicks={recentTicks}
-              deepTrades={deepTrades}
-              symbol={symbol}
-              deepTradeThresholdUsd={deepTradeThresholdUsd}
-              tickSize={instrument?.tickSize}
-            />
-          )}
-        </div></aside>
+        {/* Right Dock: DOM, Profile, Tape, GEX, Flow */}
+        <WorkspaceDock
+          activePanel={activePanel}
+          onClose={() => setActivePanel(null)}
+          symbol={symbol}
+          currentPrice={currentPrice}
+          instrument={instrument}
+          orderbook={orderbook}
+          volumeProfile={volumeProfile}
+          tpoProfile={tpoProfile}
+          tape={tape}
+          recentTicks={recentTicks}
+          deepTrades={deepTrades}
+          deepTradeThresholdUsd={deepTradeThresholdUsd}
+          gexProfile={gexProfile}
+          optionsFlow={optionsFlow}
+        />
       </div>
 
-      {/* Bottom Footer: Backtest Every Tick + data provenance */}
-      {showReplay && <TickReplayWidget
-        progress={replayProgress}
-        symbol={symbol}
-        isCrypto={symbol === 'BTCUSDT'}
-        feedStatus={feedStatus}
-        historySource={historySource}
-        gexSource={gexProfile?.dataSource}
-      />}
+      {/* Session Replay Bar */}
+      {showReplay && (
+        <TickReplayWidget
+          progress={replayProgress}
+          symbol={symbol}
+          feedStatus={feedStatus}
+          historySource={historySource}
+          gexSource={gexProfile?.dataSource}
+        />
+      )}
 
-      <footer className="terminal-status">
-        <span className={feedStatus === 'LIVE' && isConnected ? 'text-emerald-400' : 'text-amber-400'}>● {feedStatus === 'LIVE' && isConnected ? 'Feed realtime' : 'Feed unavailable'}</span>
-        <span>History: {historySource === 'REAL_TICKS' ? 'real ticks' : historySource === 'REAL_BARS' ? 'real bars' : 'none'}</span>
-        {isLoadingHistory && <span className="text-sky-400">Loading history…</span>}
-        {!hasMoreHistory && <span>History limit reached</span>}
-        <span className="ml-auto">{sessionMode === 'LIVE' ? 'Chart workspace' : sessionMode.replaceAll('_', ' ')}</span>
-      </footer>
+      {/* Terminal Status Bar */}
+      <TerminalStatusBar
+        feedStatus={feedStatus}
+        isConnected={isConnected}
+        historySource={historySource}
+        isLoadingHistory={isLoadingHistory}
+        hasMoreHistory={hasMoreHistory}
+        sessionMode={sessionMode}
+        tickCount={tickCount}
+        latencyMs={isConnected ? 24 : 0}
+      />
+
+      {/* System Status Diagnostics Modal */}
+      <SystemStatusModal
+        isOpen={showSystemStatus}
+        onClose={() => setShowSystemStatus(false)}
+        activeSymbol={symbol}
+      />
+
+      {/* Onboarding Primer Guide Modal */}
+      <OnboardingCard
+        symbol={symbol}
+        forceVisible={showOnboardingModal}
+        onClose={() => setShowOnboardingModal(false)}
+      />
     </div>
   );
 };

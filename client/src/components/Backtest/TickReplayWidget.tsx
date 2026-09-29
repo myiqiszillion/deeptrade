@@ -7,7 +7,6 @@ import { Play, Pause, FastForward, StepForward, RotateCcw, Radio } from 'lucide-
 interface TickReplayWidgetProps {
   progress?: ReplayProgress;
   symbol: string;
-  isCrypto: boolean;
   feedStatus?: 'LIVE' | 'UNAVAILABLE';
   historySource: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
   gexSource?: 'CBOE_DELAYED' | 'LIVE';
@@ -16,12 +15,12 @@ interface TickReplayWidgetProps {
 export const TickReplayWidget: React.FC<TickReplayWidgetProps> = ({
   progress,
   symbol,
-  isCrypto,
   feedStatus,
   historySource,
   gexSource,
 }) => {
   const [localSpeed, setLocalSpeed] = useState<number>(1);
+  const [hoverTick, setHoverTick] = useState<number | null>(null);
 
   // The server is the single source of truth for replay state.
   const isPlaying = progress?.isPlaying ?? false;
@@ -45,11 +44,35 @@ export const TickReplayWidget: React.FC<TickReplayWidgetProps> = ({
   };
 
   const handleReset = () => {
-    wsClient.controlReplay('SEEK', undefined, 0);
+    wsClient.seekReplay(0);
   };
 
   const handleReturnToLive = () => {
     wsClient.returnToLive();
+  };
+
+  const calculateTickFromMouseEvent = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!progress || progress.totalTicks <= 0) return null;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const ratio = Math.max(0, Math.min(1, clickX / rect.width));
+    return Math.floor(ratio * (progress.totalTicks - 1));
+  };
+
+  const handleProgressBarClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = calculateTickFromMouseEvent(e);
+    if (target !== null) {
+      wsClient.seekReplay(target);
+    }
+  };
+
+  const handleProgressBarMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = calculateTickFromMouseEvent(e);
+    setHoverTick(target);
+  };
+
+  const handleProgressBarMouseLeave = () => {
+    setHoverTick(null);
   };
 
   return (
@@ -121,24 +144,61 @@ export const TickReplayWidget: React.FC<TickReplayWidgetProps> = ({
 
       <div className="flex-1" />
 
-      <div className="flex items-center gap-2 text-[11px] text-slate-400">
-        <span className={`inline-block w-2 h-2 rounded-full ${isPlaying ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
-        <span className="font-mono">
+      {/* Interactive Playhead Scrub Bar */}
+      <div className="flex items-center gap-3 text-[11px] text-slate-400">
+        <span
+          className={`inline-block w-2 h-2 rounded-full ${
+            isPlaying ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)] animate-pulse' : 'bg-slate-600'
+          }`}
+          title={isPlaying ? 'Replay running' : 'Replay paused'}
+        />
+        <span className="font-mono text-slate-300">
           {progress ? `${progress.currentIndex} / ${progress.totalTicks} ticks` : 'buffer: —'}
         </span>
-        <div className="w-24 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+
+        <div
+          onClick={handleProgressBarClick}
+          onMouseMove={handleProgressBarMouseMove}
+          onMouseLeave={handleProgressBarMouseLeave}
+          className="relative w-36 sm:w-48 h-3 bg-slate-800/80 hover:bg-slate-800 rounded-full cursor-pointer flex items-center px-0.5 border border-white/5 transition-colors group"
+          title={hoverTick !== null ? `Seek to tick ${hoverTick}` : 'Click to seek playhead'}
+        >
           <div
-            className="h-full bg-amber-500 transition-all"
+            className="h-1.5 bg-gradient-to-r from-amber-500 to-amber-400 rounded-full pointer-events-none transition-[width] duration-75"
             style={{
-              width: `${progress && progress.totalTicks > 0 ? (progress.currentIndex / progress.totalTicks) * 100 : 0}%`,
+              width: `${
+                progress && progress.totalTicks > 0
+                  ? Math.min(100, Math.max(0, (progress.currentIndex / progress.totalTicks) * 100))
+                  : 0
+              }%`,
             }}
           />
+          <div
+            className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-amber-300 rounded-full shadow-[0_0_6px_rgba(245,158,11,0.8)] border border-slate-900 pointer-events-none transition-transform group-hover:scale-125"
+            style={{
+              left: `${
+                progress && progress.totalTicks > 0
+                  ? Math.min(96, Math.max(2, (progress.currentIndex / progress.totalTicks) * 100))
+                  : 2
+              }%`,
+              transform: 'translate(-50%, -50%)',
+            }}
+          />
+          {hoverTick !== null && progress && (
+            <div
+              className="absolute -top-7 px-1.5 py-0.5 rounded bg-slate-900 border border-amber-500/40 text-amber-300 text-[10px] font-mono shadow-lg pointer-events-none -translate-x-1/2 z-20"
+              style={{
+                left: `${(hoverTick / Math.max(1, progress.totalTicks - 1)) * 100}%`,
+              }}
+            >
+              #{hoverTick}
+            </div>
+          )}
         </div>
       </div>
 
       <DataStatusStrip
         symbol={symbol}
-        isCrypto={isCrypto}
         feedStatus={feedStatus}
         historySource={historySource}
         gexSource={gexSource}

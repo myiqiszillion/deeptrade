@@ -1,4 +1,4 @@
-import { Tick, VWAPPoint } from './types.js';
+import { Tick, VWAPPoint, HistoricalBar } from './types.js';
 
 export class VWAPEngine {
   private cumulativePV = 0; // Sum of (Price * Volume)
@@ -20,6 +20,45 @@ export class VWAPEngine {
     this.history = [];
     this.anchorTimestamp = anchorTimestamp;
     this.lastSampleTime = 0;
+  }
+
+  public processHistoricalBars(bars: HistoricalBar[]): void {
+    if (!bars || bars.length === 0) return;
+    const sorted = [...bars].sort((a, b) => a.time - b.time);
+    if (this.anchorTimestamp === 0) {
+      this.anchorTimestamp = sorted[0].time;
+    }
+
+    for (const bar of sorted) {
+      if (bar.time < this.anchorTimestamp) continue;
+      const p = (bar.high + bar.low + bar.close) / 3;
+      const v = Math.max(1, bar.volume);
+
+      this.cumulativePV += p * v;
+      this.cumulativeVolume += v;
+      this.cumulativePV2 += p * p * v;
+
+      const vwap = this.cumulativePV / this.cumulativeVolume;
+      const variance = Math.max(0, (this.cumulativePV2 / this.cumulativeVolume) - (vwap * vwap));
+      const stdDev = Math.sqrt(variance);
+
+      const point: VWAPPoint = {
+        time: bar.time,
+        vwap,
+        upper1: vwap + stdDev,
+        lower1: vwap - stdDev,
+        upper2: vwap + 2 * stdDev,
+        lower2: vwap - 2 * stdDev,
+        upper3: vwap + 3 * stdDev,
+        lower3: vwap - 3 * stdDev,
+      };
+
+      this.history.push(point);
+      if (this.history.length > 1000) {
+        this.history.shift();
+      }
+      this.lastSampleTime = bar.time;
+    }
   }
 
   public processTick(tick: Tick): VWAPPoint | null {

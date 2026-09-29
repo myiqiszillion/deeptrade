@@ -23,6 +23,7 @@ export async function runWebSocketIntegrationTests(): Promise<void> {
     DEMO: '0',
     MAX_SESSIONS: '5',
     MAX_SESSIONS_PER_USER: '2',
+    DEFAULT_SYMBOL: 'ES',
   };
 
   const server = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {
@@ -57,13 +58,13 @@ export async function runWebSocketIntegrationTests(): Promise<void> {
     ws1.on('message', (d) => msgs1.push(JSON.parse(d.toString())));
     await once(ws1, 'open');
 
-    // Wait for default BTCUSDT INIT_STATE
+    // Wait for default ES INIT_STATE
     const initDeadline = Date.now() + 3000;
-    while (!msgs1.find((m) => m.type === 'INIT_STATE' && m.symbol === 'BTCUSDT') && Date.now() < initDeadline) {
+    while (!msgs1.find((m) => m.type === 'INIT_STATE' && m.symbol === 'ES') && Date.now() < initDeadline) {
       await sleep(50);
     }
-    const initMsg = msgs1.find((m) => m.type === 'INIT_STATE' && m.symbol === 'BTCUSDT');
-    assert.ok(initMsg, 'Client should receive INIT_STATE for default BTCUSDT');
+    const initMsg = msgs1.find((m) => m.type === 'INIT_STATE' && m.symbol === 'ES');
+    assert.ok(initMsg, 'Client should receive INIT_STATE for default ES');
 
     // 2. Subscribe to another instrument (NQ)
     ws1.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'NQ', timeframe: '1m' }));

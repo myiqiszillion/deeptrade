@@ -19,13 +19,13 @@ async function run(): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Timed out waiting for real-only smoke events')), 25000);
     ws.on('open', () => {
-      console.log('[verify] Connected — subscribing BTCUSDT (the key-less real feed)');
-      ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'BTCUSDT', timeframe: '1m' }));
+      console.log('[verify] Connected — subscribing ES (CME futures feed)');
+      ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'ES', timeframe: '1m' }));
     });
     ws.on('error', reject);
     ws.on('message', (raw) => {
       const msg = JSON.parse(raw.toString());
-      if (msg.type === 'INIT_STATE' && msg.symbol === 'BTCUSDT') {
+      if (msg.type === 'INIT_STATE' && msg.symbol === 'ES') {
         init = msg;
         console.log(
           `INIT_STATE ${msg.symbol} | feed ${msg.feedStatus} | history ${msg.historySource} | pointValue ${msg.instrument.pointValue}`

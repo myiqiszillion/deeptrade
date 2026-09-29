@@ -11,7 +11,7 @@
     "lint": "pnpm --filter client lint",
     "test": "pnpm test:protocol && pnpm test:unit && pnpm test:integration",
     "test:unit": "pnpm --filter @deepchart/server exec tsx test/unit/index.ts",
-    "test:integration": "pnpm --filter @deepchart/server exec tsx test/integration/index.ts && pnpm --filter @deepchart/server exec tsx test/integration/tradovateAdapter.test.ts && pnpm --filter @deepchart/server exec tsx test/integration/lifecycle.test.ts",
+    "test:integration": "pnpm --filter @deepchart/server exec tsx test/integration/index.ts && pnpm --filter @deepchart/server exec tsx test/integration/tradovateAdapter.test.ts && pnpm --filter @deepchart/server exec tsx test/integration/databentoAdapter.test.ts",
     "test:protocol": "node scripts/check-protocol-drift.mjs",
     "test:offline": "pnpm test",
     "test:live": "pnpm verify",

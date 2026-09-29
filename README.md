@@ -47,7 +47,7 @@
 
 ### 5. Giao Diện & Trải Nghiệm Người Dùng (UX)
 - **Đồng bộ Crosshair & Viewport**: Di chuyển chuột trên biểu đồ chính hoặc CVD Panel đều hiển thị đường ngắm đồng bộ.
-- **Định dạng giá chuẩn theo từng Instrument**: ES (0.25), NQ (0.25), YM (1.0), CL (0.01), NG (0.001), BTCUSDT (0.1). Không còn lỗi cắt cụt số thập phân.
+- **Định dạng giá chuẩn theo từng Instrument**: ES (0.25), NQ (0.25), YM (1.0), CL (0.01), NG (0.001), GC (0.10). Không còn lỗi cắt cụt số thập phân.
 - **Lưu cài đặt tự động trên trình duyệt (`localStorage`)**: Ghi nhớ mã giao dịch, timeframe, chế độ chart, và trạng thái bật/tắt các panel.
 
 ---
@@ -56,10 +56,9 @@
 
 | Instrument | Provider | History | Realtime | Footprint | DOM |
 |---|---|---|---|---|---|
-| **BTCUSDT** | Binance | ticks | aggTrade | có giới hạn | depth20 |
-| **ES/MES/NQ/MNQ** | none (mặc định) | none | unavailable | unavailable | unavailable |
-| **CME qua Tradovate** | Tradovate | bars/quote-based | tùy credential | partial | vendor-dependent |
-| **CME qua Databento** | chưa triển khai (scaffold) | unavailable | unavailable | unavailable | unavailable |
+| **ES/MES/NQ/MNQ (Default)** | none | none | unavailable | unavailable | unavailable |
+| **CME qua Tradovate** | Tradovate | bars/quote-based | live feed | quote-derived | vendor DOM L2 |
+| **CME qua Databento** | Databento | MBO / MBP-1 / historical bars | live DBN | full tick footprint | full MBO book |
 
 > **Chính sách Fail-Closed:** Khi chưa có license/credential cho nhà cung cấp futures, toàn bộ feed và lịch sử CME mặc định là `UNAVAILABLE`. Hệ thống tuyệt đối không sinh dữ liệu giả hay nến giả.
 
