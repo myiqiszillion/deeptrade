@@ -8,7 +8,7 @@ interface TerminalStatusBarProps {
   hasMoreHistory: boolean;
   sessionMode: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
   tickCount?: number;
-  latencyMs?: number;
+  latencyMs?: number | null;
 }
 
 export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
@@ -18,8 +18,8 @@ export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
   isLoadingHistory,
   hasMoreHistory,
   sessionMode,
-  tickCount = 1248321,
-  latencyMs = 24,
+  tickCount = 0,
+  latencyMs = null,
 }) => {
   const isLive = feedStatus === 'LIVE' && isConnected;
 
@@ -66,7 +66,7 @@ export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
       <div className="ml-auto flex items-center gap-3 text-[#7F8B97] text-[10px] shrink-0 font-mono">
         <span className="hidden md:inline">
           <span className="text-[#4E5965]">Latency:</span>{' '}
-          <span className="text-[#E7EDF3]">{latencyMs}ms</span>
+          <span className="text-[#E7EDF3]">{typeof latencyMs === 'number' && latencyMs > 0 ? `${latencyMs}ms` : '--'}</span>
         </span>
 
         <span className="hidden sm:inline">

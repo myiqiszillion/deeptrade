@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Search, ChevronDown, Check, Sparkles, X } from 'lucide-react';
+import { Search, ChevronDown, Check, X } from 'lucide-react';
 import { FuturesInstrument } from '../../types';
 
 export interface InstrumentOption {
@@ -11,6 +11,7 @@ export interface InstrumentOption {
   pointValue?: number;
   dayTradingMargin?: number;
   isLive?: boolean;
+  feedStatus?: 'LIVE' | 'CONNECTING' | 'UNAVAILABLE' | string;
 }
 
 interface SymbolDropdownProps {
@@ -18,6 +19,7 @@ interface SymbolDropdownProps {
   currentInstrument?: FuturesInstrument;
   onSelectSymbol: (symbol: string) => void;
   feedStatus?: 'LIVE' | 'UNAVAILABLE';
+  instruments?: InstrumentOption[];
 }
 
 const DEFAULT_INSTRUMENTS: InstrumentOption[] = [
@@ -40,7 +42,8 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
   currentSymbol,
   currentInstrument,
   onSelectSymbol,
-  feedStatus: _feedStatus,
+  feedStatus,
+  instruments,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -77,8 +80,12 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen]);
 
+  const instrumentList = useMemo(() => {
+    return instruments && instruments.length > 0 ? instruments : DEFAULT_INSTRUMENTS;
+  }, [instruments]);
+
   const filteredInstruments = useMemo(() => {
-    return DEFAULT_INSTRUMENTS.filter((item) => {
+    return instrumentList.filter((item) => {
       const matchesCategory = activeCategory === 'ALL' || item.category === activeCategory;
       const query = searchQuery.trim().toLowerCase();
       const matchesSearch =
@@ -88,15 +95,17 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
         (item.exchange && item.exchange.toLowerCase().includes(query));
       return matchesCategory && matchesSearch;
     });
-  }, [searchQuery, activeCategory]);
+  }, [instrumentList, searchQuery, activeCategory]);
 
   const activeItem =
-    DEFAULT_INSTRUMENTS.find((i) => i.symbol === currentSymbol) || {
+    instrumentList.find((i) => i.symbol === currentSymbol) || {
       symbol: currentSymbol,
       name: currentInstrument?.name || currentSymbol,
       exchange: currentInstrument?.exchange || 'CME',
       tickSize: currentInstrument?.tickSize || 0.25,
       pointValue: currentInstrument?.pointValue || 50,
+      isLive: feedStatus === 'LIVE',
+      feedStatus: feedStatus,
     };
 
   return (
@@ -218,12 +227,22 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0 pl-2">
-                    {inst.symbol === 'ES' || inst.symbol === 'NQ' ? (
+                    {inst.isLive || inst.feedStatus === 'LIVE' ? (
                       <span className="flex items-center gap-1 text-[9px] text-[#19C37D] font-mono font-medium px-1.5 py-0.2 rounded bg-[#19C37D]/10 border border-[#19C37D]/20">
-                        <Sparkles size={9} />
-                        <span>LIVE L2</span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#19C37D]" />
+                        <span>LIVE</span>
                       </span>
-                    ) : null}
+                    ) : inst.feedStatus === 'CONNECTING' ? (
+                      <span className="flex items-center gap-1 text-[9px] text-amber-400 font-mono font-medium px-1.5 py-0.2 rounded bg-amber-400/10 border border-amber-400/20">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                        <span>CONNECTING</span>
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-[9px] text-[#7F8B97] font-mono font-medium px-1.5 py-0.2 rounded bg-[#10151C] border border-[#1C2630]">
+                        <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                        <span>UNAVAILABLE</span>
+                      </span>
+                    )}
                     {isSelected && <Check size={13} className="text-[#22D3EE]" />}
                   </div>
                 </button>

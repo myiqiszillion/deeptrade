@@ -275,7 +275,8 @@ export type WSClientMessage =
       speed?: number;
       timestamp?: number;
     }
-  | { type: 'FETCH_HISTORY'; symbol: string; timeframe: string; provider?: string; beforeTime?: number; limit?: number; requestId?: string };
+  | { type: 'FETCH_HISTORY'; symbol: string; timeframe: string; provider?: string; beforeTime?: number; limit?: number; requestId?: string }
+  | { type: 'PING'; timestamp?: number };
 
 export type WSServerMessage =
   | {
@@ -311,6 +312,7 @@ export type WSServerMessage =
   | { type: 'GEX_UPDATE'; profile: GEXProfile }
   | { type: 'OPTIONS_FLOW'; trade: OptionsFlowTrade }
   | { type: 'REPLAY_STATE'; progress: ReplayProgress }
+  | { type: 'PONG'; timestamp: number }
   | { type: 'ERROR'; code: string; message: string }
   | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; provider?: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number | { provider: string; symbol: string; timeframe?: string; beforeTime: number; beforeId?: string }; requestId?: string };
 

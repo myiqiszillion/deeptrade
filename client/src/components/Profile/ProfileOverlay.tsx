@@ -82,70 +82,92 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
         <div className="flex items-center justify-between bg-white/[0.03] px-2 py-1 rounded border border-white/5">
           <span className="text-slate-400 text-[10px] font-sans">VAH:</span>
           <span className="text-sky-400 font-bold tabular-nums">
-            {formatPrice(activeTab === 'VP' ? volumeProfile.vah : tpoProfile.vah, tickSize)}
+            {(activeTab === 'VP' ? volumeProfile.vah : tpoProfile.vah) > 0
+              ? formatPrice(activeTab === 'VP' ? volumeProfile.vah : tpoProfile.vah, tickSize)
+              : '—'}
           </span>
         </div>
         <div className="flex items-center justify-between bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20">
           <span className="text-amber-400/80 text-[10px] font-sans">POC:</span>
           <span className="text-amber-300 font-bold tabular-nums">
-            {formatPrice(activeTab === 'VP' ? volumeProfile.poc : tpoProfile.poc, tickSize)}
+            {(activeTab === 'VP' ? volumeProfile.poc : tpoProfile.poc) > 0
+              ? formatPrice(activeTab === 'VP' ? volumeProfile.poc : tpoProfile.poc, tickSize)
+              : '—'}
           </span>
         </div>
         <div className="flex items-center justify-between bg-white/[0.03] px-2 py-1 rounded border border-white/5">
           <span className="text-slate-400 text-[10px] font-sans">VAL:</span>
           <span className="text-sky-400 font-bold tabular-nums">
-            {formatPrice(activeTab === 'VP' ? volumeProfile.val : tpoProfile.val, tickSize)}
+            {(activeTab === 'VP' ? volumeProfile.val : tpoProfile.val) > 0
+              ? formatPrice(activeTab === 'VP' ? volumeProfile.val : tpoProfile.val, tickSize)
+              : '—'}
           </span>
         </div>
       </div>
 
       {/* Main Profile View */}
-      <div className="flex-1 overflow-y-auto font-mono text-[10px] custom-scrollbar">
+      <div className="flex-1 overflow-y-auto font-mono text-[10px] custom-scrollbar flex flex-col">
         {activeTab === 'VP' ? (
-          <div className="divide-y divide-white/[0.03]">
-            {sortedVpLevels.slice(0, 100).map((lvl) => {
-              const isPOC = Math.abs(lvl.price - volumeProfile.poc) < (tickSize || 0.1);
-              const isVAH = Math.abs(lvl.price - volumeProfile.vah) < (tickSize || 0.1);
-              const isVAL = Math.abs(lvl.price - volumeProfile.val) < (tickSize || 0.1);
-              const isCurrent = Math.abs(lvl.price - currentPrice) < (tickSize ? tickSize * 2 : 0.5);
-              const barPercent = Math.min(100, (lvl.volume / maxVolume) * 100);
+          sortedVpLevels.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-500 font-sans text-xs gap-2 my-auto">
+              <span className="font-semibold text-slate-400 text-[11px]">VOLUME PROFILE UNAVAILABLE</span>
+              <span className="text-[10px] text-slate-500 max-w-[200px]">
+                No volume distribution data available yet for this instrument session.
+              </span>
+            </div>
+          ) : (
+            <div className="divide-y divide-white/[0.03]">
+              {sortedVpLevels.slice(0, 100).map((lvl) => {
+                const isPOC = Math.abs(lvl.price - volumeProfile.poc) < (tickSize || 0.1);
+                const isVAH = Math.abs(lvl.price - volumeProfile.vah) < (tickSize || 0.1);
+                const isVAL = Math.abs(lvl.price - volumeProfile.val) < (tickSize || 0.1);
+                const isCurrent = Math.abs(lvl.price - currentPrice) < (tickSize ? tickSize * 2 : 0.5);
+                const barPercent = Math.min(100, (lvl.volume / maxVolume) * 100);
 
-              return (
-                <div
-                  key={lvl.price}
-                  className={`relative flex items-center justify-between px-2.5 py-1 hover:bg-white/5 transition-colors ${
-                    isCurrent ? 'bg-amber-500/15' : ''
-                  }`}
-                >
-                  {/* Volume Bar Fill */}
+                return (
                   <div
-                    className={`absolute top-0 bottom-0 left-0 opacity-20 pointer-events-none transition-all ${
-                      lvl.delta >= 0 ? 'bg-emerald-500' : 'bg-rose-500'
+                    key={lvl.price}
+                    className={`relative flex items-center justify-between px-2.5 py-1 hover:bg-white/5 transition-colors ${
+                      isCurrent ? 'bg-amber-500/15' : ''
                     }`}
-                    style={{ width: `${barPercent}%` }}
-                  />
+                  >
+                    {/* Volume Bar Fill */}
+                    <div
+                      className={`absolute top-0 bottom-0 left-0 opacity-20 pointer-events-none transition-all ${
+                        lvl.delta >= 0 ? 'bg-emerald-500' : 'bg-rose-500'
+                      }`}
+                      style={{ width: `${barPercent}%` }}
+                    />
 
-                  {/* Price with markers */}
-                  <div className="relative z-10 flex items-center gap-1.5 tabular-nums">
-                    <span className={`${isPOC ? 'text-amber-400 font-bold' : isVAH || isVAL ? 'text-sky-400 font-semibold' : 'text-slate-300'}`}>
-                      {formatPrice(lvl.price, tickSize)}
-                    </span>
-                    {isPOC && <span className="text-[9px] px-1 py-0.2 bg-amber-500/25 text-amber-300 border border-amber-500/40 rounded font-bold">POC</span>}
-                    {isVAH && <span className="text-[9px] px-1 py-0.2 bg-sky-500/25 text-sky-300 border border-sky-500/40 rounded">VAH</span>}
-                    {isVAL && <span className="text-[9px] px-1 py-0.2 bg-sky-500/25 text-sky-300 border border-sky-500/40 rounded">VAL</span>}
-                  </div>
+                    {/* Price with markers */}
+                    <div className="relative z-10 flex items-center gap-1.5 tabular-nums">
+                      <span className={`${isPOC ? 'text-amber-400 font-bold' : isVAH || isVAL ? 'text-sky-400 font-semibold' : 'text-slate-300'}`}>
+                        {formatPrice(lvl.price, tickSize)}
+                      </span>
+                      {isPOC && <span className="text-[9px] px-1 py-0.2 bg-amber-500/25 text-amber-300 border border-amber-500/40 rounded font-bold">POC</span>}
+                      {isVAH && <span className="text-[9px] px-1 py-0.2 bg-sky-500/25 text-sky-300 border border-sky-500/40 rounded">VAH</span>}
+                      {isVAL && <span className="text-[9px] px-1 py-0.2 bg-sky-500/25 text-sky-300 border border-sky-500/40 rounded">VAL</span>}
+                    </div>
 
-                  {/* Volume and Delta */}
-                  <div className="relative z-10 flex items-center gap-2.5 tabular-nums">
-                    <span className="text-slate-300 font-medium">{formatVolume(lvl.volume)}</span>
-                    <span className={`w-12 text-right font-semibold ${lvl.delta >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {lvl.delta >= 0 ? '+' : ''}
-                      {formatVolume(lvl.delta)}
-                    </span>
+                    {/* Volume and Delta */}
+                    <div className="relative z-10 flex items-center gap-2.5 tabular-nums">
+                      <span className="text-slate-300 font-medium">{formatVolume(lvl.volume)}</span>
+                      <span className={`w-12 text-right font-semibold ${lvl.delta >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {lvl.delta >= 0 ? '+' : ''}
+                        {formatVolume(lvl.delta)}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
+          )
+        ) : aggregatedTpo.prices.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-500 font-sans text-xs gap-2 my-auto">
+            <span className="font-semibold text-slate-400 text-[11px]">MARKET PROFILE UNAVAILABLE</span>
+            <span className="text-[10px] text-slate-500 max-w-[200px]">
+              No TPO bracket data available yet for this instrument session.
+            </span>
           </div>
         ) : (
           <div className="divide-y divide-white/[0.03]">

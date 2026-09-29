@@ -6,6 +6,7 @@ import {
   calculatePriceToY,
   calculateYToPrice,
   clampScale,
+  findBarIndexByTime,
   getNicePriceStep,
 } from '../../services/viewportMath';
 import { ChartTooltip, TooltipData } from './ChartTooltip';
@@ -52,21 +53,6 @@ interface ClusterRow {
 const GUTTER_WIDTH = 76;
 const FOOTER_HEIGHT = 38;
 
-function findBarIndexByTime(time: number, barsList: FootprintBar[]): number {
-  if (barsList.length === 0) return -1;
-  const barInterval = barsList.length >= 2 ? Math.max(1000, barsList[1].time - barsList[0].time) : 60000;
-  for (let i = barsList.length - 1; i >= 0; i--) {
-    if (time >= barsList[i].time && time < barsList[i].time + barInterval) {
-      return i;
-    }
-    if (time >= barsList[i].time) {
-      return i;
-    }
-  }
-  if (Math.abs(time - barsList[0].time) < barInterval) return 0;
-  return -1;
-}
-
 export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   bars,
   historyBars,
@@ -85,7 +71,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   timeframe,
   isLive = false,
   sessionMode = 'LIVE',
-  chartMode = 'footprint',
+  chartMode: _chartMode = 'footprint',
   viewport: propsViewport,
   onViewportChange,
   crosshairX,
@@ -136,6 +122,24 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const mousePosRef = useRef<{ x: number; y: number } | null>(null);
   const lastFittedDatasetRef = useRef<string | null>(null);
+
+  // Dirty rendering scheduler: canvas renders only on dirty events (interactions, new data, resize)
+  const isDirtyRef = useRef(true);
+  const rafIdRef = useRef<number | null>(null);
+  const renderCanvasRef = useRef<() => void>(() => {});
+
+  const requestRender = useCallback(() => {
+    isDirtyRef.current = true;
+    if (rafIdRef.current === null) {
+      rafIdRef.current = requestAnimationFrame(() => {
+        rafIdRef.current = null;
+        if (isDirtyRef.current) {
+          isDirtyRef.current = false;
+          renderCanvasRef.current();
+        }
+      });
+    }
+  }, []);
 
   // Tooltip HUD state
   const [tooltipData, setTooltipData] = useState<TooltipData | null>(null);
@@ -278,6 +282,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
       panX: viewport.panX,
       panY: viewport.panY,
     };
+    requestRender();
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -287,6 +292,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     const curX = e.clientX - rect.left;
     const curY = e.clientY - rect.top;
     mousePosRef.current = { x: curX, y: curY };
+    requestRender();
 
     if (onCrosshairChange) {
       onCrosshairChange(curX < canvas.clientWidth - GUTTER_WIDTH ? curX : null);
@@ -476,6 +482,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
 
   const handleMouseUp = () => {
     isDraggingRef.current = false;
+    requestRender();
   };
 
   const handleMouseLeave = () => {
@@ -485,11 +492,13 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     if (onCrosshairChange) {
       onCrosshairChange(null);
     }
+    requestRender();
   };
 
   // Double-click = reset/fit view
   const handleDoubleClick = () => {
     fitViewport();
+    requestRender();
   };
 
   // Wheel zoom (Shift = Y price scale, Normal = X candle width)
@@ -512,23 +521,21 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
           barWidth: clampScale(prev.barWidth, factor, 40, 260),
         }));
       }
+      requestRender();
     };
 
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => {
       canvas.removeEventListener('wheel', onWheel);
     };
-  }, [updateViewport]);
+  }, [updateViewport, requestRender]);
 
-  // Main Canvas Render Loop
-  useEffect(() => {
-    let animationId: number;
-
-    const render = () => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+  // Main Canvas Render Logic (Dirty-flag driven, NO infinite 60fps loop)
+  const render = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
       const cssWidth = canvas.parentElement?.clientWidth || 800;
       const cssHeight = canvas.parentElement?.clientHeight || 600;
@@ -603,6 +610,14 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
           ctx.fillText(formatPrice(p, tickSize), width - 6, y + 3.5);
         }
       }
+
+      // --- CLIP MAIN CHART DRAWING AREA (0, 0, chartWidth, chartHeight) ---
+      // Ensures candles, wicks, clusters, POC, VWAP, signals, and gamma lines
+      // never bleed into the right price gutter or bottom axis footer.
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, chartWidth, chartHeight);
+      ctx.clip();
 
       // 5. Anchored VWAP Overlay (Secondary)
       if (showVWAP && vwapPoints.length > 0) {
@@ -901,24 +916,6 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
             ctx.fillText(formatVolume(row.askVol), barX + cellWidth + 4, textY);
           }
         });
-
-        // D. Compact Delta & Volume Text directly BELOW candle
-        // Example: +184 Δ / 2.4K (No pill, no card, pure compact text)
-        if (showDeltaNumbers) {
-          const deltaY = chartHeight + 14;
-          const isPos = bar.delta >= 0;
-
-          // Line 1: Delta text (clean integer)
-          ctx.font = '600 10px JetBrains Mono, monospace';
-          ctx.textAlign = 'center';
-          ctx.fillStyle = isPos ? '#22C55E' : '#EF4444';
-          ctx.fillText(`${isPos ? '+' : ''}${formatVolume(bar.delta)} Δ`, barCenterX, deltaY);
-
-          // Line 2: Volume text (clean integer / K)
-          ctx.font = '400 9px JetBrains Mono, monospace';
-          ctx.fillStyle = '#64748B';
-          ctx.fillText(formatVolume(bar.volume), barCenterX, deltaY + 13);
-        }
       });
 
       // 8. Institutional Signals: Render attached to originating candle and price level
@@ -1051,6 +1048,36 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         ctx.restore();
       }
 
+      // Close main chart clipping region
+      ctx.restore();
+
+      // --- COMPACT DELTA & VOLUME TEXT IN FOOTER (clipped to chartWidth) ---
+      if (showDeltaNumbers) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, chartHeight, chartWidth, FOOTER_HEIGHT);
+        ctx.clip();
+        bars.forEach((bar, barIndex) => {
+          const barX = viewport.panX + barIndex * barStep;
+          if (barX + viewport.barWidth < 0 || barX > chartWidth) return;
+          const barCenterX = barX + viewport.barWidth / 2;
+          const deltaY = chartHeight + 14;
+          const isPos = bar.delta >= 0;
+
+          // Line 1: Delta text (clean integer)
+          ctx.font = '600 10px JetBrains Mono, monospace';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = isPos ? '#22C55E' : '#EF4444';
+          ctx.fillText(`${isPos ? '+' : ''}${formatVolume(bar.delta)} Δ`, barCenterX, deltaY);
+
+          // Line 2: Volume text (clean integer / K)
+          ctx.font = '400 9px JetBrains Mono, monospace';
+          ctx.fillStyle = '#64748B';
+          ctx.fillText(formatVolume(bar.volume), barCenterX, deltaY + 13);
+        });
+        ctx.restore();
+      }
+
       // 10. Clean Current Price Marker on Right Axis
       ctx.strokeStyle = 'rgba(245, 185, 66, 0.45)';
       ctx.lineWidth = 1;
@@ -1103,33 +1130,43 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         }
         ctx.setLineDash([]);
       }
+      // Frame rendered — no recursive animation loop!
+    },
+    [
+      bars,
+      historyBars,
+      currentPrice,
+      vwapPoints,
+      deepTrades,
+      absorptions,
+      showVWAP,
+      showImbalances,
+      showDeltaNumbers,
+      signalFilters,
+      tickSize,
+      viewport,
+      gexProfile,
+      priceToY,
+      yToPrice,
+      clusterMultiplier,
+      crosshairX,
+    ]
+  );
 
-      animationId = requestAnimationFrame(render);
+  // Hook render into dirty scheduler and trigger whenever render callback updates
+  useEffect(() => {
+    renderCanvasRef.current = render;
+    requestRender();
+  }, [render, requestRender]);
+
+  // Clean up any pending frame on unmount
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
     };
-
-    animationId = requestAnimationFrame(render);
-    return () => cancelAnimationFrame(animationId);
-  }, [
-    bars,
-    historyBars,
-    isLive,
-    currentPrice,
-    vwapPoints,
-    deepTrades,
-    absorptions,
-    showVWAP,
-    showImbalances,
-    showDeltaNumbers,
-    signalFilters,
-    tickSize,
-    viewport,
-    gexProfile,
-    priceToY,
-    yToPrice,
-    chartMode,
-    clusterMultiplier,
-    crosshairX,
-  ]);
+  }, []);
 
   return (
     <div

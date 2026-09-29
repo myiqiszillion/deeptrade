@@ -17,6 +17,7 @@ export async function runWebSocketIntegrationTests(): Promise<void> {
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    NODE_ENV: 'test',
     PORT: String(port),
     HOST: '127.0.0.1',
     DEV_HOOKS: '1',

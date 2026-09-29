@@ -59,6 +59,7 @@ export interface WSListeners {
     requestId?: string;
   }) => void;
   onError?: (error: { code: string; message: string }) => void;
+  onLatencyUpdate?: (latencyMs: number) => void;
 }
 
 export class DeepChartWSClient {
@@ -68,6 +69,7 @@ export class DeepChartWSClient {
   private isConnected = false;
   private reconnectTimer: any = null;
   private disconnectTimer: any = null;
+  private pingTimer: any = null;
   private intentionalClose = false;
 
   constructor(url?: string) {
@@ -125,6 +127,7 @@ export class DeepChartWSClient {
       this.ws.onopen = () => {
         this.isConnected = true;
         this.listeners.onConnectionChange?.(true);
+        this.startPing();
         console.log('[DeepChart WS] Connected to server.');
       };
 
@@ -174,6 +177,12 @@ export class DeepChartWSClient {
             case 'HISTORY_RESPONSE':
               this.listeners.onHistoryResponse?.(msg);
               break;
+            case 'PONG':
+              if (typeof (msg as any).timestamp === 'number') {
+                const rtt = Math.max(1, Date.now() - (msg as any).timestamp);
+                this.listeners.onLatencyUpdate?.(rtt);
+              }
+              break;
             case 'ERROR':
               this.listeners.onError?.(msg);
               break;
@@ -184,8 +193,10 @@ export class DeepChartWSClient {
       };
 
       this.ws.onclose = () => {
+        this.stopPing();
         this.isConnected = false;
         this.listeners.onConnectionChange?.(false);
+        this.listeners.onLatencyUpdate?.(0);
         if (this.intentionalClose) {
           console.log('[DeepChart WS] Disconnected (intentional).');
           return;
@@ -258,8 +269,29 @@ export class DeepChartWSClient {
     });
   }
 
+  private startPing() {
+    this.stopPing();
+    const sendPing = () => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        try {
+          this.ws.send(JSON.stringify({ type: 'PING', timestamp: Date.now() }));
+        } catch {}
+      }
+    };
+    sendPing();
+    this.pingTimer = setInterval(sendPing, 5000);
+  }
+
+  private stopPing() {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+  }
+
   public disconnect() {
     this.intentionalClose = true;
+    this.stopPing();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

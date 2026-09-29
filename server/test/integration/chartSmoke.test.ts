@@ -17,6 +17,7 @@ export async function runChartSmokeTests(): Promise<void> {
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    NODE_ENV: 'test',
     PORT: String(port),
     HOST: '127.0.0.1',
     FUTURES_PROVIDER: 'tradovate',

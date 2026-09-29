@@ -27,6 +27,7 @@ import { TerminalHeader } from './components/Navigation/TerminalHeader';
 import { ChartToolbar, SignalFilters } from './components/Navigation/ChartToolbar';
 import { WorkspaceDock } from './components/Navigation/WorkspaceDock';
 import { TerminalStatusBar } from './components/Status/TerminalStatusBar';
+import { InstrumentOption } from './components/Navigation/SymbolDropdown';
 import { X, BookOpen } from 'lucide-react';
 
 const POPULAR_FUTURES = [
@@ -138,17 +139,17 @@ export const App: React.FC = () => {
     lastUpdateId: 0,
   });
   const [volumeProfile, setVolumeProfile] = useState<VolumeProfileData>({
-    poc: 5850,
-    vah: 5860,
-    val: 5840,
+    poc: 0,
+    vah: 0,
+    val: 0,
     totalVolume: 0,
     levels: [],
   });
   const [tpoProfile, setTpoProfile] = useState<TPOProfileData>({
-    poc: 5850,
-    vah: 5860,
-    val: 5840,
-    initialBalance: { high: 5860, low: 5840 },
+    poc: 0,
+    vah: 0,
+    val: 0,
+    initialBalance: { high: 0, low: 0 },
     brackets: [],
     priceLevels: {},
   });
@@ -203,7 +204,7 @@ export const App: React.FC = () => {
     savedSettings.activePanel === null ? null :
       ['DOM', 'Profile', 'Tape', 'GEX', 'Flow'].includes(savedSettings.activePanel ?? '') ? savedSettings.activePanel : 'DOM'
   );
-  const [instrumentsList, setInstrumentsList] = useState(POPULAR_FUTURES);
+  const [instrumentsList, setInstrumentsList] = useState<InstrumentOption[]>(POPULAR_FUTURES);
   const [showSystemStatus, setShowSystemStatus] = useState(false);
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -222,7 +223,8 @@ export const App: React.FC = () => {
     gamma: true,
     whale: true,
   });
-  const [tickCount, setTickCount] = useState<number>(1248321);
+  const [tickCount, setTickCount] = useState<number>(0);
+  const [latencyMs, setLatencyMs] = useState<number | null>(null);
 
   // Load dynamic instrument capabilities from server
   useEffect(() => {
@@ -231,7 +233,14 @@ export const App: React.FC = () => {
         setInstrumentsList(
           list.map((i) => ({
             symbol: i.symbol,
-            name: `${i.name} (${i.isLive ? 'Live' : i.exchange})`,
+            name: i.name,
+            exchange: i.exchange,
+            category: i.category,
+            tickSize: i.tickSize,
+            pointValue: i.pointValue,
+            dayTradingMargin: i.dayTradingMargin,
+            isLive: i.isLive,
+            feedStatus: i.feedStatus,
           }))
         );
       }
@@ -264,9 +273,15 @@ export const App: React.FC = () => {
   // Connect WebSocket & Register Listeners
   useEffect(() => {
     wsClient.setListeners({
+      onLatencyUpdate: (lat) => {
+        setLatencyMs(lat > 0 ? lat : null);
+      },
       onConnectionChange: (connected) => {
         setIsConnected(connected);
-        if (!connected) setFeedStatus('UNAVAILABLE');
+        if (!connected) {
+          setFeedStatus('UNAVAILABLE');
+          setLatencyMs(null);
+        }
       },
       onInitState: (data) => {
         // After a reconnect the server may be back on its default contract or timeframe. Ask it to
@@ -285,6 +300,8 @@ export const App: React.FC = () => {
         if (data.symbol !== symbolRef.current) {
           symbolRef.current = data.symbol;
           setBars([]);
+          setVolumeProfile({ poc: 0, vah: 0, val: 0, totalVolume: 0, levels: [] });
+          setTpoProfile({ poc: 0, vah: 0, val: 0, initialBalance: { high: 0, low: 0 }, brackets: [], priceLevels: {} });
         }
         pendingTicksRef.current = [];
         setRecentTicks([]);
@@ -745,7 +762,7 @@ export const App: React.FC = () => {
         hasMoreHistory={hasMoreHistory}
         sessionMode={sessionMode}
         tickCount={tickCount}
-        latencyMs={isConnected ? 24 : 0}
+        latencyMs={isConnected ? latencyMs : null}
       />
 
       {/* System Status Diagnostics Modal */}

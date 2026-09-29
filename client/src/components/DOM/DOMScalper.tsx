@@ -20,28 +20,8 @@ export const DOMLadder: React.FC<DOMLadderProps> = ({
   const spreadRef = useRef<HTMLDivElement | null>(null);
 
   const isDepthActive = orderbook.bids.length + orderbook.asks.length > 0;
-  let asks = [...orderbook.asks].reverse(); // Asks sorted high to low down to best ask
-  let bids = [...orderbook.bids]; // Bids sorted highest first
-
-  if (!isDepthActive && currentPrice > 0) {
-    const t = tickSize || 0.25;
-    asks = [];
-    for (let i = 20; i >= 1; i--) {
-      asks.push({
-        price: Number((currentPrice + i * t).toFixed(4)),
-        size: 0,
-        pullingStacking: 0,
-      });
-    }
-    bids = [];
-    for (let i = 1; i <= 20; i++) {
-      bids.push({
-        price: Number((currentPrice - i * t).toFixed(4)),
-        size: 0,
-        pullingStacking: 0,
-      });
-    }
-  }
+  const asks = [...orderbook.asks].reverse(); // Asks sorted high to low down to best ask
+  const bids = [...orderbook.bids]; // Bids sorted highest first
 
   const maxBookSize = Math.max(
     1,
@@ -77,27 +57,29 @@ export const DOMLadder: React.FC<DOMLadderProps> = ({
             className={`w-1.5 h-1.5 rounded-full ${
               isDepthActive
                 ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
-                : 'bg-amber-400'
+                : 'bg-slate-500'
             }`}
           />
-          <span>{isDepthActive ? 'Realtime Depth L2' : 'Standby / Price Ladder'}</span>
+          <span>{isDepthActive ? 'Realtime Depth L2' : 'Feed: Unavailable'}</span>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={scrollToCenter}
-            className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[9px] font-sans font-semibold transition-colors"
-            title="Center DOM on active price"
-          >
-            Center
-          </button>
+          {isDepthActive && (
+            <button
+              onClick={scrollToCenter}
+              className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[9px] font-sans font-semibold transition-colors"
+              title="Center DOM on active price"
+            >
+              Center
+            </button>
+          )}
           <span
             className={`px-1.5 py-0.5 rounded font-semibold text-[9px] tracking-wide ${
               isDepthActive
                 ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25'
-                : 'bg-amber-500/15 text-amber-400 border border-amber-500/25'
+                : 'bg-slate-800 text-slate-400 border border-slate-700'
             }`}
           >
-            {isDepthActive ? 'L2 ACTIVE' : 'STANDBY'}
+            {isDepthActive ? 'L2 ACTIVE' : 'FEED: UNAVAILABLE'}
           </span>
         </div>
       </div>
@@ -112,16 +94,22 @@ export const DOMLadder: React.FC<DOMLadderProps> = ({
       {/* DOM Rows */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-y-auto divide-y divide-white/[0.03] text-[11px] custom-scrollbar"
+        className="flex-1 overflow-y-auto divide-y divide-white/[0.03] text-[11px] custom-scrollbar flex flex-col"
       >
-        {bids.length + asks.length === 0 && (
-          <div className="p-8 text-center text-slate-500 font-sans text-xs">
-            Waiting for order book depth records for {symbol}...
+        {!isDepthActive || bids.length + asks.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-500 font-sans text-xs gap-2.5 my-auto">
+            <div className="w-9 h-9 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-500">
+              <span className="w-2 h-2 rounded-full bg-slate-600" />
+            </div>
+            <div className="font-semibold text-slate-400 tracking-wide text-[11px]">FEED: UNAVAILABLE</div>
+            <div className="text-[10px] text-slate-500 max-w-[210px] leading-relaxed">
+              No live orderbook depth records available for <strong className="text-slate-400 font-normal">{symbol}</strong>. Actual DOM levels will populate when depth stream connects.
+            </div>
           </div>
-        )}
-
-        {/* Asks (Red side) */}
-        {asks.slice(-25).map((ask) => {
+        ) : (
+          <>
+            {/* Asks (Red side) */}
+            {asks.slice(-25).map((ask) => {
           const depthPercent = (ask.size / maxBookSize) * 100;
           const ps = ask.pullingStacking || 0;
 
@@ -222,6 +210,8 @@ export const DOMLadder: React.FC<DOMLadderProps> = ({
             </div>
           );
         })}
+          </>
+        )}
       </div>
 
       {/* Depth Totals Footer */}

@@ -1,7 +1,7 @@
 import React from 'react';
 import { Activity, Play, HelpCircle, PanelRight } from 'lucide-react';
 import { FuturesInstrument } from '../../types';
-import { SymbolDropdown } from './SymbolDropdown';
+import { InstrumentOption, SymbolDropdown } from './SymbolDropdown';
 import { formatPrice } from '../../services/priceFormat';
 
 interface TerminalHeaderProps {
@@ -22,7 +22,7 @@ interface TerminalHeaderProps {
   onTogglePanel: () => void;
   highPrice?: number;
   lowPrice?: number;
-  instrumentsList?: { symbol: string; name: string }[];
+  instrumentsList?: InstrumentOption[];
 }
 
 export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
@@ -43,7 +43,7 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
   onTogglePanel,
   highPrice,
   lowPrice,
-  instrumentsList: _instrumentsList,
+  instrumentsList,
 }) => {
   const tickSize = instrument?.tickSize || 0.25;
   const isLiveFeed = feedStatus === 'LIVE' && isConnected;
@@ -67,6 +67,7 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
         currentInstrument={instrument}
         onSelectSymbol={onSelectSymbol}
         feedStatus={feedStatus}
+        instruments={instrumentsList}
       />
 
       {/* 3. Primary Current Price (Strongest Visual Hierarchy) */}

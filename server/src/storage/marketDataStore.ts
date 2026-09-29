@@ -64,7 +64,7 @@ export class MarketDataStore {
     if (!resolvedPath) {
       if (process.env.STORAGE_PATH) {
         resolvedPath = resolve(process.env.STORAGE_PATH);
-      } else if (process.env.NODE_ENV === 'test' || process.env.DEV_HOOKS === '1') {
+      } else if (process.env.NODE_ENV === 'test') {
         resolvedPath = ':memory:';
       } else {
         const dataDir = resolve(process.cwd(), 'data');

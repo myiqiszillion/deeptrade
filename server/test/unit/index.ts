@@ -5,6 +5,7 @@ import { runSessionCalendarTests } from './sessionCalendar.test.js';
 import { runFootprintEngineTests } from './footprintEngine.test.js';
 import { runReplaySessionTests } from './replaySession.test.js';
 import { runValidateTests } from './validate.test.js';
+import { runRegressionAuditTests } from './regression_audit.test.js';
 
 async function main() {
   console.log('======================================================');
@@ -19,6 +20,7 @@ async function main() {
   await runFootprintEngineTests();
   await runReplaySessionTests();
   await runValidateTests();
+  await runRegressionAuditTests();
 
   const elapsed = Date.now() - start;
   console.log('\n======================================================');

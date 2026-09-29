@@ -70,24 +70,63 @@ export function saveStoredToken(token: string): void {
   } catch {}
 }
 
-async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T | null> {
+export class ApiError extends Error {
+  public statusCode: number;
+  public data: any;
+
+  constructor(message: string, statusCode: number, data?: any) {
+    super(message);
+    this.name = 'ApiError';
+    this.statusCode = statusCode;
+    this.data = data;
+  }
+}
+
+async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getStoredToken();
   const headers: Record<string, string> = {
     Accept: 'application/json',
-    ...(options.headers as Record<string, string> || {}),
+    ...((options.headers as Record<string, string>) || {}),
   };
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
+  let res: Response;
   try {
-    const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
+    res = await fetch(`${API_BASE}${path}`, { ...options, headers });
   } catch (err) {
-    console.warn(`[DeepChart API] Error calling ${path}:`, err);
-    return null;
+    console.warn(`[DeepChart API] Network failure calling ${path}:`, err);
+    throw new ApiError(
+      err instanceof Error ? err.message : 'Network error or service unreachable',
+      0,
+      err
+    );
   }
+
+  if (!res.ok) {
+    let errorBody: any = null;
+    try {
+      errorBody = await res.json();
+    } catch {
+      try {
+        errorBody = await res.text();
+      } catch {}
+    }
+    const message =
+      (errorBody && typeof errorBody === 'object' && errorBody.message)
+        ? errorBody.message
+        : (errorBody && typeof errorBody === 'object' && errorBody.error)
+        ? errorBody.error
+        : `HTTP Error ${res.status}: ${res.statusText}`;
+    throw new ApiError(message, res.status, errorBody);
+  }
+
+  if (res.status === 204 || res.headers.get('content-length') === '0') {
+    return null as T;
+  }
+
+  return (await res.json()) as T;
 }
 
 export const deepchartApi = {
@@ -96,11 +135,11 @@ export const deepchartApi = {
     return data?.instruments || [];
   },
 
-  async getInstrument(symbol: string): Promise<{ instrument: FuturesInstrument; feedStatus: string; provider: string } | null> {
+  async getInstrument(symbol: string): Promise<{ instrument: FuturesInstrument; feedStatus: string; provider: string }> {
     return apiFetch<{ instrument: FuturesInstrument; feedStatus: string; provider: string }>(`/api/v1/instruments/${symbol}`);
   },
 
-  async getStatus(): Promise<SystemStatus | null> {
+  async getStatus(): Promise<SystemStatus> {
     return apiFetch<SystemStatus>('/api/v1/status');
   },
 
@@ -109,7 +148,7 @@ export const deepchartApi = {
     return data?.coverage || [];
   },
 
-  async getGex(symbol = 'SPX'): Promise<GEXProfile | null> {
+  async getGex(symbol = 'SPX'): Promise<GEXProfile> {
     return apiFetch<GEXProfile>(`/api/v1/gex?symbol=${encodeURIComponent(symbol)}`);
   },
 
@@ -126,11 +165,11 @@ export const deepchartApi = {
     return data?.trades || [];
   },
 
-  async getReplayStats(symbol: string): Promise<ReplayStats | null> {
+  async getReplayStats(symbol: string): Promise<ReplayStats> {
     return apiFetch<ReplayStats>(`/api/v1/replay/stats?symbol=${encodeURIComponent(symbol)}`);
   },
 
-  async login(username = 'guest', role: 'user' | 'admin' = 'user'): Promise<{ token: string; user: any } | null> {
+  async login(username = 'guest', role: 'user' | 'admin' = 'user'): Promise<{ token: string; user: any }> {
     const res = await apiFetch<{ token: string; user: any }>('/api/v1/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -142,7 +181,7 @@ export const deepchartApi = {
     return res;
   },
 
-  async getMe(): Promise<{ user: any; entitlements: any[] } | null> {
+  async getMe(): Promise<{ user: any; entitlements: any[] }> {
     return apiFetch<{ user: any; entitlements: any[] }>('/api/v1/auth/me');
   },
 };

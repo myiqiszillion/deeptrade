@@ -23,6 +23,8 @@ export const SystemStatusModal: React.FC<SystemStatusModalProps> = ({ isOpen, on
       ]);
       setStatus(statusData);
       setCoverage(coverageData);
+    } catch (err) {
+      console.warn('[SystemStatusModal] Error refreshing status:', err);
     } finally {
       setIsLoading(false);
     }

@@ -68,3 +68,25 @@ export function getNicePriceStep(
   const niceStep = niceMultiplier * power;
   return Math.max(tickSize, Math.round(niceStep / tickSize) * tickSize);
 }
+
+/**
+ * Maps a timestamp to a bar index in barsList.
+ * Returns -1 if the timestamp is strictly before the first bar or strictly after the last bar's duration.
+ * Never snaps out-of-range timestamps to bar 0 or last bar.
+ */
+export function findBarIndexByTime(time: number, barsList: Array<{ time: number }>): number {
+  if (!barsList || barsList.length === 0) return -1;
+  const barInterval = barsList.length >= 2 ? Math.max(1000, barsList[1].time - barsList[0].time) : 60000;
+  const earliest = barsList[0].time;
+  const latest = barsList[barsList.length - 1].time + barInterval;
+  if (time < earliest || time >= latest) return -1;
+
+  for (let i = 0; i < barsList.length; i++) {
+    const nextTime = i < barsList.length - 1 ? barsList[i + 1].time : (barsList[i].time + barInterval);
+    if (time >= barsList[i].time && time < nextTime) {
+      return i;
+    }
+  }
+  return -1;
+}
+

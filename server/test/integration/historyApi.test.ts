@@ -16,6 +16,7 @@ export async function runHistoryApiTests(): Promise<void> {
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    NODE_ENV: 'test',
     PORT: String(port),
     HOST: '127.0.0.1',
     DEV_HOOKS: '1',
@@ -64,7 +65,33 @@ export async function runHistoryApiTests(): Promise<void> {
     assert.equal(nqData.provider, 'tradovate');
     assert.ok(Array.isArray(nqData.bars));
 
-    console.log('  [PASS] /api/v1/history integration tests passed.');
+    // 3. P0 Auth Regression: Client cannot self-assign admin role via POST /api/v1/auth/login
+    const loginRes = await fetch(`${base}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'attacker',
+        role: 'admin',
+      }),
+    });
+    assert.equal(loginRes.status, 200, 'Login should succeed');
+    const loginData = (await loginRes.json()) as any;
+    assert.ok(loginData.token, 'Should receive token');
+    assert.equal(loginData.user.role, 'user', 'Client MUST NOT be able to self-assign admin role in user response');
+    const tokenParts = loginData.token.split('.');
+    const payload = JSON.parse(Buffer.from(tokenParts[1], 'base64url').toString('utf8'));
+    assert.equal(payload.role, 'user', 'JWT token role MUST NOT be admin');
+
+    // 4. P2 Instruments API: Returns dynamic instruments list
+    const instRes = await fetch(`${base}/api/v1/instruments`);
+    assert.equal(instRes.status, 200);
+    const instData = (await instRes.json()) as any;
+    assert.ok(Array.isArray(instData.instruments), 'Instruments API must return instruments array');
+    const es = instData.instruments.find((i: any) => i.symbol === 'ES');
+    assert.ok(es, 'ES instrument must be present in dynamic list');
+    assert.equal(es.symbol, 'ES');
+
+    console.log('  [PASS] /api/v1/history, auth login & instruments integration tests passed.');
   } finally {
     if (!exited) {
       const stopped = once(server, 'exit');

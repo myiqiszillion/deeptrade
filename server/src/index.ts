@@ -550,13 +550,27 @@ const httpServer = createServer(async (req, res) => {
   if (req.url?.startsWith('/api/v1/auth/login') && req.method === 'POST') {
     const body = await readJsonBody(req);
     const username = typeof body.username === 'string' && body.username.trim() ? body.username.trim() : 'guest';
-    const role: 'user' | 'admin' = body.role === 'admin' ? 'admin' : 'user';
     const userId = typeof body.userId === 'string' && body.userId ? body.userId : `usr_${username}`;
+
+    // Security: Anonymous / public login MUST NOT determine role from untrusted request body.
+    // Client cannot self-assign 'admin' role. Role is strictly server-side controlled.
+    const adminSecret = process.env.ADMIN_SECRET;
+    const isExplicitAdminAuth = Boolean(
+      adminSecret &&
+      typeof body.adminSecret === 'string' &&
+      body.adminSecret === adminSecret
+    );
+
+    const existingUser = marketDataStore.getUser(userId);
+    const role: 'user' | 'admin' = isExplicitAdminAuth
+      ? 'admin'
+      : (existingUser?.role === 'admin' ? 'admin' : 'user');
+
     const user: User = {
       id: userId,
       username,
       role,
-      status: 'active',
+      status: existingUser?.status || 'active',
     };
     marketDataStore.saveUser(user);
     const token = createToken(user);
@@ -752,6 +766,14 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
 
       const msg = parsed as Record<string, unknown>;
 
+      if (msg.type === 'PING') {
+        session.send({
+          type: 'PONG',
+          timestamp: typeof msg.timestamp === 'number' ? msg.timestamp : Date.now(),
+        });
+        return;
+      }
+
       if (msg.type === 'SUBSCRIBE') {
         const requestedSymbol = typeof msg.symbol === 'string' ? msg.symbol : undefined;
         const requestedTf = typeof msg.timeframe === 'string' ? msg.timeframe : session.subscribedTimeframe || '1m';
@@ -885,6 +907,12 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
             const inst = FUTURES_INSTRUMENTS[sym] || FUTURES_INSTRUMENTS.ES;
             let ticks = marketDataStore.queryTrades({ provider, symbol: sym, limit: 5000 }).trades;
             if (ticks.length === 0) {
+              for (const p of ['databento', 'tradovate', 'binance']) {
+                ticks = marketDataStore.queryTrades({ provider: p, symbol: sym, limit: 5000 }).trades;
+                if (ticks.length > 0) break;
+              }
+            }
+            if (ticks.length === 0) {
               ticks = contextManager.getTicksForReplay(sym);
             }
             if (ticks.length === 0) {
@@ -892,15 +920,13 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
               ticks = ctx ? ctx.getHistoryTicks() : [];
             }
             if (ticks.length === 0) {
-              const now = Date.now();
-              const baseP = inst.basePrice || 5000;
-              ticks = Array.from({ length: 50 }, (_, i) => ({
-                id: `replay_seed_${i}`,
-                timestamp: now - (50 - i) * 1000,
-                price: baseP + (i % 5) * inst.tickSize,
-                size: 1 + (i % 3),
-                side: i % 2 === 0 ? 'buy' : 'sell',
-              }));
+              console.warn(`[DeepChart Server] Denied REPLAY for '${sym}': no historical or buffered market ticks available`);
+              session.send({
+                type: 'ERROR',
+                code: 'NO_REPLAY_DATA',
+                message: `No market replay data available for ${sym}`,
+              });
+              return;
             }
             session.replaySession = new ReplaySession(session, sym, inst, session.subscribedTimeframe, ticks);
           }
