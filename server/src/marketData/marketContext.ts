@@ -16,6 +16,7 @@ import { VWAPEngine } from '../vwapEngine.js';
 import { createMarketDataFeed } from './registry.js';
 import { DATABENTO_SYMBOL_MAP, resolveDatabentoSymbol } from './databentoAdapter.js';
 import { fetchDatabentoBars, fetchDatabentoTrades } from './databentoHistory.js';
+import { historyBarsTarget } from './historyDepth.js';
 import { resolveVendorSymbol } from './tradovateAdapter.js';
 import { readTradovateConfig } from './tradovateConfig.js';
 import { fetchTradovateHistoryBars } from './tradovateHistory.js';
@@ -36,6 +37,24 @@ export const TIMEFRAMES: Record<string, number> = {
 
 const WHALE_LOTS_EQUIVALENT = 10;
 const GEX_REFRESH_MS = parseInt(process.env.GEX_REFRESH_MS || '300000', 10);
+
+/** Upper bound for the per-timeframe pre-live bar cache that is shipped in INIT_STATE. */
+const MAX_HISTORY_BARS_PER_TF = 1500;
+
+/**
+ * Merge two pre-live bar series by open time. A vendor page can be shorter/staler than the bars that
+ * are already cached (delayed dataset, truncated page, store priming); replacing instead of merging
+ * would drop the freshest candles and leave a hole before "now". Later input wins on equal timestamps
+ * because freshly fetched vendor bars are the more authoritative row for that minute.
+ */
+function mergeHistoryBars(previous: HistoricalBar[], incoming: HistoricalBar[]): HistoricalBar[] {
+  if (previous.length === 0) return incoming;
+  const byTime = new Map<number, HistoricalBar>();
+  for (const bar of previous) byTime.set(bar.time, bar);
+  for (const bar of incoming) byTime.set(bar.time, bar);
+  const merged = Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+  return merged.length > MAX_HISTORY_BARS_PER_TF ? merged.slice(-MAX_HISTORY_BARS_PER_TF) : merged;
+}
 
 export type HistorySource = 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
 
@@ -393,19 +412,25 @@ export class MarketContext {
     if (this.feedStatus !== 'LIVE') this.setFeedStatus('LIVE');
 
     // 3. Trade Sequence Gap Detection
+    // Note: Databento DBN sequenceId is a channel-level packet sequence that advances across
+    // ALL order book events (adds, modifies, cancels, depth snapshots) as well as trades.
+    // Consecutive trades are therefore expected to skip sequence numbers. Only check for
+    // contiguous sequence gaps if the provider supplies dedicated trade-level sequencing.
     if (trade.sequenceId !== undefined) {
       const seq = typeof trade.sequenceId === 'number' ? trade.sequenceId : parseInt(String(trade.sequenceId), 10);
       if (Number.isFinite(seq)) {
-        if (this.lastTradeSeq !== undefined && seq > this.lastTradeSeq + 1) {
-          const gapCount = seq - (this.lastTradeSeq + 1);
-          console.warn(`[MarketContext] Trade sequence gap for ${this.symbol}: expected ${this.lastTradeSeq + 1}, got ${seq} (${gapCount} missing)`);
-          marketDataStore.recordGap(
-            this.symbol,
-            this.provider,
-            this.lastTradeEventTs || trade.ts,
-            trade.ts,
-            `Trade sequence gap (${gapCount} missing): ${this.lastTradeSeq} -> ${seq}`
-          );
+        if (this.provider !== 'databento') {
+          if (this.lastTradeSeq !== undefined && seq > this.lastTradeSeq + 1) {
+            const gapCount = seq - (this.lastTradeSeq + 1);
+            console.warn(`[MarketContext] Trade sequence gap for ${this.symbol}: expected ${this.lastTradeSeq + 1}, got ${seq} (${gapCount} missing)`);
+            marketDataStore.recordGap(
+              this.symbol,
+              this.provider,
+              this.lastTradeEventTs || trade.ts,
+              trade.ts,
+              `Trade sequence gap (${gapCount} missing): ${this.lastTradeSeq} -> ${seq}`
+            );
+          }
         }
         this.lastTradeSeq = seq;
       }
@@ -647,7 +672,7 @@ export class MarketContext {
       const configuredFuturesProvider = (process.env.FUTURES_PROVIDER || '').toLowerCase();
       const effectiveProvider = this.provider || configuredFuturesProvider;
 
-        if (effectiveProvider === 'databento' && process.env.DATABENTO_API_KEY) {
+        if (effectiveProvider === 'databento' && process.env.DATABENTO_API_KEY && process.env.DATABENTO_TRANSPORT_READY !== '0') {
           const resolved = resolveDatabentoSymbol(this.symbol, {
             symbols: this.symbol === 'ES' ? process.env.DATABENTO_SYMBOLS : undefined,
             stypeIn: process.env.DATABENTO_STYPE_IN,
@@ -673,7 +698,7 @@ export class MarketContext {
 
         // Always ensure historical bars are loaded so the chart has deep candlestick history from past to present
         try {
-          const bars = await this.ensureHistoryBars(timeframe);
+          const bars = await this.ensureHistoryBars(timeframe, this.needsHistoryRefresh(timeframe));
           if (bars.length > 0) {
             console.log(`[History] ${symbol}: loaded ${bars.length} real bar(s) (${timeframe})`);
           }
@@ -794,9 +819,9 @@ export class MarketContext {
     }
   }
 
-  public async ensureHistoryBars(timeframe: string): Promise<HistoricalBar[]> {
+  public async ensureHistoryBars(timeframe: string, forceRefresh = false): Promise<HistoricalBar[]> {
     const cached = this.historyBarsByTf.get(timeframe);
-    if (cached && cached.length > 0) return cached;
+    if (cached && cached.length > 0 && !forceRefresh) return cached;
 
     const configuredFuturesProvider = (process.env.FUTURES_PROVIDER || '').toLowerCase();
     const effectiveProvider = this.provider || configuredFuturesProvider;
@@ -835,6 +860,9 @@ export class MarketContext {
         const providerName = effectiveProvider;
 
         if (providerName === 'databento') {
+          if (process.env.DATABENTO_TRANSPORT_READY === '0') {
+            return [];
+          }
           const resolved = resolveDatabentoSymbol(this.symbol, {
             symbols: this.symbol === 'ES' ? process.env.DATABENTO_SYMBOLS : undefined,
             stypeIn: process.env.DATABENTO_STYPE_IN,
@@ -846,22 +874,27 @@ export class MarketContext {
               dataset: process.env.DATABENTO_DATASET,
               stypeIn: resolved.stypeIn,
             },
-            { barMinutes: tfMs / 60000, elements: 500, beforeTime: this.historyBoundary, signal }
+            { barMinutes: tfMs / 60000, elements: historyBarsTarget(), beforeTime: this.historyBoundary, signal }
           );
         } else {
           const config = readTradovateConfig();
           bars = await this.historyProvider.fetchTradovateBars(
             resolveVendorSymbol(this.symbol, this.instrument, config),
             config,
-            { barMinutes: tfMs / 60000, elements: 500, beforeTime: this.historyBoundary, signal }
+            { barMinutes: tfMs / 60000, elements: historyBarsTarget(), beforeTime: this.historyBoundary, signal }
           );
         }
 
         if (signal.aborted || token !== this.activeFeedToken) return [];
         if (bars.length > 0) {
           marketDataStore.saveBars(bars, this.symbol, timeframe, providerName);
-          this.historyBarsByTf.set(timeframe, bars);
-          this.historyBars = bars;
+          // A vendor window can be shorter and staler than what is already cached (delayed dataset,
+          // partial page, store priming): merge by time instead of replacing, so the chart never
+          // loses fresher candles and never keeps a hole between history and the live edge.
+          const previous = this.historyBarsByTf.get(timeframe) ?? [];
+          const merged = mergeHistoryBars(previous, bars);
+          this.historyBarsByTf.set(timeframe, merged);
+          this.historyBars = merged;
           if (this.historySource !== 'REAL_TICKS') {
             this.historySource = 'REAL_BARS';
           }
@@ -900,6 +933,50 @@ export class MarketContext {
     return fetchPromise;
   }
 
+  /** How this instrument's pre-live history was seeded (used by /healthz and the status strip). */
+  public getHistorySource(): HistorySource {
+    return this.historySource;
+  }
+
+  /**
+   * Instant local cache priming: populate the chart's pre-live history straight from the
+   * persistent store so the chart never opens with an empty left side. Runs for every
+   * timeframe (including sub-minute ones that have no vendor bar schema) and is used both when
+   * a client first subscribes and when it only switches timeframe.
+   */
+  private primeHistoryBarsFromStore(timeframe: string): void {
+    if (this.historyBarsByTf.has(timeframe)) return;
+
+    const stored = marketDataStore.queryBars({
+      provider: this.provider,
+      symbol: this.symbol,
+      timeframe,
+      limit: 500,
+      beforeTime: this.historyBoundary,
+    });
+    if (stored.bars.length === 0) return;
+
+    this.historyBarsByTf.set(timeframe, stored.bars);
+    this.historyBars = stored.bars;
+    if (this.historySource === 'NONE') {
+      this.historySource = 'REAL_BARS';
+    }
+  }
+
+  /**
+   * A cached history set that stops well before the live edge still needs a vendor refresh:
+   * delayed vendor publication, sparse store rows or an earlier truncated page would otherwise
+   * leave a hole between the last historical candle and "now".
+   */
+  private needsHistoryRefresh(timeframe: string): boolean {
+    const cached = this.historyBarsByTf.get(timeframe);
+    if (!cached || cached.length < 50) return true;
+    const tfMs = TIMEFRAMES[timeframe] || 60000;
+    const newest = cached[cached.length - 1]?.time ?? 0;
+    const toleranceMs = Math.max(3 * tfMs, 15 * 60 * 1000);
+    return this.historyBoundary - newest > toleranceMs;
+  }
+
   public addSubscriber(session: ChartSession, timeframe: string): void {
     if (this.cleanupTimer) {
       clearTimeout(this.cleanupTimer);
@@ -913,22 +990,7 @@ export class MarketContext {
     this.subscribers.add(session);
 
     // Instant local cache priming: if in-memory history is empty, populate from persistent store immediately
-    if (!this.historyBarsByTf.has(timeframe)) {
-      const stored = marketDataStore.queryBars({
-        provider: this.provider,
-        symbol: this.symbol,
-        timeframe,
-        limit: 500,
-        beforeTime: this.historyBoundary,
-      });
-      if (stored.bars.length > 0) {
-        this.historyBarsByTf.set(timeframe, stored.bars);
-        this.historyBars = stored.bars;
-        if (this.historySource === 'NONE') {
-          this.historySource = 'REAL_BARS';
-        }
-      }
-    }
+    this.primeHistoryBarsFromStore(timeframe);
 
     if (this.historyTicks.length === 0) {
       const storedTrades = marketDataStore.queryTrades({
@@ -958,8 +1020,8 @@ export class MarketContext {
     session.send(this.buildInitState(session, timeframe));
 
     // Asynchronously refresh and backfill in background without blocking initial render
-    if (!this.historyBarsByTf.has(timeframe) || this.historyBarsByTf.get(timeframe)!.length < 50) {
-      void this.ensureHistoryBars(timeframe).then((bars) => {
+    if (this.needsHistoryRefresh(timeframe)) {
+      void this.ensureHistoryBars(timeframe, true).then((bars) => {
         if (
           bars.length > 0 &&
           this.subscribers.has(session) &&
@@ -985,10 +1047,14 @@ export class MarketContext {
     session.subscribedTimeframe = timeframe;
     const gen = session.subscriptionGeneration;
     this.ensureFootprintEngine(timeframe);
+    // Prime from the store BEFORE the snapshot is built, otherwise switching timeframe (which does
+    // not go through addSubscriber) would show an empty left side until a vendor fetch completes —
+    // and sub-minute timeframes have no vendor bar schema at all.
+    this.primeHistoryBarsFromStore(timeframe);
     session.send(this.buildInitState(session, timeframe));
 
-    if (!this.historyBarsByTf.has(timeframe)) {
-      void this.ensureHistoryBars(timeframe).then((bars) => {
+    if (this.needsHistoryRefresh(timeframe)) {
+      void this.ensureHistoryBars(timeframe, true).then((bars) => {
         if (
           bars.length > 0 &&
           this.subscribers.has(session) &&

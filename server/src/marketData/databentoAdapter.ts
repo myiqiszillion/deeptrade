@@ -42,22 +42,22 @@ export interface DatabentoAdapterOptions {
   socketFactory?: DatabentoSocketFactory;
 }
 
-/** Symbols Databento serves for CME / NYMEX / COMEX futures. */
-export const DATABENTO_SYMBOL_MAP: Record<string, string> = {
-  ES: 'ES.c.0',
-  MES: 'MES.c.0',
-  NQ: 'NQ.c.0',
-  MNQ: 'MNQ.c.0',
-  YM: 'YM.c.0',
-  MYM: 'MYM.c.0',
-  RTY: 'RTY.c.0',
-  M2K: 'M2K.c.0',
+/**
+ * Roots that need a different continuous series than the default `<ROOT>.c.0` (Databento calendar
+ * continuous). Kept explicit and tiny: a wrong mapping silently swaps the instrument you think you trade.
+ */
+const CONTINUOUS_SYMBOL_OVERRIDES: Record<string, string> = {
+  // Volume-based continuous for gold: the calendar series showed session gaps at contract roll.
   GC: 'GC.v.0',
-  MGC: 'MGC.c.0',
-  CL: 'CL.c.0',
-  MCL: 'MCL.c.0',
-  NG: 'NG.c.0',
 };
+
+/**
+ * Continuous front-month vendor symbol per instrument root, derived from the instrument catalog so every
+ * instrument the app serves (including operator-added EXTRA_INSTRUMENTS) is automatically resolvable.
+ */
+export const DATABENTO_SYMBOL_MAP: Record<string, string> = Object.fromEntries(
+  Object.keys(FUTURES_INSTRUMENTS).map((root) => [root, CONTINUOUS_SYMBOL_OVERRIDES[root] ?? `${root}.c.0`])
+);
 
 export function resolveDatabentoSymbol(
   symbol: string,

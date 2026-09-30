@@ -1,4 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { timingSafeEqual } from 'node:crypto';
 import { existsSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { extname, resolve, sep } from 'path';
@@ -6,7 +7,17 @@ import { fileURLToPath } from 'url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { entitlementService } from './auth/entitlementService.js';
 import { AccessPolicy } from './auth/accessPolicy.js';
-import { createToken, verifyToken } from './auth/token.js';
+import { createToken, verifyToken, assertAuthConfig, revokeToken } from './auth/token.js';
+import { hashPassword, verifyPassword, assertPasswordPolicy } from './auth/passwords.js';
+import { LoginGuard } from './auth/loginGuard.js';
+import { billingService } from './billing/billingService.js';
+import { DEFAULT_PLAN_ID, getPlan, listPlans } from './billing/plans.js';
+import { applyStripeEvent, createCheckoutSession, verifyStripeSignature, StripeEvent } from './billing/stripe.js';
+import { PlanId } from './billing/types.js';
+import { startMaintenance } from './maintenance.js';
+import { installConsoleBridge } from './util/logger.js';
+import { metrics } from './util/metrics.js';
+import { clientIpFrom, SlidingWindowLimiter } from './util/rateLimiter.js';
 import { DataType, User } from './auth/types.js';
 import { FUTURES_INSTRUMENTS } from './futuresConfig.js';
 import { MarketContextManager, TIMEFRAMES } from './marketData/marketContext.js';
@@ -15,14 +26,32 @@ import { ReplaySession } from './replaySession.js';
 import { MAX_SESSIONS, MAX_SESSIONS_PER_USER, ChartSession } from './session.js';
 import { Tick, WSClientMessage, WSServerMessage } from './types.js';
 import { fetchDatabentoBars } from './marketData/databentoHistory.js';
+import {
+  fetchWatchlistQuotes,
+  normaliseQuoteSymbols,
+  quoteBoardEnabled,
+  quoteBoardTtlMs,
+} from './marketData/quoteBoard.js';
+import { applyStoredVendorSpecs, syncInstrumentsFromDatabento } from './marketData/instrumentSync.js';
+import { historyBarsTarget } from './marketData/historyDepth.js';
+import { costLoggingEnabled, currentMonthSpend, monthlyBudgetUsd, VENDOR_USAGE_PROVIDER } from './marketData/databentoUsage.js';
 
-try {
-  process.loadEnvFile?.();
-} catch {
+// Test runs must stay hermetic: hydrating the developer's .env would re-introduce vendor
+// credentials and STORAGE_PATH after the suites deliberately stripped them.
+if (process.env.NODE_ENV !== 'test') {
   try {
-    process.loadEnvFile?.('../.env');
-  } catch {}
+    process.loadEnvFile?.();
+  } catch {
+    try {
+      process.loadEnvFile?.('../.env');
+    } catch {}
+  }
 }
+
+// Structured logs first (LOG_FORMAT=json), then the configuration guard: a server that requires
+// authentication must never boot on the public dev secret or with DEV_HOOKS enabled.
+installConsoleBridge();
+assertAuthConfig();
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -56,7 +85,13 @@ const allowedOrigins = ALLOWED_ORIGINS_RAW
   ? new Set(ALLOWED_ORIGINS_RAW.split(',').map((s) => s.trim().toLowerCase()))
   : null;
 
-function isOriginAllowed(origin: string | undefined): boolean {
+/**
+ * WebSocket origin policy.
+ *
+ * `ALLOWED_ORIGINS` wins when set. Otherwise only localhost (dev servers on any port) and the
+ * app's own host are accepted — a random third-party site can no longer open a socket to us.
+ */
+function isOriginAllowed(origin: string | undefined, requestHost?: string): boolean {
   if (!origin) return true; // Direct client, scripts, or same-origin without Origin header
   const lower = origin.trim().toLowerCase();
   if (allowedOrigins) {
@@ -64,13 +99,18 @@ function isOriginAllowed(origin: string | undefined): boolean {
   }
   try {
     const u = new URL(lower);
-    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '0.0.0.0') {
+    const host = u.hostname;
+    if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1' || host === '[::1]') {
       return true;
     }
+    if (requestHost) {
+      const bareHost = requestHost.split(':')[0].toLowerCase();
+      if (host === bareHost) return true;
+    }
+    return false;
   } catch {
     return false;
   }
-  return true;
 }
 
 // Token extractor from IncomingMessage
@@ -110,6 +150,147 @@ function extractToken(req: IncomingMessage): string | null {
   }
 
   return null;
+}
+
+/* ------------------------------------------------------------------ HTTP hardening */
+
+const AUTH_REQUIRED = process.env.AUTH_REQUIRED === '1';
+const DEV_MODE = !AUTH_REQUIRED;
+
+const apiLimiter = new SlidingWindowLimiter(parseInt(process.env.MAX_API_REQUESTS_PER_MIN || '240', 10), 60_000);
+const authLimiter = new SlidingWindowLimiter(parseInt(process.env.MAX_AUTH_REQUESTS_PER_MIN || '15', 10), 60_000);
+const loginGuard = new LoginGuard(
+  parseInt(process.env.LOGIN_MAX_FAILURES || '5', 10),
+  parseInt(process.env.LOGIN_FAILURE_WINDOW_SECONDS || '900', 10) * 1000,
+  parseInt(process.env.LOGIN_LOCK_SECONDS || '900', 10) * 1000
+);
+/** Bounds paid-vendor spend: history pagination can trigger billable upstream calls. */
+const vendorFetchLimiter = new SlidingWindowLimiter(
+  parseInt(process.env.MAX_VENDOR_FETCHES_PER_HOUR || '120', 10),
+  60 * 60_000
+);
+
+const CSP_POLICY =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+  "connect-src 'self' ws: wss:; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; " +
+  "form-action 'self'; object-src 'none'";
+
+/** Echo only trusted origins (never a blanket '*'). */
+function applyCors(req: IncomingMessage, res: ServerResponse): void {
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string' || !origin) return;
+  if (!isOriginAllowed(origin)) return;
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Stripe-Signature, X-Admin-Secret');
+  res.setHeader('Access-Control-Max-Age', '600');
+}
+
+function applySecurityHeaders(res: ServerResponse, options: { html?: boolean } = {}): void {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  if (process.env.NODE_ENV === 'production' || process.env.ENABLE_HSTS === '1') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  if (options.html) {
+    res.setHeader('Content-Security-Policy', CSP_POLICY);
+  }
+}
+
+function constantTimeEquals(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+function adminSecretFrom(req: IncomingMessage): string | null {
+  const header = req.headers['x-admin-secret'];
+  if (typeof header === 'string' && header.trim()) return header.trim();
+  const bearer = extractToken(req);
+  return bearer && bearer.trim() ? bearer.trim() : null;
+}
+
+/** Admin authorization: shared ADMIN_SECRET (constant-time) or a JWT whose role is admin. */
+function isAdminRequest(req: IncomingMessage): boolean {
+  const secret = adminSecretFrom(req);
+  const configured = process.env.ADMIN_SECRET;
+  if (secret && configured && constantTimeEquals(secret, configured)) return true;
+
+  const token = extractToken(req);
+  if (!token) return false;
+  const payload = verifyToken(token);
+  return payload?.role === 'admin';
+}
+
+/** Resolve the authenticated user of an HTTP request (JWT → store row, status checked). */
+function authenticatedUser(req: IncomingMessage): User | null {
+  const token = extractToken(req);
+  if (!token) return null;
+  const payload = verifyToken(token);
+  if (!payload) return null;
+  const stored = marketDataStore.getUser(payload.sub);
+  const user: User = stored || { id: payload.sub, username: payload.username, role: payload.role, status: 'active' };
+  return user.status === 'suspended' ? null : user;
+}
+
+function isMetricsAuthorized(req: IncomingMessage): boolean {
+  const expected = process.env.METRICS_TOKEN;
+  if (!expected) return DEV_MODE;
+  const token = extractToken(req);
+  if (token && constantTimeEquals(token, expected)) return true;
+  return isAdminRequest(req);
+}
+
+function rateLimitOrReject(
+  req: IncomingMessage,
+  res: ServerResponse,
+  limiter: SlidingWindowLimiter,
+  bucket: string
+): boolean {
+  const ip = clientIpFrom(req);
+  const verdict = limiter.hit(`${bucket}:${ip}`);
+  if (verdict.allowed) return true;
+  metrics.inc('deepchart_rate_limited_total', 'Requests rejected by rate limiting', { bucket });
+  applyCors(req, res);
+  applySecurityHeaders(res);
+  res.setHeader('Retry-After', String(verdict.retryAfterSec));
+  sendJson(res, 429, { error: 'Rate limit exceeded', retryAfterSec: verdict.retryAfterSec });
+  return false;
+}
+
+/** Read the raw body (Stripe signatures are computed over the exact bytes). */
+function readRawBody(req: IncomingMessage, maxBytes = 262144): Promise<string> {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (chunk) => {
+      data += chunk;
+      if (data.length > maxBytes) {
+        req.destroy();
+        resolve(data);
+      }
+    });
+    req.on('end', () => resolve(data));
+    req.on('error', () => resolve(data));
+  });
+}
+
+
+
+/** Usernames are the only public identifier; ids are derived from them server-side. */
+function normalizeUsername(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!/^[A-Za-z0-9._-]{3,32}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function userIdForUsername(username: string): string {
+  return `usr_${username.toLowerCase()}`;
 }
 
 // Multi-instrument market context manager
@@ -198,12 +379,25 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse): Promise<v
 
   try {
     const body = await readFile(target);
-    res.writeHead(200, { 'content-type': MIME_TYPES[extname(target)] || 'application/octet-stream' });
+    const ext = extname(target);
+    const isHtml = ext === '.html';
+    // Vite fingerprints /assets/* so they can be cached forever; the shell must never be cached.
+    if (target.includes(`${sep}assets${sep}`)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    } else if (isHtml) {
+      res.setHeader('Cache-Control', 'no-store');
+    } else {
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+    }
+    applySecurityHeaders(res, { html: isHtml });
+    res.writeHead(200, { 'content-type': MIME_TYPES[ext] || 'application/octet-stream' });
     res.end(body);
   } catch {
     // SPA fallback: unknown paths return index.html so client routing keeps working.
     try {
       const fallback = await readFile(resolve(CLIENT_DIST, 'index.html'));
+      res.setHeader('Cache-Control', 'no-store');
+      applySecurityHeaders(res, { html: true });
       res.writeHead(200, { 'content-type': MIME_TYPES['.html'] });
       res.end(fallback);
     } catch {
@@ -214,9 +408,8 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse): Promise<v
 }
 
 function sendJson(res: ServerResponse, statusCode: number, data: unknown): void {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  applySecurityHeaders(res);
+  res.setHeader('Cache-Control', 'no-store');
   res.writeHead(statusCode, { 'content-type': MIME_TYPES['.json'] });
   res.end(JSON.stringify(data));
 }
@@ -240,18 +433,24 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
 }
 
 const httpServer = createServer(async (req, res) => {
-  // 1. CORS Preflight
+  // 1. CORS: echo only trusted origins, plus the standard hardening headers.
+  applyCors(req, res);
+  applySecurityHeaders(res);
+
   if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.writeHead(204).end();
     return;
   }
 
-  // 2. Health Check
+  // 1b. Per-IP request budget. Auth endpoints are stricter, and both are separate from the
+  // per-session WebSocket message budget.
+  if (req.url?.startsWith('/api/')) {
+    if (!rateLimitOrReject(req, res, apiLimiter, 'api')) return;
+    if (req.url.startsWith('/api/v1/auth/') && !rateLimitOrReject(req, res, authLimiter, 'auth')) return;
+  }
+
+  // 2. Health Check — public summary, full detail only for operators.
   if (req.url?.startsWith('/healthz')) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     let symbolParam = url.searchParams.get('symbol');
     const defaultSym = process.env.DEFAULT_SYMBOL || 'ES';
@@ -261,6 +460,21 @@ const httpServer = createServer(async (req, res) => {
     }
     const targetSymbol = symbolParam || defaultSym;
     const ctx = contextManager.getContext(targetSymbol) || contextManager.getContext(defaultSym);
+    const detailed = isAdminRequest(req);
+
+    if (!detailed) {
+      res.writeHead(200, { 'content-type': MIME_TYPES['.json'] });
+      res.end(
+        JSON.stringify({
+          status: 'ok',
+          uptimeSec: Math.round(process.uptime()),
+          sessions: sessions.size,
+          feedStatus: ctx?.feedStatus || 'UNAVAILABLE',
+        })
+      );
+      return;
+    }
+
     res.writeHead(200, { 'content-type': MIME_TYPES['.json'] });
     res.end(
       JSON.stringify({
@@ -275,7 +489,7 @@ const httpServer = createServer(async (req, res) => {
         lastTradeTs: ctx?.lastTradeTs || 0,
         lastDepthTs: ctx?.lastDepthTs || 0,
         futuresProvider: process.env.FUTURES_PROVIDER || 'none',
-        historySource: ctx ? (ctx as any).historySource || 'NONE' : 'NONE',
+        historySource: ctx?.getHistorySource() || 'NONE',
         gexSource: ctx?.instrument.underlyingIndex
           ? contextManager.getGexEngine().getProfile(ctx.instrument.underlyingIndex)?.dataSource
           : undefined,
@@ -284,12 +498,24 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // 3. Prometheus / System Metrics
+  // 3. Prometheus metrics (token/admin protected unless running in development).
   if (req.url?.startsWith('/metrics')) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.writeHead(200, { 'content-type': MIME_TYPES['.json'] });
-    res.end(
-      JSON.stringify({
+    if (!isMetricsAuthorized(req)) {
+      sendJson(res, 401, { error: 'Metrics endpoint requires METRICS_TOKEN or admin credentials' });
+      return;
+    }
+    metrics.set('deepchart_sessions', sessions.size, 'Active chart sessions');
+    metrics.set('deepchart_unique_users', userSessions.size, 'Distinct users with an active session');
+    metrics.set('deepchart_process_resident_memory_bytes', process.memoryUsage().rss, 'Resident memory');
+    metrics.set('deepchart_process_heap_used_bytes', process.memoryUsage().heapUsed, 'JS heap in use');
+    metrics.set('deepchart_uptime_seconds', Math.round(process.uptime()), 'Process uptime');
+    const storeStats = marketDataStore.stats();
+    metrics.set('deepchart_store_rows', storeStats.users, 'Rows currently stored', { table: 'users' });
+    metrics.set('deepchart_store_rows', storeStats.subscriptions, 'Rows currently stored', { table: 'subscriptions' });
+
+    const accept = String(req.headers.accept || '');
+    if (accept.includes('application/json') && !accept.includes('text/plain')) {
+      sendJson(res, 200, {
         uptimeSec: Math.round(process.uptime()),
         sessions: sessions.size,
         uniqueUsers: userSessions.size,
@@ -303,8 +529,14 @@ const httpServer = createServer(async (req, res) => {
           lastTradeTs: ctx.lastTradeTs,
           lastDepthTs: ctx.lastDepthTs,
         })),
-      })
-    );
+        metrics: metrics.snapshot(),
+      });
+      return;
+    }
+
+    const body = metrics.renderPrometheus();
+    res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
+    res.end(body);
     return;
   }
 
@@ -324,9 +556,14 @@ const httpServer = createServer(async (req, res) => {
       }
       const ctx = contextManager.getContext(sym);
       const provider = futuresProvider;
+      // Honest feed state: a symbol with no market context is NOT connecting — the server starts the vendor
+      // feed lazily on subscribe, so it is IDLE. Claiming CONNECTING for 42 untouched symbols is a lie.
+      const feedStatus = ctx?.feedStatus ?? 'IDLE';
       sendJson(res, 200, {
         instrument: inst,
-        feedStatus: ctx?.feedStatus || (futuresProvider !== 'none' ? 'CONNECTING' : 'UNAVAILABLE'),
+        feedStatus,
+        subscribed: Boolean(ctx),
+        feedConfigured: futuresProvider !== 'none',
         provider: ctx?.provider || provider,
         lastTradeTs: ctx?.lastTradeTs || 0,
         lastDepthTs: ctx?.lastDepthTs || 0,
@@ -339,15 +576,39 @@ const httpServer = createServer(async (req, res) => {
     const list = Object.values(FUTURES_INSTRUMENTS).map((inst) => {
       const provider = futuresProvider;
       const ctx = contextManager.getContext(inst.symbol);
-      const feedStatus = ctx?.feedStatus || (futuresProvider !== 'none' ? 'CONNECTING' : 'UNAVAILABLE');
+      const feedStatus = ctx?.feedStatus ?? 'IDLE';
       return {
         ...inst,
         provider,
         feedStatus,
+        subscribed: Boolean(ctx),
+        feedConfigured: futuresProvider !== 'none',
         isLive: feedStatus === 'LIVE',
       };
     });
     sendJson(res, 200, { instruments: list, total: list.length });
+    return;
+  }
+
+  // 4b. Watchlist quotes (opt-in, metered): disabled unless the operator enables the quote board.
+  if (req.url?.startsWith('/api/v1/quotes')) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const requested = normaliseQuoteSymbols(url.searchParams.get('symbols') || '');
+    if (!quoteBoardEnabled()) {
+      sendJson(res, 200, {
+        enabled: false,
+        quotes: [],
+        hint: 'Set ENABLE_QUOTE_BOARD=1 to fetch last-trade quotes for the watchlist (metered vendor data).',
+      });
+      return;
+    }
+    const quotes = await fetchWatchlistQuotes({ symbols: requested });
+    sendJson(res, 200, {
+      enabled: true,
+      ttlMs: quoteBoardTtlMs(),
+      requested: requested.length,
+      quotes,
+    });
     return;
   }
 
@@ -546,41 +807,227 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // 12. Authentication / Login API
+  // 12a. Registration: creates the account, hashes the password and grants the free plan
+  if (req.url?.startsWith('/api/v1/auth/register') && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    const username = normalizeUsername(body.username);
+    if (!username) {
+      sendJson(res, 400, { error: 'Username must be 3-32 characters: letters, digits, dot, dash or underscore.' });
+      return;
+    }
+    if (marketDataStore.findUserByUsername(username)) {
+      sendJson(res, 409, { error: 'Username already taken' });
+      return;
+    }
+    try {
+      assertPasswordPolicy(body.password);
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message });
+      return;
+    }
+
+    const user: User = { id: userIdForUsername(username), username, role: 'user', status: 'active' };
+    marketDataStore.saveUser(user);
+    marketDataStore.setUserPassword(user.id, hashPassword(body.password as string));
+    billingService.applyPlan(user, DEFAULT_PLAN_ID, { provider: 'trial' });
+    metrics.inc('deepchart_auth_events_total', 'Authentication events', { event: 'register' });
+    console.log(`[Auth] Registered '${username}' on the ${DEFAULT_PLAN_ID} plan`);
+
+    const token = createToken(user);
+    sendJson(res, 201, {
+      token,
+      user,
+      plan: billingService.getEffectivePlan(user.id).plan,
+      entitlements: marketDataStore.getEntitlementsForUser(user.id),
+    });
+    return;
+  }
+
+  // 12. Authentication: password login with per-account/IP lockout
   if (req.url?.startsWith('/api/v1/auth/login') && req.method === 'POST') {
     const body = await readJsonBody(req);
-    const username = typeof body.username === 'string' && body.username.trim() ? body.username.trim() : 'guest';
-    const userId = typeof body.userId === 'string' && body.userId ? body.userId : `usr_${username}`;
+    const identifier = typeof body.username === 'string' && body.username.trim() ? body.username.trim() : 'guest';
+    const ip = clientIpFrom(req);
+    const guardKeys = [`user:${identifier.toLowerCase()}`, `ip:${ip}`];
 
-    // Security: Anonymous / public login MUST NOT determine role from untrusted request body.
-    // Client cannot self-assign 'admin' role. Role is strictly server-side controlled.
-    const adminSecret = process.env.ADMIN_SECRET;
-    const isExplicitAdminAuth = Boolean(
-      adminSecret &&
-      typeof body.adminSecret === 'string' &&
-      body.adminSecret === adminSecret
+    const lockout = loginGuard.check(guardKeys);
+    if (lockout.locked) {
+      metrics.inc('deepchart_auth_events_total', 'Authentication events', { event: 'lockout' });
+      res.setHeader('Retry-After', String(lockout.retryAfterSec));
+      sendJson(res, 429, { error: 'Too many failed attempts. Try again later.', retryAfterSec: lockout.retryAfterSec });
+      return;
+    }
+
+    const credentials = marketDataStore.getUserCredentials(identifier);
+    const configuredAdminSecret = process.env.ADMIN_SECRET;
+    const providedAdminSecret = typeof body.adminSecret === 'string' ? body.adminSecret : '';
+    const adminSecretValid = Boolean(
+      configuredAdminSecret && providedAdminSecret && constantTimeEquals(providedAdminSecret, configuredAdminSecret)
     );
 
-    const existingUser = marketDataStore.getUser(userId);
-    const role: 'user' | 'admin' = isExplicitAdminAuth
-      ? 'admin'
-      : (existingUser?.role === 'admin' ? 'admin' : 'user');
+    // A stored hash always requires the matching password; the password-less path only exists for
+    // dev/demo accounts while AUTH_REQUIRED is off.
+    let passwordOk = false;
+    if (credentials?.passwordHash) {
+      passwordOk = verifyPassword(body.password, credentials.passwordHash);
+    } else if (!credentials) {
+      passwordOk = DEV_MODE;
+    } else {
+      passwordOk = DEV_MODE;
+    }
 
-    const user: User = {
-      id: userId,
-      username,
-      role,
-      status: existingUser?.status || 'active',
-    };
-    marketDataStore.saveUser(user);
+    if (!passwordOk && !adminSecretValid) {
+      loginGuard.recordFailure(guardKeys);
+      metrics.inc('deepchart_auth_events_total', 'Authentication events', { event: 'login_failed' });
+      sendJson(res, 401, {
+        error: credentials?.passwordHash
+          ? 'Invalid username or password'
+          : 'This account needs a password: register first or sign in with the admin secret',
+      });
+      return;
+    }
+
+    let user: User | null = credentials?.user ?? null;
+    if (!user) {
+      const username = normalizeUsername(identifier) || 'guest';
+      user = { id: userIdForUsername(username), username, role: 'user', status: 'active' };
+      marketDataStore.saveUser(user);
+      billingService.applyPlan(user, DEFAULT_PLAN_ID, { provider: 'trial' });
+    }
+
+    if (user.status === 'suspended') {
+      loginGuard.recordFailure(guardKeys);
+      sendJson(res, 403, { error: 'Account suspended' });
+      return;
+    }
+
+    // Role stays server-controlled: the shared admin secret is the only way to mint an admin token.
+    if (adminSecretValid && user.role !== 'admin') {
+      user = { ...user, role: 'admin' };
+      marketDataStore.saveUser(user);
+      billingService.applyPlan(user, 'elite', { provider: 'manual' });
+      console.log(`[Auth] Promoted '${user.username}' to admin via ADMIN_SECRET`);
+    }
+
+    loginGuard.recordSuccess(guardKeys);
+    metrics.inc('deepchart_auth_events_total', 'Authentication events', { event: 'login_success' });
     const token = createToken(user);
-    const entitlements = marketDataStore.getEntitlementsForUser(user.id);
     sendJson(res, 200, {
       token,
       user,
-      entitlements,
+      plan: billingService.getEffectivePlan(user.id).plan,
+      entitlements: marketDataStore.getEntitlementsForUser(user.id),
       message: 'Authentication successful',
     });
+    return;
+  }
+
+  // 12b. Session termination (JWT revocation)
+  if (req.url?.startsWith('/api/v1/auth/logout') && req.method === 'POST') {
+    const token = extractToken(req);
+    const payload = token ? verifyToken(token) : null;
+    if (payload) {
+      revokeToken(payload.jti, payload.sub, payload.exp);
+      metrics.inc('deepchart_auth_events_total', 'Authentication events', { event: 'logout' });
+    }
+    sendJson(res, 200, { message: 'Signed out' });
+    return;
+  }
+
+  // 12c. Public client configuration: does the SPA need a login screen, and what is for sale?
+  if (req.url?.startsWith('/api/v1/auth/config')) {
+    sendJson(res, 200, {
+      authRequired: AUTH_REQUIRED,
+      devMode: DEV_MODE && process.env.DEV_HOOKS === '1',
+      registrationEnabled: true,
+      billingConfigured: Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_PRO),
+      defaultPlanId: DEFAULT_PLAN_ID,
+      plans: listPlans().map((plan) => ({
+        id: plan.id,
+        name: plan.name,
+        priceUsdMonthly: plan.priceUsdMonthly,
+        features: plan.features,
+        maxConcurrentSessions: plan.maxConcurrentSessions,
+        historyDays: plan.historyDays,
+        dataTypes: plan.dataTypes,
+        symbolPatterns: plan.symbolPatterns,
+      })),
+    });
+    return;
+  }
+
+  // 13b. Billing: catalog is public, checkout/subscription need a session, webhook is signature-verified
+  if (req.url?.startsWith('/api/v1/billing/plans')) {
+    sendJson(res, 200, {
+      plans: listPlans(),
+      billingConfigured: Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_PRO),
+    });
+    return;
+  }
+
+  if (req.url?.startsWith('/api/v1/billing/subscription')) {
+    const user = authenticatedUser(req);
+    if (!user) {
+      sendJson(res, 401, { error: 'Authentication required' });
+      return;
+    }
+    const { subscription, plan } = billingService.getEffectivePlan(user.id);
+    sendJson(res, 200, {
+      subscription,
+      plan,
+      entitlements: marketDataStore.getEntitlementsForUser(user.id),
+    });
+    return;
+  }
+
+  if (req.url?.startsWith('/api/v1/billing/checkout') && req.method === 'POST') {
+    const user = authenticatedUser(req);
+    if (!user) {
+      sendJson(res, 401, { error: 'Authentication required' });
+      return;
+    }
+    const body = await readJsonBody(req);
+    const planId = typeof body.planId === 'string' ? body.planId : '';
+    if (!getPlan(planId) || planId === DEFAULT_PLAN_ID) {
+      sendJson(res, 400, { error: 'Choose a paid plan (pro or elite)' });
+      return;
+    }
+    const forwardedProto = req.headers['x-forwarded-proto'];
+    const scheme = forwardedProto === 'https' || process.env.NODE_ENV === 'production' ? 'https' : 'http';
+    const origin = `${scheme}://${req.headers.host || `localhost:${PORT}`}`;
+    const result = await createCheckoutSession({
+      user,
+      planId: planId as PlanId,
+      successUrl: `${origin}/?checkout=success`,
+      cancelUrl: `${origin}/?checkout=cancel`,
+    });
+    if ('error' in result) {
+      sendJson(res, 503, { error: result.error });
+      return;
+    }
+    sendJson(res, 200, { url: result.url });
+    return;
+  }
+
+  if (req.url?.startsWith('/api/v1/billing/webhook') && req.method === 'POST') {
+    const raw = await readRawBody(req);
+    const signature = req.headers['stripe-signature'];
+    if (!verifyStripeSignature(raw, typeof signature === 'string' ? signature : undefined, process.env.STRIPE_WEBHOOK_SECRET)) {
+      metrics.inc('deepchart_billing_webhook_total', 'Billing webhook outcomes', { result: 'invalid_signature' });
+      sendJson(res, 400, { error: 'Invalid signature' });
+      return;
+    }
+    let event: StripeEvent;
+    try {
+      event = JSON.parse(raw) as StripeEvent;
+    } catch {
+      sendJson(res, 400, { error: 'Invalid JSON payload' });
+      return;
+    }
+    const outcome = applyStripeEvent(event);
+    metrics.inc('deepchart_billing_webhook_total', 'Billing webhook outcomes', { result: outcome.split(':')[0] });
+    console.log(`[Billing] Stripe event '${event.type}' -> ${outcome}`);
+    sendJson(res, 200, { received: true, outcome });
     return;
   }
 
@@ -599,7 +1046,145 @@ const httpServer = createServer(async (req, res) => {
     const dbUser = marketDataStore.getUser(payload.sub);
     const user = dbUser || { id: payload.sub, username: payload.username, role: payload.role, status: 'active' };
     const entitlements = marketDataStore.getEntitlementsForUser(user.id);
-    sendJson(res, 200, { user, entitlements, sessionPayload: payload });
+    sendJson(res, 200, {
+      user,
+      entitlements,
+      plan: billingService.getEffectivePlan(user.id).plan,
+      subscription: billingService.getEffectivePlan(user.id).subscription,
+      sessionPayload: payload,
+    });
+    return;
+  }
+
+  // 13c. Admin API: provisioning, suspension, GDPR deletion, ops metrics
+  if (req.url?.startsWith('/api/v1/admin/')) {
+    if (!isAdminRequest(req)) {
+      sendJson(res, 403, { error: 'Admin credentials required' });
+      return;
+    }
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const parts = url.pathname.split('/').filter(Boolean);
+
+    if (parts[3] === 'users' && parts.length === 4) {
+      const subscriptions = marketDataStore.listSubscriptions();
+      const byUser = new Map(subscriptions.map((s) => [s.userId, s]));
+      sendJson(res, 200, {
+        users: marketDataStore.listUsers(500).map((u) => ({
+          ...u,
+          planId: byUser.get(u.id)?.planId ?? DEFAULT_PLAN_ID,
+          subscriptionStatus: byUser.get(u.id)?.status ?? 'none',
+          currentPeriodEnd: byUser.get(u.id)?.currentPeriodEnd ?? null,
+        })),
+      });
+      return;
+    }
+
+    if (parts[3] === 'users' && parts[5] === 'plan' && req.method === 'POST') {
+      const target = marketDataStore.getUser(decodeURIComponent(parts[4]));
+      if (!target) {
+        sendJson(res, 404, { error: 'User not found' });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const planId = typeof body.planId === 'string' ? body.planId : '';
+      if (!getPlan(planId)) {
+        sendJson(res, 400, { error: `Unknown plan '${planId}'`, availablePlans: listPlans().map((p) => p.id) });
+        return;
+      }
+      const days = Number(body.days);
+      const subscription = billingService.applyPlan(target, planId as PlanId, {
+        provider: 'manual',
+        validUntil: Number.isFinite(days) && days > 0 ? Date.now() + days * 24 * 60 * 60 * 1000 : undefined,
+      });
+      console.log(`[Admin] plan ${planId} applied to ${target.id}`);
+      sendJson(res, 200, { subscription, entitlements: marketDataStore.getEntitlementsForUser(target.id) });
+      return;
+    }
+
+    if (parts[3] === 'users' && parts[5] === 'suspend' && req.method === 'POST') {
+      const target = marketDataStore.getUser(decodeURIComponent(parts[4]));
+      if (!target) {
+        sendJson(res, 404, { error: 'User not found' });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const suspended = body.suspended !== false;
+      const updated: User = { ...target, status: suspended ? 'suspended' : 'active' };
+      marketDataStore.saveUser(updated);
+      if (suspended) {
+        for (const session of sessions.values()) {
+          if (session.user?.id === updated.id) session.close(1008, 'Account suspended');
+        }
+      }
+      console.log(`[Admin] ${suspended ? 'suspended' : 'reactivated'} ${updated.id}`);
+      sendJson(res, 200, { user: updated });
+      return;
+    }
+
+    if (parts[3] === 'users' && parts.length === 5 && req.method === 'DELETE') {
+      const userId = decodeURIComponent(parts[4]);
+      const target = marketDataStore.getUser(userId);
+      if (!target) {
+        sendJson(res, 404, { error: 'User not found' });
+        return;
+      }
+      for (const session of sessions.values()) {
+        if (session.user?.id === userId) session.close(1008, 'Account deleted');
+      }
+      entitlementService.revokeAll(userId);
+      marketDataStore.deleteUser(userId);
+      console.log(`[Admin] deleted account ${userId} (GDPR erasure)`);
+      sendJson(res, 200, { deleted: true, userId });
+      return;
+    }
+
+    // Vendor definitions: expand the catalog to every instrument the dataset supports.
+    if (parts[3] === 'instruments' && parts[4] === 'sync' && req.method === 'POST') {
+      // ?symbols=ES.FUT,NQ.FUT&stype_in=parent syncs a subset (minutes of data for a handful of roots) while
+      // the default pulls the whole dataset, which is large — the pull logs its start and has a hard timeout.
+      const symbols = url.searchParams.get('symbols') || undefined;
+      const stypeIn = url.searchParams.get('stype_in') || undefined;
+      console.log(`[Admin] instrument definition sync requested (symbols=${symbols || 'ALL_SYMBOLS'})`);
+      const result = await syncInstrumentsFromDatabento({ symbols, stypeIn });
+      sendJson(res, 200, { ...result, total: Object.keys(FUTURES_INSTRUMENTS).length });
+      return;
+    }
+
+    if (parts[3] === 'instruments' && parts[4] === 'specs') {
+      const specs = marketDataStore.listInstrumentSpecs('databento');
+      sendJson(res, 200, {
+        total: Object.keys(FUTURES_INSTRUMENTS).length,
+        storedSpecs: specs.length,
+        specs: specs.map((s) => ({
+          root: s.root,
+          rawSymbol: s.rawSymbol,
+          exchange: s.exchange,
+          currency: s.currency,
+          tickSize: s.tickSize,
+          pointValue: s.pointValue,
+          tickValue: s.tickValue,
+          unitOfMeasure: s.unitOfMeasure,
+          updatedAt: s.updatedAt,
+        })),
+      });
+      return;
+    }
+
+    if (parts[3] === 'metrics') {
+      sendJson(res, 200, {
+        metrics: metrics.snapshot(),
+        store: marketDataStore.stats(),
+        // Metered vendor spend: the operator must be able to see the bill trend without opening the
+        // vendor portal. `history` is the ledger of the last 12 months.
+        vendorUsage: {
+          ...currentMonthSpend(),
+          history: marketDataStore.listVendorUsage(VENDOR_USAGE_PROVIDER, 12),
+        },
+      });
+      return;
+    }
+
+    sendJson(res, 404, { error: 'Unknown admin route' });
     return;
   }
 
@@ -641,6 +1226,79 @@ const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD_BY
 const DEFAULT_SYMBOL = process.env.DEFAULT_SYMBOL || 'ES';
 void contextManager.getOrCreateContext(DEFAULT_SYMBOL);
 
+/**
+ * Ensure the operator account from env (ADMIN_USERNAME + ADMIN_PASSWORD) exists with the admin role
+ * and the top plan, so a fresh production deployment is usable without touching SQLite by hand.
+ */
+function bootstrapAdmin(): void {
+  const username = normalizeUsername(process.env.ADMIN_USERNAME);
+  const password = process.env.ADMIN_PASSWORD;
+  if (!username || !password) return;
+  try {
+    assertPasswordPolicy(password);
+  } catch (err) {
+    console.warn(`[Auth] ADMIN_PASSWORD rejected: ${(err as Error).message}`);
+    return;
+  }
+  const user: User = { id: userIdForUsername(username), username, role: 'admin', status: 'active' };
+  marketDataStore.saveUser(user);
+  marketDataStore.setUserPassword(user.id, hashPassword(password));
+  billingService.applyPlan(user, 'elite', { provider: 'manual' });
+  console.log(`[Auth] Operator account '${username}' ensured with the elite plan`);
+}
+
+bootstrapAdmin();
+
+// Vendor specs persisted by a previous sync: reapply them so the catalog survives restarts with no
+// network call. SYNC_INSTRUMENTS_ON_BOOT=1 refreshes them at startup (one metered request, budget-guarded).
+const restoredSpecs = applyStoredVendorSpecs();
+if (restoredSpecs.added.length > 0) {
+  console.log(
+    `[Instruments] ${restoredSpecs.added.length} vendor-discovered instrument(s) restored from the store ` +
+      `(${restoredSpecs.added.slice(0, 10).join(', ')}${restoredSpecs.added.length > 10 ? ', …' : ''})`
+  );
+}
+if (process.env.SYNC_INSTRUMENTS_ON_BOOT === '1') {
+  void syncInstrumentsFromDatabento()
+    .then(() =>
+      console.log(
+        `[Instruments] boot sync complete: catalog now holds ${Object.keys(FUTURES_INSTRUMENTS).length} instruments`
+      )
+    )
+    .catch((err) => console.warn(`[Instruments] boot sync failed: ${(err as Error).message}`));
+}
+
+const maintenance = startMaintenance();
+
+console.log(
+  `[DeepChart Server] auth=${AUTH_REQUIRED ? 'required' : 'guest-allowed'} devHooks=${
+    process.env.DEV_HOOKS === '1' ? 'on' : 'off'
+  } provider=${process.env.FUTURES_PROVIDER || 'none'} billing=${
+    process.env.STRIPE_SECRET_KEY ? 'stripe' : 'manual-only'
+  } metrics=${process.env.METRICS_TOKEN ? 'token' : DEV_MODE ? 'open(dev)' : 'admin-only'} retention=${
+    process.env.STORE_RETENTION_DAYS || '30'
+  }d bars=${process.env.STORE_BARS_RETENTION_DAYS || process.env.STORE_RETENTION_DAYS || '30'}d history=${
+    historyBarsTarget()
+  }bars logFormat=${process.env.LOG_FORMAT || 'plain'}`
+);
+
+// Make the metered-spend policy visible at boot: silently burning a vendor credit is the one failure
+// mode an operator cannot see in the UI.
+if (monthlyBudgetUsd() > 0) {
+  const spend = currentMonthSpend();
+  console.log(
+    `[Billing] Databento spend guard active: $${monthlyBudgetUsd().toFixed(2)}/month budget, ` +
+      `$${spend.usd.toFixed(4)} estimated in ${spend.month} (${spend.requests} pull(s)). ` +
+      'Estimates come from POST /v0/metadata.get_cost before each paid request.'
+  );
+} else if (costLoggingEnabled()) {
+  const spend = currentMonthSpend();
+  console.log(
+    `[Billing] Databento cost logging on (no budget): $${spend.usd.toFixed(4)} estimated in ${spend.month}. ` +
+      'Set DATABENTO_MONTHLY_USD_BUDGET to enforce a ceiling.'
+  );
+}
+
 // Heartbeat to detect and clean up zombie connections
 const heartbeatInterval = setInterval(() => {
   wss.clients.forEach((client) => {
@@ -660,10 +1318,11 @@ wss.on('close', () => {
 
 // Handle WebSocket Client Connections
 wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
-  // 1. Origin Verification
+  // 1. Origin Verification — default allows the app's own host plus local development ports only.
   const origin = req.headers.origin;
-  if (!isOriginAllowed(origin)) {
+  if (!isOriginAllowed(origin, req.headers.host)) {
     console.warn(`[DeepChart Server] Rejecting connection: unauthorized origin '${origin}'`);
+    metrics.inc('deepchart_ws_rejected_total', 'WebSocket connections refused', { reason: 'origin' });
     ws.close(1008, 'Origin not allowed');
     return;
   }
@@ -671,6 +1330,7 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
   // 2. Capacity Check
   if (sessions.size >= MAX_SESSIONS) {
     console.warn(`[DeepChart Server] Rejecting connection: session limit (${MAX_SESSIONS}) reached.`);
+    metrics.inc('deepchart_ws_rejected_total', 'WebSocket connections refused', { reason: 'capacity' });
     ws.close(1013, 'Server at capacity — please retry shortly');
     return;
   }
@@ -725,8 +1385,11 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
   addUserSession(user.id, session);
   sessions.set(ws, session);
   console.log(`[DeepChart Server] Client connected (${session.id}, user: ${user.username} [${user.id}]). Active sessions: ${sessions.size}`);
+  metrics.inc('deepchart_ws_connections_total', 'WebSocket connections accepted');
+  metrics.inc('deepchart_ws_connections_total', 'WebSocket connections accepted', { user: user.id === 'guest' ? 'guest' : 'account' });
 
   ws.on('close', () => {
+    metrics.inc('deepchart_ws_disconnects_total', 'WebSocket connections closed');
     if (session.replaySession) {
       session.replaySession.dispose();
       session.replaySession = null;
@@ -744,8 +1407,10 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
 
   ws.on('message', async (raw: WebSocket.Data) => {
     try {
+      metrics.inc('deepchart_ws_messages_total', 'Inbound WebSocket messages');
       // 1. Rate limit check before parsing
       if (!session.allowMessage()) {
+        metrics.inc('deepchart_ws_messages_total', 'Inbound WebSocket messages', { result: 'rate_limited' });
         console.warn(`[DeepChart Server] Rate limit exceeded for session ${session.id}`);
         return;
       }
@@ -974,24 +1639,39 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
 
         let result = marketDataStore.queryBars({ provider, symbol, timeframe, beforeTime, limit });
         if (result.bars.length < limit && provider === 'databento' && process.env.DATABENTO_API_KEY) {
-          const tfMs = TIMEFRAMES[timeframe] || 60000;
-          const barMinutes = Math.max(Math.floor(tfMs / 60000), 1);
-          try {
-            const olderBars = await fetchDatabentoBars(
-              symbol,
-              {
-                apiKey: process.env.DATABENTO_API_KEY,
-                dataset: process.env.DATABENTO_DATASET,
-                stypeIn: process.env.DATABENTO_STYPE_IN,
-              },
-              { barMinutes, elements: limit, beforeTime }
-            );
-            if (olderBars.length > 0) {
-              marketDataStore.saveBars(olderBars, symbol, timeframe, provider);
-              result = marketDataStore.queryBars({ provider, symbol, timeframe, beforeTime, limit });
+          const quotaOwner = session.user?.id || 'guest';
+          const quota = vendorFetchLimiter.hit(`vendor:${quotaOwner}`);
+          if (!quota.allowed) {
+            metrics.inc('deepchart_vendor_fetch_total', 'Billable vendor fetches', { result: 'quota_blocked' });
+            session.send({
+              type: 'ERROR',
+              code: 'RATE_LIMITED',
+              message: `History fetch quota reached. Try again in ${quota.retryAfterSec}s.`,
+            });
+          } else {
+            const tfMs = TIMEFRAMES[timeframe] || 60000;
+            const barMinutes = Math.max(Math.floor(tfMs / 60000), 1);
+            try {
+              const olderBars = await fetchDatabentoBars(
+                symbol,
+                {
+                  apiKey: process.env.DATABENTO_API_KEY,
+                  dataset: process.env.DATABENTO_DATASET,
+                  stypeIn: process.env.DATABENTO_STYPE_IN,
+                },
+                { barMinutes, elements: limit, beforeTime }
+              );
+              metrics.inc('deepchart_vendor_fetch_total', 'Billable vendor fetches', {
+                result: olderBars.length > 0 ? 'ok' : 'empty',
+              });
+              if (olderBars.length > 0) {
+                marketDataStore.saveBars(olderBars, symbol, timeframe, provider);
+                result = marketDataStore.queryBars({ provider, symbol, timeframe, beforeTime, limit });
+              }
+            } catch (fetchErr) {
+              metrics.inc('deepchart_vendor_fetch_total', 'Billable vendor fetches', { result: 'error' });
+              console.warn(`[History:databento] Pagination fetch failed for ${symbol}:`, (fetchErr as Error).message);
             }
-          } catch (fetchErr) {
-            console.warn(`[History:databento] Pagination fetch failed for ${symbol}:`, (fetchErr as Error).message);
           }
         }
         session.send({
@@ -1020,6 +1700,7 @@ httpServer.listen(PORT, HOST, () => {
 async function gracefulShutdown(signal: string) {
   console.log(`[DeepChart Server] Received ${signal}, starting graceful shutdown...`);
   clearInterval(heartbeatInterval);
+  maintenance.stop();
   for (const session of sessions.values()) {
     if (session.replaySession) {
       session.replaySession.dispose();

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { ChartViewport, FootprintBar, HistoricalBar } from '../../types';
 import { historyBeforeLive } from '../../services/chartHistory';
+import { SplitHandle } from '../Layout/SplitHandle';
 
 interface CVDPanelProps {
   bars: FootprintBar[];
@@ -274,48 +275,27 @@ export const CVDPanel: React.FC<CVDPanelProps> = ({
     ctx.fillText(`${minCvd.toFixed(0)}`, width - 6, height - 6);
   }, [bars, historyBars, currentCVD, viewport, crosshairX]);
 
-  const isResizingRef = useRef(false);
-  const resizeStartYRef = useRef(0);
-  const resizeStartHeightRef = useRef(height);
-
-  const handleResizeStart = (e: React.MouseEvent) => {
-    isResizingRef.current = true;
-    resizeStartYRef.current = e.clientY;
-    resizeStartHeightRef.current = height;
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-
-    const onMouseMove = (moveEv: MouseEvent) => {
-      if (!isResizingRef.current) return;
-      const deltaY = resizeStartYRef.current - moveEv.clientY;
-      const newHeight = Math.max(55, Math.min(220, resizeStartHeightRef.current + deltaY));
-      if (onHeightChange) {
-        onHeightChange(newHeight);
-      }
-    };
-
-    const onMouseUp = () => {
-      isResizingRef.current = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-    };
-
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-  };
+  // SplitHandle reports the *cumulative* drag delta, so the pane size must be computed from the size at
+  // drag start — adding to the live state would compound on every frame.
+  const dragStartHeightRef = useRef(height);
 
   return (
     <div
       className="w-full border-t border-[#1C2630] bg-[#080B0F] relative select-none flex-shrink-0"
       style={{ height: `${height}px` }}
     >
-      {/* Top Drag Resize Handle */}
-      <div
-        onMouseDown={handleResizeStart}
-        className="absolute top-0 left-0 right-0 h-1.5 cursor-row-resize z-20 hover:bg-[#22D3EE]/40 transition-colors"
-        title="Drag to resize CVD panel height"
+      {/* Divider: drag (or ↑/↓, Home resets) to resize; double-click restores the default height */}
+      <SplitHandle
+        orientation="horizontal"
+        className="cvd-split-handle"
+        label="Resize CVD panel"
+        hint="Drag to resize the CVD sub-chart"
+        onDragStart={() => {
+          dragStartHeightRef.current = height;
+        }}
+        onDrag={(delta) => onHeightChange?.(Math.max(55, Math.min(220, dragStartHeightRef.current + delta)))}
+        onStep={(delta) => onHeightChange?.(Math.max(55, Math.min(220, height + delta)))}
+        onReset={() => onHeightChange?.(85)}
       />
       {onClose && (
         <button

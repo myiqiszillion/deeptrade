@@ -35,31 +35,50 @@ export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
 
       <div className="toolbar-divider hidden sm:block" />
 
-      {/* Middle: Controls & Navigation Shortcuts */}
+      {/* Middle: data provenance + chart controls cheat sheet */}
       <div className="hidden lg:flex items-center gap-4 text-[#7F8B97] text-[10px] overflow-hidden">
-        <span className="flex items-center gap-1">
+        <span className="flex items-center gap-1" title="Where the candles and footprints on screen come from">
           <span className="text-[#4E5965]">History:</span>
-          <span className="text-[#E7EDF3]">
+          <span style={{ color: 'var(--text-primary)' }}>
             {historySource === 'REAL_TICKS'
-              ? 'Real Trades'
+              ? 'Real trades'
               : historySource === 'REAL_BARS'
-              ? 'Vendor Bars'
-              : 'Streaming'}
+                ? 'Vendor bars'
+                : 'Streaming only'}
           </span>
         </span>
 
-        {isLoadingHistory && (
-          <span className="text-[#22D3EE] animate-pulse">Loading history…</span>
-        )}
-        {!hasMoreHistory && (
-          <span className="text-[#4E5965]">Archive Start</span>
-        )}
+        {isLoadingHistory && <span className="text-[#22D3EE] animate-pulse">Loading history…</span>}
+        {!hasMoreHistory && <span className="text-[#4E5965]">Archive start</span>}
 
         <span className="text-[#4E5965]">|</span>
-        <span><strong className="text-[#E7EDF3] font-normal">[Drag]</strong> Pan</span>
-        <span><strong className="text-[#E7EDF3] font-normal">[Scroll]</strong> Zoom X</span>
-        <span><strong className="text-[#E7EDF3] font-normal">[Shift+Scroll]</strong> Price Scale</span>
-        <span><strong className="text-[#E7EDF3] font-normal">[Double-Click]</strong> Reset View</span>
+        <span title="Toggle footprint / candle rendering">
+          <strong className="font-normal" style={{ color: 'var(--text-primary)' }}>[F]</strong> mode
+        </span>
+        <span title="Toggle VWAP overlay">
+          <strong className="font-normal" style={{ color: 'var(--text-primary)' }}>[V]</strong> VWAP
+        </span>
+        <span title="Toggle imbalance highlighting">
+          <strong className="font-normal" style={{ color: 'var(--text-primary)' }}>[I]</strong> imbalance
+        </span>
+        <span title="Toggle delta numbers">
+          <strong className="font-normal" style={{ color: 'var(--text-primary)' }}>[D]</strong> delta
+        </span>
+        <span title="Toggle the CVD sub-chart">
+          <strong className="font-normal" style={{ color: 'var(--text-primary)' }}>[C]</strong> CVD
+        </span>
+        <span title="Open DOM / Profile / Tape / GEX / Flow directly">
+          <strong className="font-normal" style={{ color: 'var(--text-primary)' }}>[1-5]</strong> panels
+        </span>
+        <span title="Toggle the analytics dock">
+          <strong className="font-normal" style={{ color: 'var(--text-primary)' }}>[P]</strong> dock
+        </span>
+        <span title="Toggle replay / diagnostics / help">
+          <strong className="font-normal" style={{ color: 'var(--text-primary)' }}>[R][S][?]</strong>
+        </span>
+        <span title="Open the command palette: instrument, timeframe, panel, overlays">
+          <strong className="font-normal" style={{ color: 'var(--accent)' }}>[Ctrl+K]</strong> palette
+        </span>
       </div>
 
       {/* Right: Technical Diagnostics */}

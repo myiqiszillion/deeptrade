@@ -93,9 +93,9 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
 
       <div className="toolbar-divider" />
 
-      {/* GROUP 2: Timeframes (1s | 5s | 15s | 1m | 5m | 15m) */}
+      {/* GROUP 2: Timeframes (server-supported set: 1s → 1h) */}
       <div className="toolbar-group">
-        {(['1s', '5s', '15s', '1m', '5m', '15m'] as const).map((tf) => (
+        {(['1s', '5s', '15s', '30s', '1m', '5m', '15m', '1h'] as const).map((tf) => (
           <button
             key={tf}
             aria-pressed={timeframe === tf}

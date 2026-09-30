@@ -11,10 +11,28 @@ export function assertProductionSecretValid(secret?: string): void {
   }
 }
 
+function isProductionLike(): boolean {
+  return process.env.NODE_ENV === 'production' || process.env.AUTH_REQUIRED === '1';
+}
+
+/**
+ * Boot-time configuration guard.
+ *
+ * Fail-fast is keyed off "production-like" (NODE_ENV=production OR AUTH_REQUIRED=1), not NODE_ENV
+ * alone: a server that demands authentication must never be able to run on the public dev secret.
+ */
+export function assertAuthConfig(): void {
+  if (isProductionLike()) {
+    assertProductionSecretValid(process.env.AUTH_JWT_SECRET);
+    if (process.env.DEV_HOOKS === '1') {
+      throw new Error('DEV_HOOKS=1 is not allowed when authentication is required.');
+    }
+  }
+}
+
 function getJwtSecret(): string {
-  const isProd = process.env.NODE_ENV === 'production';
   const secret = process.env.AUTH_JWT_SECRET;
-  if (isProd) {
+  if (isProductionLike()) {
     assertProductionSecretValid(secret);
     return secret!;
   }

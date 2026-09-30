@@ -1,0 +1,27 @@
+# Caddy terminates TLS (Let's Encrypt) and proxies both HTTP and WebSocket traffic to the app.
+# Set DOMAIN in .env — a public hostname gets a real certificate automatically.
+{$DOMAIN:localhost} {
+	encode zstd gzip
+
+	# Security headers are also sent by the app; keeping them here protects /assets as well.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# The app needs the real client IP for per-IP rate limiting.
+	reverse_proxy app:8080 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# Long-lived WebSocket upgrades on the same origin.
+	@ws {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	reverse_proxy @ws app:8080
+}

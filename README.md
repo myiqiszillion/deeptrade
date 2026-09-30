@@ -77,8 +77,26 @@ pnpm install
 
 ### Biến môi trường & Bảo mật (Security)
 - `AUTH_REQUIRED=1`: Bắt buộc kích hoạt trong production để bảo vệ dữ liệu và endpoint.
-- `AUTH_JWT_SECRET`: Khóa ký JWT tối thiểu 32 ký tự, bắt buộc phải thiết lập khi chạy production (hệ thống sẽ fail-fast và dừng ngay nếu thiếu).
-- `DEV_HOOKS=1`: Chỉ được phép bật ở môi trường phát triển (development), bị vô hiệu hóa hoàn toàn trong production.
+- `AUTH_JWT_SECRET`: Khóa ký JWT tối thiểu 32 ký tự. **Bắt buộc** khi `NODE_ENV=production` **hoặc** `AUTH_REQUIRED=1` — server fail-fast và dừng ngay nếu thiếu/yếu.
+- `DEV_HOOKS=1`: Chỉ được phép bật khi chưa bật authentication; server từ chối khởi động nếu `AUTH_REQUIRED=1` + `DEV_HOOKS=1`.
+- `ADMIN_USERNAME` / `ADMIN_PASSWORD`: tài khoản vận hành được tạo/cập nhật mỗi lần khởi động (role `admin`, gói `elite`).
+- `ADMIN_SECRET`: bảo vệ toàn bộ `/api/v1/admin/*` và dùng để mint token admin qua `POST /api/v1/auth/login`.
+- `METRICS_TOKEN`: token bảo vệ `/metrics` (ở production, không có token ⇒ 401).
+- `STRIPE_*`: bật bán gói tự động (Checkout + webhook có xác thực chữ ký).
+- `STORE_RETENTION_DAYS` (mặc định 30): vòng đời dữ liệu tick/bar/gap — đặt `0` để giữ mãi (đĩa sẽ đầy).
+- `STORE_BARS_RETENTION_DAYS` (mặc định = `STORE_RETENTION_DAYS`, Docker image đặt 365): vòng đời riêng cho nến — nến rất nhỏ nhưng tốn tiền để tải lại, nên giữ lâu hơn tick.
+- `HISTORY_BARS_TARGET` (mặc định 1500, kẹp 100–5000): độ sâu lịch sử xin từ vendor mỗi khung thời gian khi client subscribe.
+- `DATABENTO_MONTHLY_USD_BUDGET` / `DATABENTO_COST_LOG`: chốt chi phí cho các lần kéo historical tính theo GB (gói $199/tháng **không** giới hạn phần này) — xem **[docs/DATABENTO.md](docs/DATABENTO.md)**.
+- `EXTRA_INSTRUMENTS`: 43 mã CME Group (CME/CBOT/NYMEX/COMEX) đã có sẵn; muốn thêm mã bất kỳ của `GLBX.MDP3` (QM, BZ, PL, SR3, ETH…) thì khai spec — không cần sửa code. Cú pháp & lưu ý tỷ giá JPY: [docs/DATABENTO.md §3.1](docs/DATABENTO.md).
+- `SYNC_INSTRUMENTS_ON_BOOT=1` / `POST /api/v1/admin/instruments/sync`: kéo **định nghĩa hợp đồng từ Databento** để phủ toàn bộ sản phẩm CME Group (tick/multiplier do vendor cung cấp, lưu SQLite, áp lại khi restart) — xem [docs/DATABENTO.md §3.2](docs/DATABENTO.md).
+- CORS/WebSocket chỉ echo origin được tin cậy; `ALLOWED_ORIGINS` là allowlist chính thức, mặc định chỉ same-host + localhost.
+
+### Tài khoản, gói & thanh toán
+- `POST /api/v1/auth/register` tạo tài khoản (mật khẩu hash scrypt, tối thiểu 10 ký tự) và cấp gói `free`.
+- `POST /api/v1/auth/login` xác thực bằng mật khẩu; có khoá tạm theo tài khoản **và** theo IP (`LOGIN_MAX_FAILURES`, `LOGIN_LOCK_SECONDS`).
+- Client **không bao giờ** tự khai `userId`/`role` — id suy ra từ username ở server, role chỉ do server quyết định.
+- Gói & quyền nằm trong `server/src/billing/plans.ts`; cấp gói thủ công qua API admin, hoặc tự động qua Stripe.
+- WebSocket nhận token qua subprotocol `deepchart-token` (không đặt token trong query string).
 
 ### Chạy môi trường phát triển (Development)
 ```bash
@@ -106,15 +124,57 @@ DeepChart có hệ thống test phân tầng rõ ràng (Unit, Integration, Proto
 | Lệnh kiểm thử | Mục đích |
 |---|---|
 | `pnpm typecheck` | Kiểm tra TypeScript cho cả server và client (0 lỗi) |
-| `pnpm test` | Chạy toàn bộ test suite: protocol drift, unit tests và integration tests |
-| `pnpm test:unit` | Chạy unit tests: auth, entitlement, marketDataStore, sessionCalendar, footprintEngine, replaySession, validate |
-| `pnpm test:integration` | Chạy integration tests: chartSmoke, historyApi, websocket, tradovateAdapter, lifecycle |
+| `pnpm test` | Chạy toàn bộ test suite: protocol drift, unit, integration và **client bundle smoke test** |
+| `pnpm test:unit` | Unit: auth/entitlement/store/sessionCalendar/footprint/replay/validate/**passwords**/**loginGuard (lockout, rate limit)**/**billing (plans, entitlements, chữ ký Stripe)**/**retention (purge, WAL, stats)**/**databentoUsage (cost guard)**/**instruments (43 mã CME)**/**instrumentDefinitions (definition sync)** |
+| `pnpm test:integration` | Integration: chartSmoke, historyApi, websocket, **authFlow (đăng ký → lockout → mạo danh bị chặn → admin cấp gói → webhook → WS bằng token)**, tradovateAdapter, databentoAdapter |
 | `pnpm test:protocol` | Chống protocol drift giữa server và client WebSocket messages (`scripts/check-protocol-drift.mjs`) |
-| `pnpm verify:p0` | 13 test kiểm tra tính toàn vẹn server và rate limiting |
-| `pnpm test:offline` | Alias của `pnpm test` |
+| `pnpm test:client` | Kiểm tra bundle đã build: có đủ surface của sản phẩm (palette, favourites, empty-state actions, phím tắt, design tokens) và **đã code-split**, entry chunk < 480 KB (`scripts/check-client-bundle.mjs`) |
+| `pnpm verify:p0` | 13 test kiểm tra tính toàn vẹn server và rate limiting (harness dev, cần DB local có tick) |
+
+### Giao diện & thao tác (UI/UX — phong cách TradingView)
+- **Thanh công cụ dọc bên trái (tool rail)**: tìm mã, auto-fit/manual, zoom ±, reset view, watchlist, chuyển dock trái/phải, replay, diagnostics, **lưu ảnh chart (PNG)** và **fullscreen** — chỉ hiện hành động app thật sự làm được.
+- **Legend nổi trên chart (góc trên-trái)**: `SYMBOL · timeframe · Footprint · sàn`, **O/H/L/C + Volume + %thay đổi** của nến cuối, cùng các **chip bật/tắt nhanh** VWAP · CVD · Imbalance · Delta (bấm là đổi ngay, không phải mở menu).
+- **Watchlist bên phải**: lọc mã, gắn sao, bấm để chuyển mã, hiển thị thật trạng thái feed (`live / connecting / idle / no data / no vendor`). Giá: mã đang xem luôn realtime; các mã khác lấy từ **quote board** (opt-in, có cache + hiện *tuổi dữ liệu* `12s`/`stale`) — bật bằng `ENABLE_QUOTE_BOARD=1`, tạm dừng bằng nút ⏸ trong panel. Không bao giờ hiển thị giá giả.
+- **Skin tối kiểu TradingView**: nền `#131722`, panel `#1E222D`, vạch `#2A2E39`, chữ `#D1D4DC`, giá lên `#089981` / xuống `#F23645`, bo góc 5–12px (giữ accent cyan làm bản sắc chart).
+- **Phím tắt**: **`/` hoặc `Ctrl+K`** mở palette (kiểu tìm mã của TradingView) · `F` footprint↔candles · `V/I/D/C` overlay · `1–5` panel · `P` dock · `R` replay · `S` diagnostics · `?` hướng dẫn.
+- **Khung thời gian** đúng bằng tập server phục vụ được: `1s 5s 15s 30s 1m 5m 15m 1h` (palette trước đây có `30m` không được hỗ trợ — đã bỏ).
+- **Kéo-thả mượt thật**: vạch chia dùng *pointer capture + requestAnimationFrame* nên panel bám con trỏ (không giật/nhảy), có grip 3 chấm hiện khi hover, khóa chọn chữ toàn trang khi đang kéo; kéo ra ngoài cửa sổ vẫn không mất trạng thái. Dock đổi được trái/phải, CVD kéo được chiều cao.
+- **Trạng thái trống có hành động**: khi feed không có dữ liệu, màn hình nói rõ nguyên nhân và cho bấm *Open diagnostics · How to read this chart · Switch instrument*.
+- **Hiệu năng**: bundle đã **code-split** (entry ~184 KB, các panel nặng tải lazy) + `prefers-reduced-motion`, focus ring đầy đủ cho bàn phím.
+
+
+
+CI (`.github/workflows/ci.yml`) chạy: typecheck → lint → protocol → unit → build → **client bundle check** → integration.
+
+---
+
+## 🚀 Chạy thương mại (Production)
+
+Xem runbook đầy đủ: **[docs/DEPLOY.md](docs/DEPLOY.md)** (TLS, biến môi trường bắt buộc, Stripe,
+retention/backup, monitoring, cảnh báo pháp lý về licence phân phối dữ liệu).
+Về dữ liệu CME/Databento (gói $199 dùng được gì, khi nào phải xin phép bán lại, cách chặn hoá đơn):
+**[docs/DATABENTO.md](docs/DATABENTO.md)**.
+
+```bash
+cp .env.example .env      # điền AUTH_JWT_SECRET, ADMIN_*, provider keys
+pnpm install && pnpm build
+node --env-file=.env server/dist/index.js
+# hoặc: docker compose up -d --build   (app + Caddy HTTPS tự động)
+```
+
+| Hạng mục vận hành | Cách dùng |
+|---|---|
+| Sức khoẻ | `GET /healthz` (công khai, tối giản) — bản chi tiết cần `x-admin-secret` |
+| Metrics | `GET /metrics` (Prometheus text) — cần `METRICS_TOKEN` hoặc admin |
+| Nhật ký | `LOG_FORMAT=json` → mỗi dòng một JSON object |
+| Dọn dữ liệu | `STORE_RETENTION_DAYS`, `STORE_BARS_RETENTION_DAYS` (bars giữ lâu hơn tick), maintenance 15 phút/lần, VACUUM mỗi ngày |
+| Chi phí vendor | `DATABENTO_MONTHLY_USD_BUDGET` + ước tính `metadata.get_cost` trước mỗi lần kéo; số dư tháng ở `GET /api/v1/admin/metrics` → `vendorUsage`, gauge `deepchart_vendor_estimated_spend_usd` |
+| Sao lưu | `node scripts/backup_db.mjs` (`VACUUM INTO` + `integrity_check`, giữ 7 bản) |
+| Cấp gói | `POST /api/v1/admin/users/:id/plan` (admin) hoặc Stripe Checkout + webhook |
 
 ---
 
 ## 📄 Bản Quyền & Giấy Phép
-Dự án được phát hành dưới giấy phép mã nguồn mở MIT.
-Mọi phân tích order flow hoàn toàn miễn phí, độc lập và bảo vệ dữ liệu người dùng.
+Mã nguồn phát hành dưới giấy phép MIT (xem `LICENSE`).
+Điều khoản sử dụng & quyền riêng tư: `TERMS.md`, `PRIVACY.md` (bản mẫu — điền thông tin pháp lý của bạn).
+**Lưu ý:** giấy phép MIT chỉ áp dụng cho mã nguồn, **không** bao gồm dữ liệu thị trường — muốn bán dịch vụ phải có licence phân phối dữ liệu từ vendor/sàn.

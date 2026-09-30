@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, Play, HelpCircle, PanelRight } from 'lucide-react';
+import { Activity, HelpCircle, LogOut, PanelRight, Play, Search, User } from 'lucide-react';
 import { FuturesInstrument } from '../../types';
 import { InstrumentOption, SymbolDropdown } from './SymbolDropdown';
 import { formatPrice } from '../../services/priceFormat';
@@ -23,6 +23,12 @@ interface TerminalHeaderProps {
   highPrice?: number;
   lowPrice?: number;
   instrumentsList?: InstrumentOption[];
+  /** Opens the Ctrl+K command palette — the fastest way to switch anything. */
+  onOpenPalette?: () => void;
+  username?: string | null;
+  planName?: string | null;
+  role?: string | null;
+  onSignOut?: () => void;
 }
 
 export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
@@ -44,24 +50,28 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
   highPrice,
   lowPrice,
   instrumentsList,
+  onOpenPalette,
+  username,
+  planName,
+  role,
+  onSignOut,
 }) => {
   const tickSize = instrument?.tickSize || 0.25;
   const isLiveFeed = feedStatus === 'LIVE' && isConnected;
 
   return (
     <header className="terminal-header" role="banner">
-      {/* 1. DeepChart Brand & Free Badge */}
+      {/* 1. Brand */}
       <div className="terminal-brand select-none">
         <span className="brand-icon">D</span>
-        <span className="font-bold text-[#E7EDF3] tracking-tight">
-          Deep<span className="text-[#22D3EE]">Chart</span>
+        <span className="font-bold tracking-tight" style={{ color: 'var(--text-primary)' }}>
+          Deep<span style={{ color: 'var(--accent)' }}>Chart</span>
         </span>
-        <span className="free-badge">FREE</span>
       </div>
 
       <div className="toolbar-divider" />
 
-      {/* 2. Instrument Selector */}
+      {/* 2. Instrument picker (click) — Ctrl+K is owned by the command palette */}
       <SymbolDropdown
         currentSymbol={symbol}
         currentInstrument={instrument}
@@ -70,70 +80,86 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
         instruments={instrumentsList}
       />
 
-      {/* 3. Primary Current Price (Strongest Visual Hierarchy) */}
-      <div className="header-price-badge tabular-nums" title={`Current Price (${symbol})`}>
-        <span className="header-price-value">
-          {currentPrice > 0 ? formatPrice(currentPrice, tickSize) : '—'}
-        </span>
+      {onOpenPalette && (
+        <button
+          type="button"
+          onClick={onOpenPalette}
+          className="terminal-btn hidden md:inline-flex"
+          title="Command palette: search instruments, timeframes, panels and actions (Ctrl+K)"
+          aria-label="Open command palette"
+        >
+          <Search size={13} />
+          <span className="hidden lg:inline">Search</span>
+          <span className="dc-kbd">Ctrl K</span>
+        </button>
+      )}
+
+      {/* 3. Last price — strongest visual anchor in the header */}
+      <div className="header-price-badge tabular-nums" title={`Last traded price (${symbol})`}>
+        <span className="header-price-value">{currentPrice > 0 ? formatPrice(currentPrice, tickSize) : '—'}</span>
       </div>
 
-      {/* 4. Market Context (Session High / Low) */}
+      {/* 4. Session context: range + replay state */}
       {highPrice !== undefined && lowPrice !== undefined && highPrice > lowPrice && (
-        <div className="hidden lg:flex items-center gap-1.5 px-2 py-1 rounded-[3px] bg-[#10151C] border border-[#1C2630] text-[10px] font-mono text-[#7F8B97] select-none">
-          <span className="text-[#19C37D] font-semibold">H {formatPrice(highPrice, tickSize)}</span>
-          <span className="text-[#4E5965]">/</span>
-          <span className="text-[#F05252] font-semibold">L {formatPrice(lowPrice, tickSize)}</span>
+        <div
+          className="dc-chip hidden lg:inline-flex"
+          title={`Session range across loaded history: ${formatPrice(lowPrice, tickSize)} – ${formatPrice(highPrice, tickSize)}`}
+        >
+          <span style={{ color: 'var(--ok)' }} className="font-semibold">
+            H {formatPrice(highPrice, tickSize)}
+          </span>
+          <span style={{ color: 'var(--text-muted)' }}>/</span>
+          <span style={{ color: 'var(--danger)' }} className="font-semibold">
+            L {formatPrice(lowPrice, tickSize)}
+          </span>
         </div>
       )}
 
-      {/* Replay indicator badge */}
       {sessionMode !== 'LIVE' && (
-        <span className="px-2 py-0.5 rounded-[3px] bg-[#F5B942]/10 border border-[#F5B942]/30 text-[#F5B942] font-mono text-[10px] font-semibold">
+        <span className="dc-chip" data-tone="warn" title="Replay is running — the chart is not following live data">
           {sessionMode.replaceAll('_', ' ')}
         </span>
       )}
 
-      {/* 5. Middle/Right Utilities: [Diagnostics] [LIVE FEED] [Replay] [Help] [Layout] */}
+      {/* 5. Utilities */}
       <div className="ml-auto flex items-center gap-1.5 shrink-0">
-        {/* Diagnostics Button */}
         <button
           className={`terminal-btn ${showSystemStatus ? 'active' : ''}`}
           onClick={onOpenSystemStatus}
-          title="System Diagnostics & Engine Hub"
+          title="Diagnostics: feed state, entitlements, engine metrics"
+          aria-pressed={showSystemStatus}
         >
-          <Activity size={13} className={showSystemStatus ? 'text-[#22D3EE]' : 'text-[#7F8B97]'} />
+          <Activity size={13} />
           <span className="hidden sm:inline">Diagnostics</span>
         </button>
 
-        {/* Live Feed Status Pill */}
         <div
-          className="flex items-center gap-1.5 px-2 py-1 rounded-[3px] bg-[#10151C] border border-[#1C2630] select-none"
-          title={isLiveFeed ? 'Data Feed: Real-time validated tick stream' : 'Data Feed: Offline or reconnecting'}
+          className="dc-chip"
+          data-tone={isLiveFeed ? 'ok' : 'danger'}
+          title={
+            isLiveFeed
+              ? 'Feed healthy: validated real-time ticks are flowing for this instrument'
+              : 'Feed unavailable — open Diagnostics to see the reason (licence, credentials or connection)'
+          }
         >
-          <span
-            className={`status-indicator-dot ${isLiveFeed ? 'live' : 'offline'}`}
-          />
-          <span className="font-mono text-[10px] font-semibold tracking-wide text-[#E7EDF3]">
-            {isLiveFeed ? 'LIVE FEED' : 'OFFLINE'}
-          </span>
+          <span className={`status-indicator-dot ${isLiveFeed ? 'live' : 'offline'}`} />
+          <span className="font-semibold">{isLiveFeed ? 'LIVE' : 'OFFLINE'}</span>
         </div>
 
-        {/* Replay Button */}
         <button
-          className={`terminal-btn ${showReplay ? 'active text-[#F5B942] border-[#F5B942]/30' : ''}`}
+          className={`terminal-btn ${showReplay ? 'active' : ''}`}
           onClick={onToggleReplay}
-          title="Toggle Tick Replay Controller"
+          title="Replay recorded ticks without disturbing the live buffer"
           aria-pressed={showReplay}
         >
-          <Play size={12} className={showReplay ? 'text-[#F5B942]' : 'text-[#7F8B97]'} />
+          <Play size={12} />
           <span className="hidden md:inline">Replay</span>
         </button>
 
-        {/* Help Button */}
         <button
-          className={`terminal-btn terminal-btn-icon ${showHelp ? 'active text-[#22D3EE]' : ''}`}
+          className={`terminal-btn terminal-btn-icon ${showHelp ? 'active' : ''}`}
           onClick={onToggleHelp}
-          title="Order Flow Controls & Primer Guide"
+          title="Chart controls cheat sheet"
           aria-label="Help"
           aria-expanded={showHelp}
         >
@@ -142,17 +168,44 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
 
         <div className="toolbar-divider" />
 
-        {/* Layout / Analytics Workspace Dock Toggle */}
         <button
-          className={`terminal-btn terminal-btn-icon ${activePanel ? 'active text-[#22D3EE]' : ''}`}
+          className={`terminal-btn terminal-btn-icon ${activePanel ? 'active' : ''}`}
           onClick={onTogglePanel}
-          title={activePanel ? `Close ${activePanel} panel` : 'Toggle Analytics Workspace Dock'}
+          title={activePanel ? `Close the ${activePanel} panel` : 'Open the analytics panel (DOM, Profile, Tape, GEX, Flow)'}
           aria-label="Toggle analytics panel"
           aria-expanded={!!activePanel}
         >
           <PanelRight size={14} />
         </button>
+
+        {username && (
+          <>
+            <div className="toolbar-divider" />
+            <div
+              className="dc-chip"
+              data-tone={role === 'admin' ? 'accent' : undefined}
+              title={`Signed in as ${username}${role === 'admin' ? ' (admin)' : ''}${planName ? ` · ${planName} plan` : ''}`}
+            >
+              <User size={11} />
+              <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+                {username}
+              </span>
+              {planName && <span style={{ color: 'var(--text-muted)' }}>· {planName}</span>}
+            </div>
+            {onSignOut && (
+              <button
+                className="terminal-btn terminal-btn-icon"
+                onClick={onSignOut}
+                title="Sign out and revoke this session token"
+                aria-label="Sign out"
+              >
+                <LogOut size={13} />
+              </button>
+            )}
+          </>
+        )}
       </div>
     </header>
   );
 };
+

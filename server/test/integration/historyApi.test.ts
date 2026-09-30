@@ -21,6 +21,14 @@ export async function runHistoryApiTests(): Promise<void> {
     HOST: '127.0.0.1',
     DEV_HOOKS: '1',
     AUTH_REQUIRED: '0',
+    // Hermetic run: STORAGE_PATH outranks NODE_ENV=test in MarketDataStore, so an inherited value
+    // from the dev shell would make the test server read/write the real market_data.sqlite.
+    STORAGE_PATH: ':memory:',
+    // Pin the vendor away too: the feed-state assertions below must not depend on the developer's shell
+    // (an inherited FUTURES_PROVIDER would start a real vendor connection during the test run).
+    FUTURES_PROVIDER: 'none',
+    DATABENTO_TRANSPORT_READY: '0',
+    DATABENTO_API_KEY: '',
   };
 
   const server = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {
@@ -90,6 +98,39 @@ export async function runHistoryApiTests(): Promise<void> {
     const es = instData.instruments.find((i: any) => i.symbol === 'ES');
     assert.ok(es, 'ES instrument must be present in dynamic list');
     assert.equal(es.symbol, 'ES');
+
+    // 4b. Feed state must be honest: CONNECTING/LIVE may only appear for symbols the server actually tracks.
+    // ES is the default symbol, so the server warms a context for it at boot (here with no vendor configured,
+    // which is UNAVAILABLE — not "connecting", and definitely not live).
+    assert.equal(es.subscribed, true, 'the default symbol is warmed at boot, so it has a market context');
+    assert.equal(es.feedStatus, 'UNAVAILABLE', 'a warmed context without a vendor reports UNAVAILABLE');
+    assert.equal(es.feedConfigured, false, 'FUTURES_PROVIDER=none means no vendor is configured');
+
+    const untouched = instData.instruments.find((i: any) => i.symbol === 'CL');
+    assert.ok(untouched, 'CL must be listed');
+    assert.equal(untouched.feedStatus, 'IDLE', 'an instrument nobody subscribed to reports IDLE, not CONNECTING');
+    assert.equal(untouched.subscribed, false, 'no market context exists for CL');
+
+    const dishonest = instData.instruments.filter((i: any) => i.feedStatus === 'CONNECTING');
+    assert.equal(
+      dishonest.length,
+      0,
+      `no instrument may claim CONNECTING without a subscription: ${dishonest.map((i: any) => i.symbol).join(', ')}`
+    );
+    const live = instData.instruments.filter((i: any) => i.feedStatus === 'LIVE');
+    assert.equal(live.length, 0, 'no instrument may claim LIVE without a configured vendor and validated data');
+    assert.ok(
+      instData.instruments.every((i: any) => i.feedConfigured === false),
+      'every instrument reports feedConfigured=false when no vendor is configured'
+    );
+
+    // 4c. Quote board is opt-in and metered: with the flag off it must answer without touching the vendor.
+    const quotesRes = await fetch(`${base}/api/v1/quotes?symbols=ES,NQ`);
+    assert.equal(quotesRes.status, 200, 'quote board endpoint answers even when disabled');
+    const quotesData = (await quotesRes.json()) as any;
+    assert.equal(quotesData.enabled, false, 'quote board is disabled by default (metered feature)');
+    assert.deepEqual(quotesData.quotes, [], 'no quotes are fabricated when the board is off');
+    assert.ok(typeof quotesData.hint === 'string' && quotesData.hint.includes('ENABLE_QUOTE_BOARD'), 'hint explains how to enable it');
 
     console.log('  [PASS] /api/v1/history, auth login & instruments integration tests passed.');
   } finally {

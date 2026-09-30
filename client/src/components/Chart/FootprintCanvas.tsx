@@ -71,7 +71,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   timeframe,
   isLive = false,
   sessionMode = 'LIVE',
-  chartMode: _chartMode = 'footprint',
+  chartMode = 'footprint',
   viewport: propsViewport,
   onViewportChange,
   crosshairX,
@@ -771,6 +771,15 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         ctx.lineTo(barX + viewport.barWidth + 2.5, closeY);
         ctx.stroke();
 
+        // When in traditional candle mode, render the solid candle body and skip footprint numbers ladder
+        if (chartMode === 'candles') {
+          const bodyTop = Math.min(openY, closeY);
+          const bodyHeight = Math.max(1, Math.abs(closeY - openY));
+          ctx.fillStyle = tickColor;
+          ctx.fillRect(barX + 2, bodyTop, viewport.barWidth - 4, bodyHeight);
+          return;
+        }
+
         // C. Aggregate footprint price levels
         const buckets = new Map<number, ClusterRow>();
         for (const [pStr, lvl] of Object.entries(bar.levels)) {
@@ -1150,20 +1159,33 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
       yToPrice,
       clusterMultiplier,
       crosshairX,
+      chartMode,
     ]
   );
 
-  // Hook render into dirty scheduler and trigger whenever render callback updates
+  // Synchronous render on data/viewport update ensures the canvas is never left blank
   useEffect(() => {
     renderCanvasRef.current = render;
-    requestRender();
-  }, [render, requestRender]);
+    render();
+  }, [render]);
+
+  // Keep canvas rendered if tab visibility changes
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        render();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [render]);
 
   // Clean up any pending frame on unmount
   useEffect(() => {
     return () => {
       if (rafIdRef.current !== null) {
         cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
       }
     };
   }, []);

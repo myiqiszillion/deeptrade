@@ -19,16 +19,46 @@ import {
 } from './types';
 import { FootprintCanvas } from './components/Chart/FootprintCanvas';
 import { CVDPanel } from './components/Chart/CVDPanel';
-import { TickReplayWidget } from './components/Backtest/TickReplayWidget';
-import { deepchartApi } from './services/api';
-import { SystemStatusModal } from './components/Status/SystemStatusModal';
-import { OnboardingCard } from './components/Help/OnboardingCard';
+import { AuthPanel } from './components/Auth/AuthPanel';
+import {
+  AuthConfigResponse,
+  clearStoredToken,
+  deepchartApi,
+  hasStoredToken,
+  PlanSummary,
+} from './services/api';
 import { TerminalHeader } from './components/Navigation/TerminalHeader';
 import { ChartToolbar, SignalFilters } from './components/Navigation/ChartToolbar';
-import { WorkspaceDock } from './components/Navigation/WorkspaceDock';
 import { TerminalStatusBar } from './components/Status/TerminalStatusBar';
 import { InstrumentOption } from './components/Navigation/SymbolDropdown';
-import { X, BookOpen } from 'lucide-react';
+import { CommandPalette, OverlayKey, PanelId } from './components/CommandPalette';
+import { ToolRail } from './components/Layout/ToolRail';
+import { ChartLegend } from './components/Chart/ChartLegend';
+import { MarketWatch } from './components/Navigation/MarketWatch';
+import { rememberSymbol } from './services/symbolPrefs';
+import { Activity, BookOpen, Search, X } from 'lucide-react';
+
+// Heavy surfaces that are not part of the first paint are code-split: the terminal stays usable while the
+// analytics dock / modals / replay bar load, and the initial bundle stays small.
+const WorkspaceDock = React.lazy(() =>
+  import('./components/Navigation/WorkspaceDock').then((m) => ({ default: m.WorkspaceDock }))
+);
+const SystemStatusModal = React.lazy(() =>
+  import('./components/Status/SystemStatusModal').then((m) => ({ default: m.SystemStatusModal }))
+);
+const OnboardingCard = React.lazy(() =>
+  import('./components/Help/OnboardingCard').then((m) => ({ default: m.OnboardingCard }))
+);
+const TickReplayWidget = React.lazy(() =>
+  import('./components/Backtest/TickReplayWidget').then((m) => ({ default: m.TickReplayWidget }))
+);
+
+/** Placeholder that keeps the layout from jumping while a lazy panel streams in. */
+const PanelSkeleton: React.FC<{ className?: string }> = ({ className }) => (
+  <div className={className} aria-hidden="true">
+    <div className="dc-skeleton h-full w-full opacity-40" />
+  </div>
+);
 
 const POPULAR_FUTURES = [
   { symbol: 'ES', name: 'E-mini S&P 500 (CME Globex)' },
@@ -63,6 +93,9 @@ interface SavedSettings {
   showVWAP?: boolean;
   showImbalances?: boolean;
   showDeltaNumbers?: boolean;
+  showCVD?: boolean;
+  cvdHeight?: number;
+  signalFilters?: SignalFilters;
 }
 
 function loadSavedSettings(): SavedSettings {
@@ -80,6 +113,31 @@ function saveSettings(settings: SavedSettings) {
 }
 
 const MAX_CLIENT_BARS = 1000;
+
+/**
+ * Pre-live history is kept in its own, larger budget: it is paged in from the server and must not be
+ * trimmed by the live-footprint cap, otherwise the chart silently forgets candles it already loaded.
+ */
+const MAX_CLIENT_HISTORY_BARS = 5000;
+
+/** Merge two pre-live bar series by open time, keeping the newest MAX_CLIENT_HISTORY_BARS bars. */
+function mergeHistorySeries(a: HistoricalBar[], b: HistoricalBar[]): HistoricalBar[] {
+  const byTime = new Map<number, HistoricalBar>();
+  for (const bar of a) byTime.set(bar.time, bar);
+  for (const bar of b) byTime.set(bar.time, bar);
+  const merged = Array.from(byTime.values()).sort((x, y) => x.time - y.time);
+  return merged.length > MAX_CLIENT_HISTORY_BARS ? merged.slice(-MAX_CLIENT_HISTORY_BARS) : merged;
+}
+
+/** HISTORY_RESPONSE carries its cursor either as a raw number or as an object with `beforeTime`. */
+function readHistoryCursor(cursor: unknown): number | null {
+  if (typeof cursor === 'number' && Number.isFinite(cursor)) return cursor;
+  if (cursor && typeof cursor === 'object') {
+    const beforeTime = (cursor as { beforeTime?: unknown }).beforeTime;
+    if (typeof beforeTime === 'number' && Number.isFinite(beforeTime)) return beforeTime;
+  }
+  return null;
+}
 
 /** Insert or replace a footprint bar, keeping the series ordered by bar open time and bounded to MAX_CLIENT_BARS. */
 function mergeBar(bars: FootprintBar[], bar: FootprintBar): FootprintBar[] {
@@ -111,6 +169,73 @@ export const App: React.FC = () => {
   const [savedSettings] = useState<SavedSettings>(loadSavedSettings);
 
   const [isConnected, setIsConnected] = useState(false);
+
+  /* ---------------------------------------------------------------- Authentication */
+  const [authConfig, setAuthConfig] = useState<AuthConfigResponse | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ username: string; role: string } | null>(null);
+  const [sessionPlan, setSessionPlan] = useState<PlanSummary | null>(null);
+
+  // Load the public auth configuration once: it decides whether the login screen is required.
+  useEffect(() => {
+    let cancelled = false;
+    deepchartApi
+      .getAuthConfig()
+      .then((config) => {
+        if (!cancelled) setAuthConfig(config);
+      })
+      .catch(() => {
+        if (!cancelled) setAuthConfig(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // When a token exists, surface who is signed in and which plan is in force.
+  useEffect(() => {
+    if (!hasStoredToken()) return;
+    let cancelled = false;
+    deepchartApi
+      .getMe()
+      .then((me) => {
+        if (cancelled) return;
+        setCurrentUser({ username: me.user?.username ?? 'user', role: me.user?.role ?? 'user' });
+        if (me.plan) setSessionPlan(me.plan);
+      })
+      .catch(() => {
+        // Expired/revoked token: drop it so the login screen comes back.
+        clearStoredToken();
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleAuthenticate = async (username: string, password: string) => {
+    await deepchartApi.login(username, password);
+    window.location.reload();
+  };
+
+  const handleRegister = async (username: string, password: string) => {
+    await deepchartApi.register(username, password);
+    window.location.reload();
+  };
+
+  const handleLogout = async () => {
+    await deepchartApi.logout();
+    window.location.reload();
+  };
+
+  const handleStartCheckout = async (planId: string) => {
+    try {
+      const { url } = await deepchartApi.startCheckout(planId);
+      window.location.href = url;
+    } catch (err) {
+      setAuthNotice(err instanceof Error ? err.message : 'Checkout is unavailable');
+    }
+  };
+
   const [symbol, setSymbol] = useState(
     savedSettings.symbol && !savedSettings.symbol.includes('USDT') ? savedSettings.symbol : 'ES'
   );
@@ -128,7 +253,7 @@ export const App: React.FC = () => {
     autoFollow: true,
   });
   const [crosshairX, setCrosshairX] = useState<number | null>(null);
-  const [cvdHeight, setCvdHeight] = useState<number>(85);
+  const [cvdHeight, setCvdHeight] = useState<number>(savedSettings.cvdHeight ?? 85);
 
   // Core Data State
   const [bars, setBars] = useState<FootprintBar[]>([]);
@@ -198,6 +323,15 @@ export const App: React.FC = () => {
   const oldestBarTimeRef = useRef<number | null>(null);
   const isLoadingHistoryRef = useRef(false);
   const hasMoreHistoryRef = useRef(true);
+  /**
+   * Cursor for the next "load older" page. It comes from the server response (which points just
+   * before the oldest row it returned) — scanning `historyBars[0].time` instead stalls as soon as
+   * the array is trimmed at the cap, because the cursor can then never move further back.
+   */
+  const historyCursorRef = useRef<number | null>(null);
+  const lastHistoryRequestRef = useRef<number | null>(null);
+  /** 'SYMBOL|timeframe' of the series on screen: a refresh INIT of the same series must merge. */
+  const historySeriesKeyRef = useRef<string>('');
 
   // Features & Panels Toggles (restored from browser storage)
   const [activePanel, setActivePanel] = useState<SavedSettings['activePanel']>(
@@ -207,9 +341,44 @@ export const App: React.FC = () => {
   const [instrumentsList, setInstrumentsList] = useState<InstrumentOption[]>(POPULAR_FUTURES);
   const [showSystemStatus, setShowSystemStatus] = useState(false);
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  // Layout is persisted together: which side the dock sits on and whether the watchlist is open.
+  const [dockSide, setDockSide] = useState<'left' | 'right'>(() => {
+    try {
+      const raw = localStorage.getItem('deepchart_layout_v1');
+      const parsed = raw ? JSON.parse(raw) : null;
+      return parsed?.dockSide === 'left' ? 'left' : 'right';
+    } catch {
+      return 'right';
+    }
+  });
+  const [showWatchlist, setShowWatchlist] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem('deepchart_layout_v1');
+      const parsed = raw ? JSON.parse(raw) : null;
+      return Boolean(parsed?.showWatchlist);
+    } catch {
+      return false;
+    }
+  });
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('deepchart_layout_v1', JSON.stringify({ dockSide, showWatchlist }));
+    } catch {
+      /* layout preference is a convenience; ignore storage failures */
+    }
+  }, [dockSide, showWatchlist]);
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
   const [showHelp, setShowHelp] = useState(false);
   const [showReplay, setShowReplay] = useState(false);
-  const [showCVD, setShowCVD] = useState(true);
+  const [showCVD, setShowCVD] = useState(savedSettings.showCVD ?? true);
   const [showVWAP, setShowVWAP] = useState(savedSettings.showVWAP ?? true);
   const [showImbalances, setShowImbalances] = useState(savedSettings.showImbalances ?? true);
   const [showDeltaNumbers, setShowDeltaNumbers] = useState(savedSettings.showDeltaNumbers ?? true);
@@ -217,19 +386,25 @@ export const App: React.FC = () => {
     savedSettings.clusterMultiplier ?? 'auto'
   );
   const [timeframe, setTimeframe] = useState(savedSettings.timeframe || '1m');
-  const [signalFilters, setSignalFilters] = useState<SignalFilters>({
-    buyAbs: true,
-    sellAbs: true,
-    gamma: true,
-    whale: true,
-  });
+  const [signalFilters, setSignalFilters] = useState<SignalFilters>(
+    savedSettings.signalFilters ?? {
+      buyAbs: true,
+      sellAbs: true,
+      gamma: true,
+      whale: true,
+    }
+  );
   const [tickCount, setTickCount] = useState<number>(0);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
 
-  // Load dynamic instrument capabilities from server
+  // Load dynamic instrument capabilities from the server, and refresh them when the active symbol or feed
+  // state changes so the picker's LIVE / CONNECTING / IDLE badges reflect reality instead of a stale poll.
   useEffect(() => {
-    deepchartApi.getInstruments().then((list) => {
-      if (list && list.length > 0) {
+    let cancelled = false;
+    deepchartApi
+      .getInstruments()
+      .then((list) => {
+        if (cancelled || !list || list.length === 0) return;
         setInstrumentsList(
           list.map((i) => ({
             symbol: i.symbol,
@@ -241,10 +416,89 @@ export const App: React.FC = () => {
             dayTradingMargin: i.dayTradingMargin,
             isLive: i.isLive,
             feedStatus: i.feedStatus,
+            subscribed: i.subscribed,
+            feedConfigured: i.feedConfigured,
           }))
         );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol, feedStatus]);
+
+  // Terminal keyboard shortcuts. Ctrl/Cmd+K owns the palette; the single-letter keys are ignored while a
+  // text field is focused, so they can never steal keystrokes from search or login inputs.
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null): boolean => {
+      const el = target as HTMLElement | null;
+      if (!el || !el.tagName) return false;
+      const tag = el.tagName.toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && key === 'k') {
+        event.preventDefault();
+        setPaletteOpen((prev) => !prev);
+        return;
       }
-    }).catch(() => {});
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (isTypingTarget(event.target)) return;
+
+      // "/" is the TradingView-style symbol search: same palette, one keystroke.
+      if (event.key === '/') {
+        event.preventDefault();
+        setPaletteOpen(true);
+        return;
+      }
+
+      switch (key) {
+        case 'f':
+          setChartMode((prev) => (prev === 'footprint' ? 'candles' : 'footprint'));
+          break;
+        case 'v':
+          setShowVWAP((prev) => !prev);
+          break;
+        case 'i':
+          setShowImbalances((prev) => !prev);
+          break;
+        case 'd':
+          setShowDeltaNumbers((prev) => !prev);
+          break;
+        case 'c':
+          setShowCVD((prev) => !prev);
+          break;
+        case 'p':
+          setActivePanel((prev) => (prev ? null : 'DOM'));
+          break;
+        case 'r':
+          setShowReplay((prev) => !prev);
+          break;
+        case 's':
+          setShowSystemStatus((prev) => !prev);
+          break;
+        case '?':
+          setShowHelp((prev) => !prev);
+          break;
+        case '1':
+        case '2':
+        case '3':
+        case '4':
+        case '5': {
+          const panels = ['DOM', 'Profile', 'Tape', 'GEX', 'Flow'] as const;
+          const target = panels[Number(key) - 1];
+          setActivePanel((prev) => (prev === target ? null : target));
+          break;
+        }
+        default:
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
   // Persist user preferences to localStorage
@@ -258,6 +512,9 @@ export const App: React.FC = () => {
       showVWAP,
       showImbalances,
       showDeltaNumbers,
+      showCVD,
+      cvdHeight,
+      signalFilters,
     });
   }, [
     symbol,
@@ -268,11 +525,28 @@ export const App: React.FC = () => {
     showVWAP,
     showImbalances,
     showDeltaNumbers,
+    showCVD,
+    cvdHeight,
+    signalFilters,
   ]);
+
+  // Screen-reader announcement for state a sighted trader reads from colour alone: symbol, feed and replay
+  // state. Kept out of the visual tree (sr-only) so it never crowds the chart.
+  const liveAnnouncement =
+    `${symbol} · ${timeframe} · feed ${feedStatus === 'LIVE' ? 'live' : 'unavailable'}` +
+    (sessionMode === 'LIVE' ? '' : ` · replay ${sessionMode.replaceAll('_', ' ').toLowerCase()}`);
 
   // Connect WebSocket & Register Listeners
   useEffect(() => {
     wsClient.setListeners({
+      // Server-initiated refusals need product UI: 1008 = sign-in/entitlement, 1013 = capacity.
+      onServerClose: ({ code, reason }) => {
+        setAuthNotice(
+          code === 1008
+            ? `Session refused: ${reason}. Sign in again to continue.`
+            : `Server is at capacity: ${reason}`
+        );
+      },
       onLatencyUpdate: (lat) => {
         setLatencyMs(lat > 0 ? lat : null);
       },
@@ -321,7 +595,21 @@ export const App: React.FC = () => {
         setInstrument(data.instrument);
         if (typeof data.deepTradeThresholdUsd === 'number') setDeepTradeThresholdUsd(data.deepTradeThresholdUsd);
         setHistorySource(data.historySource ?? 'NONE');
-        setHistoryBars(data.historyBars ?? []);
+        {
+          const incomingHistory = data.historyBars ?? [];
+          const seriesKey = `${data.symbol}|${data.timeframe ?? ''}`;
+          if (seriesKey !== historySeriesKeyRef.current) {
+            // New symbol/timeframe: this snapshot is the complete series.
+            historySeriesKeyRef.current = seriesKey;
+            historyCursorRef.current = incomingHistory.length > 0 ? incomingHistory[0].time : null;
+            lastHistoryRequestRef.current = null;
+            setHistoryBars(incomingHistory);
+          } else if (incomingHistory.length > 0) {
+            // Refresh snapshot of the same series (async backfill, re-subscribe): merge so history the
+            // user already paged in is not thrown away.
+            setHistoryBars((prev) => mergeHistorySeries(prev, incomingHistory));
+          }
+        }
         if (data.feedStatus) setFeedStatus(data.feedStatus);
         if (data.timeframe) {
           timeframeRef.current = data.timeframe;
@@ -418,6 +706,10 @@ export const App: React.FC = () => {
         if (resp.symbol !== symbolRef.current || resp.timeframe !== timeframeRef.current) {
           return; // Ignore stale response from earlier symbol/timeframe
         }
+        const nextCursor = readHistoryCursor(resp.cursor);
+        if (nextCursor !== null) {
+          historyCursorRef.current = nextCursor;
+        }
         if (!resp.hasMore || resp.bars.length === 0) {
           hasMoreHistoryRef.current = false;
           setHasMoreHistory(false);
@@ -427,12 +719,7 @@ export const App: React.FC = () => {
           setHasMoreHistory(true);
         }
         if (resp.bars.length > 0) {
-          setHistoryBars((prev) => {
-            const seenTimes = new Set<number>(prev.map((b) => b.time));
-            const newBars = resp.bars.filter((b) => !seenTimes.has(b.time));
-            const merged = [...newBars, ...prev].sort((a, b) => a.time - b.time);
-            return merged.length > MAX_CLIENT_BARS ? merged.slice(-MAX_CLIENT_BARS) : merged;
-          });
+          setHistoryBars((prev) => mergeHistorySeries(prev, resp.bars));
         }
       },
     });
@@ -456,12 +743,16 @@ export const App: React.FC = () => {
   }, []);
 
   const handleSelectSymbol = (sym: string) => {
+    rememberSymbol(sym); // feeds the "Recent" group in the command palette and picker
     desiredSymbolRef.current = sym;
     symbolRef.current = sym;
     pendingTicksRef.current = [];
     oldestBarTimeRef.current = null;
     hasMoreHistoryRef.current = true;
     isLoadingHistoryRef.current = false;
+    historyCursorRef.current = null;
+    lastHistoryRequestRef.current = null;
+    historySeriesKeyRef.current = '';
     setHasMoreHistory(true);
     setIsLoadingHistory(false);
     setSymbol(sym);
@@ -492,6 +783,9 @@ export const App: React.FC = () => {
     oldestBarTimeRef.current = null;
     hasMoreHistoryRef.current = true;
     isLoadingHistoryRef.current = false;
+    historyCursorRef.current = null;
+    lastHistoryRequestRef.current = null;
+    historySeriesKeyRef.current = '';
     setHasMoreHistory(true);
     setIsLoadingHistory(false);
     setTimeframe(tf);
@@ -509,17 +803,17 @@ export const App: React.FC = () => {
     const oldestBarScreenX = viewport.panX - totalLeftBars * barStep;
 
     if (oldestBarScreenX > -300) {
-      let oldestTime: number | undefined;
-      if (historyBars.length > 0) {
-        oldestTime = historyBars[0].time;
-      } else if (bars.length > 0) {
-        oldestTime = bars[0].time;
-      }
-      if (oldestTime && (!oldestBarTimeRef.current || oldestTime < oldestBarTimeRef.current)) {
-        oldestBarTimeRef.current = oldestTime;
+      // Page with the server cursor. It always points just before the oldest row the server returned,
+      // so it keeps moving back even after the client trims its own array at MAX_CLIENT_HISTORY_BARS.
+      const cursor =
+        historyCursorRef.current ??
+        (historyBars.length > 0 ? historyBars[0].time : bars[0]?.time ?? null);
+      if (cursor !== null && cursor !== lastHistoryRequestRef.current) {
+        lastHistoryRequestRef.current = cursor;
+        oldestBarTimeRef.current = cursor;
         isLoadingHistoryRef.current = true;
         setIsLoadingHistory(true);
-        wsClient.fetchHistory(symbolRef.current, timeframeRef.current, oldestTime, 300);
+        wsClient.fetchHistory(symbolRef.current, timeframeRef.current, cursor, 300);
       }
     }
   }, [viewport.panX, viewport.barWidth, viewport.barSpacing, historyBars, bars]);
@@ -573,9 +867,132 @@ export const App: React.FC = () => {
     }));
   };
 
+  const handleScreenshot = () => {
+    // Capture whatever the chart surface currently renders (the footprint canvas) as a PNG download.
+    const canvas = document.querySelector<HTMLCanvasElement>('#chart-surface canvas');
+    if (!canvas) {
+      setAuthNotice('Chart image: nothing to capture yet (no chart rendered).');
+      return;
+    }
+    try {
+      const url = canvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `deepchart-${symbol}-${timeframe}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.png`;
+      link.click();
+    } catch (err) {
+      setAuthNotice(`Chart image failed: ${(err as Error).message}`);
+    }
+  };
+
+  const handleToggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void document.documentElement.requestFullscreen?.();
+    }
+  };
+
+  /** Single owner of the overlay toggles, shared by the palette, the legend chips and the toolbar. */
+  const toggleOverlay = (key: OverlayKey) => {
+    if (key === 'vwap') setShowVWAP((prev) => !prev);
+    else if (key === 'imbalances') setShowImbalances((prev) => !prev);
+    else if (key === 'delta') setShowDeltaNumbers((prev) => !prev);
+    else setShowCVD((prev) => !prev);
+  };
+
+  /** Digits to show for this instrument: 0.25 -> 2, 0.0005 -> 4, 1 -> 0 (never more than 6). */
+  const decimalsForTick = (tick?: number): number => {
+    if (!tick || !Number.isFinite(tick) || tick <= 0) return 2;
+    return Math.max(0, Math.min(6, Math.ceil(-Math.log10(tick))));
+  };
+
+  const lastRenderedBar = React.useMemo(() => {
+    const source = bars.length > 0 ? bars : historyBars;
+    const bar = source[source.length - 1];
+    if (!bar) return undefined;
+    return { open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume };
+  }, [bars, historyBars]);
+
+  const previousBarClose = React.useMemo(() => {
+    const source = bars.length > 0 ? bars : historyBars;
+    return source.length > 1 ? source[source.length - 2].close : undefined;
+  }, [bars, historyBars]);
+
+  // Command palette wiring: every entry maps to a handler that already exists, so the palette stays a thin
+  // layer over the terminal instead of a second source of truth. Plain object (not memoised) keeps the
+  // closures fresh; building ~60 entries per render is not worth a stale-closure risk.
+  const paletteActions = {
+    selectSymbol: handleSelectSymbol,
+    setTimeframe: handleTimeframeChange,
+    setChartMode: (mode: 'footprint' | 'candles') => setChartMode(mode),
+    togglePanel: (panel: PanelId) => setActivePanel((prev) => (prev === panel ? null : panel)),
+    toggleOverlay,
+    setAutoFollow: (on: boolean) => setViewport((prev) => ({ ...prev, autoFollow: on })),
+    fitView: handleFitView,
+    openDiagnostics: () => setShowSystemStatus(true),
+    openPrimer: () => setShowOnboardingModal(true),
+    signOut: currentUser ? () => void handleLogout() : undefined,
+  };
+
+  // The server requires authentication and this browser has no (valid) token yet.
+  if (authConfig?.authRequired && !hasStoredToken()) {
+    return (
+      <AuthPanel
+        authRequired
+        devMode={authConfig.devMode}
+        registrationEnabled={authConfig.registrationEnabled}
+        billingConfigured={authConfig.billingConfigured}
+        plans={authConfig.plans}
+        onAuthenticate={handleAuthenticate}
+        onRegister={handleRegister}
+        onStartCheckout={handleStartCheckout}
+        initialError={authNotice}
+      />
+    );
+  }
+
+  // The analytics dock renders on either side of the chart; the divider inside it always faces the chart.
+  const dockElement = activePanel ? (
+    <React.Suspense fallback={<PanelSkeleton className="analytics-dock" />}>
+      <WorkspaceDock
+        activePanel={activePanel}
+        onClose={() => setActivePanel(null)}
+        onSelectPanel={(panel: PanelId) => setActivePanel(panel)}
+        side={dockSide}
+        onToggleSide={() => setDockSide((prev) => (prev === 'right' ? 'left' : 'right'))}
+        symbol={symbol}
+        currentPrice={currentPrice}
+        instrument={instrument}
+        orderbook={orderbook}
+        volumeProfile={volumeProfile}
+        tpoProfile={tpoProfile}
+        tape={tape}
+        recentTicks={recentTicks}
+        deepTrades={deepTrades}
+        deepTradeThresholdUsd={deepTradeThresholdUsd}
+        gexProfile={gexProfile}
+        optionsFlow={optionsFlow}
+      />
+    </React.Suspense>
+  ) : null;
+
   return (
     <div className="terminal-shell">
-      {/* 1. Command Station Header */}
+      {authNotice && (
+        <div className="flex items-center justify-between gap-3 bg-[#3B1D1D] border-b border-[#7F1D1D] px-4 py-2 text-xs text-[#FCA5A5]">
+          <span>{authNotice}</span>
+          <button className="underline" onClick={() => setAuthNotice(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Accessible status: symbol, feed and replay state announced to screen readers */}
+      <span className="sr-only" role="status" aria-live="polite">
+        {liveAnnouncement}
+      </span>
+      {/* 1. Command Station Header (user/plan chip + sign out live in the header now) */}
       <TerminalHeader
         symbol={symbol}
         instrument={instrument}
@@ -595,6 +1012,11 @@ export const App: React.FC = () => {
         highPrice={sessionStats.high}
         lowPrice={sessionStats.low}
         instrumentsList={instrumentsList}
+        onOpenPalette={() => setPaletteOpen(true)}
+        username={currentUser?.username ?? null}
+        planName={sessionPlan?.name ?? null}
+        role={currentUser?.role ?? null}
+        onSignOut={currentUser ? () => void handleLogout() : undefined}
       />
 
       {/* 2. Chart Workspace Secondary Toolbar */}
@@ -627,7 +1049,8 @@ export const App: React.FC = () => {
       {showHelp && (
         <div className="flex items-center justify-between px-3 py-1.5 bg-[#10151C] border-b border-[#1C2630] text-[11px] text-[#22D3EE] font-mono">
           <span>
-            💡 <strong>Microstructure Controls:</strong> Drag to Pan • Scroll to Zoom Bars • Shift+Scroll to Zoom Price Scale • Double-Click to Reset View.
+            💡 <strong>Controls:</strong> Drag to pan · Scroll to zoom bars · Shift+Scroll to zoom price ·
+            Double-click to reset · <strong>Ctrl+K</strong> opens the command palette (instrument, timeframe, panel, overlays).
           </span>
           <div className="flex items-center gap-2">
             <button
@@ -651,9 +1074,32 @@ export const App: React.FC = () => {
 
       {/* Main Workspace Layout */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
+        {/* Left tool rail: TradingView-style vertical toolbar (only actions that really exist) */}
+        <ToolRail
+          autoFollow={viewport.autoFollow}
+          onToggleAutoFollow={handleToggleAutoFollow}
+          onFitView={handleFitView}
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
+          onOpenPalette={() => setPaletteOpen(true)}
+          watchlistOpen={showWatchlist}
+          onToggleWatchlist={() => setShowWatchlist((prev) => !prev)}
+          dockSide={dockSide}
+          onToggleDockSide={() => setDockSide((prev) => (prev === 'right' ? 'left' : 'right'))}
+          replayOpen={showReplay}
+          onToggleReplay={() => setShowReplay((prev) => !prev)}
+          onOpenDiagnostics={() => setShowSystemStatus(true)}
+          onScreenshot={handleScreenshot}
+          onToggleFullscreen={handleToggleFullscreen}
+          isFullscreen={isFullscreen}
+        />
+
+        {/* Dock when docked left: same component, divider on its right edge */}
+        {dockSide === 'left' && dockElement}
+
         {/* Center: Footprint Chart Canvas & CVD Panel */}
         <div className="flex-1 flex flex-col min-w-0 h-full">
-          <div className="flex-1 min-h-0 relative">
+          <div className="flex-1 min-h-0 relative" id="chart-surface">
             {(bars.length > 0 || historyBars.length > 0) && (
               <FootprintCanvas
                 bars={bars}
@@ -685,21 +1131,63 @@ export const App: React.FC = () => {
               />
             )}
 
+            {/* TradingView-style legend: symbol · timeframe · OHLC of the last bar · indicator chips */}
+            <ChartLegend
+              symbol={symbol}
+              timeframe={timeframe}
+              chartMode={chartMode}
+              exchange={instrument?.exchange}
+              lastBar={lastRenderedBar}
+              previousClose={previousBarClose}
+              feedStatus={feedStatus}
+              overlays={{ vwap: showVWAP, imbalances: showImbalances, delta: showDeltaNumbers, cvd: showCVD }}
+              onToggleOverlay={toggleOverlay}
+              decimals={decimalsForTick(instrument?.tickSize)}
+            />
+
             {bars.length === 0 && historyBars.length === 0 && (
               <div className="chart-empty-state" role="status">
                 <div className="empty-state-box">
-                  <div className="font-mono text-xs text-[#22D3EE] font-semibold tracking-wide uppercase">
+                  <div className="font-mono text-[11px] text-[#22D3EE] font-semibold tracking-wide uppercase">
                     {symbol} · {timeframe} · {chartMode}
                   </div>
-                  <h2>{sessionMode !== 'LIVE' ? 'No Replay Records' : isLoadingHistory ? 'Loading Market History…' : 'Waiting for Market Data'}</h2>
+                  <h2>
+                    {sessionMode !== 'LIVE'
+                      ? 'No replay records'
+                      : isLoadingHistory
+                        ? 'Loading market history…'
+                        : feedStatus === 'LIVE'
+                          ? 'Waiting for the first validated tick'
+                          : 'Feed unavailable for this instrument'}
+                  </h2>
                   <p>
-                    {isConnected
-                      ? `Awaiting validated real-time trade records for ${symbol}.`
-                      : 'Data feed is offline. Connecting to engine…'}
+                    {feedStatus === 'LIVE'
+                      ? `Connected and subscribed. The chart draws only validated ${symbol} trades — nothing is simulated, so an empty tape stays empty.`
+                      : isConnected
+                        ? 'The server has no validated real-time source for this instrument. Check the provider configuration and your vendor entitlement, then open Diagnostics for the exact reason.'
+                        : 'Reconnecting to the engine… if this persists, open Diagnostics to inspect the session.'}
                   </p>
-                  <div className="flex justify-between items-center pt-2 border-t border-[#1C2630] text-[10px] text-[#7F8B97] font-mono">
-                    <span>Engine: <strong className={isConnected ? 'text-[#19C37D]' : 'text-[#F05252]'}>{isConnected ? 'Connected' : 'Offline'}</strong></span>
-                    <span>Provider: <strong className="text-[#E7EDF3]">Databento / CME</strong></span>
+                  <div className="empty-state-actions">
+                    <button className="terminal-btn" onClick={() => setShowSystemStatus(true)}>
+                      <Activity size={13} /> Open diagnostics
+                    </button>
+                    <button className="terminal-btn" onClick={() => setShowOnboardingModal(true)}>
+                      <BookOpen size={13} /> How to read this chart
+                    </button>
+                    <button className="terminal-btn" onClick={() => setPaletteOpen(true)}>
+                      <Search size={13} /> Switch instrument (Ctrl+K)
+                    </button>
+                  </div>
+                  <div className="flex justify-between items-center pt-3 mt-4 border-t border-[#1C2630] text-[10px] text-[#7F8B97] font-mono">
+                    <span>
+                      Engine:{' '}
+                      <strong style={{ color: isConnected ? 'var(--ok)' : 'var(--danger)' }}>
+                        {isConnected ? 'Connected' : 'Offline'}
+                      </strong>
+                    </span>
+                    <span>
+                      Provider: <strong className="text-[#E7EDF3]">{instrument?.exchange ? 'Licensed vendor' : 'CME'}</strong>
+                    </span>
                   </div>
                 </div>
               </div>
@@ -723,34 +1211,33 @@ export const App: React.FC = () => {
           )}
         </div>
 
-        {/* Right Dock: DOM, Profile, Tape, GEX, Flow */}
-        <WorkspaceDock
-          activePanel={activePanel}
-          onClose={() => setActivePanel(null)}
-          symbol={symbol}
-          currentPrice={currentPrice}
-          instrument={instrument}
-          orderbook={orderbook}
-          volumeProfile={volumeProfile}
-          tpoProfile={tpoProfile}
-          tape={tape}
-          recentTicks={recentTicks}
-          deepTrades={deepTrades}
-          deepTradeThresholdUsd={deepTradeThresholdUsd}
-          gexProfile={gexProfile}
-          optionsFlow={optionsFlow}
-        />
+        {/* Dock on the right (the left position renders before the chart) */}
+        {dockSide === 'right' && dockElement}
+
+        {/* Watchlist panel (TradingView-style right-hand list; honest feed states, no fake prices) */}
+        {showWatchlist && (
+          <MarketWatch
+            instruments={instrumentsList}
+            currentSymbol={symbol}
+            currentPrice={currentPrice}
+            decimals={decimalsForTick(instrument?.tickSize)}
+            onSelectSymbol={handleSelectSymbol}
+            onClose={() => setShowWatchlist(false)}
+          />
+        )}
       </div>
 
-      {/* Session Replay Bar */}
+      {/* Session Replay Bar (lazy) */}
       {showReplay && (
-        <TickReplayWidget
-          progress={replayProgress}
-          symbol={symbol}
-          feedStatus={feedStatus}
-          historySource={historySource}
-          gexSource={gexProfile?.dataSource}
-        />
+        <React.Suspense fallback={<PanelSkeleton className="h-[74px] border-t border-[#1C2630]" />}>
+          <TickReplayWidget
+            progress={replayProgress}
+            symbol={symbol}
+            feedStatus={feedStatus}
+            historySource={historySource}
+            gexSource={gexProfile?.dataSource}
+          />
+        </React.Suspense>
       )}
 
       {/* Terminal Status Bar */}
@@ -765,19 +1252,36 @@ export const App: React.FC = () => {
         latencyMs={isConnected ? latencyMs : null}
       />
 
-      {/* System Status Diagnostics Modal */}
-      <SystemStatusModal
-        isOpen={showSystemStatus}
-        onClose={() => setShowSystemStatus(false)}
-        activeSymbol={symbol}
+      {/* Command Palette (Ctrl+K): instrument, timeframe, panel and overlay switching in one place */}
+      <CommandPalette
+        key={paletteOpen ? 'palette-open' : 'palette-closed'}
+        isOpen={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        instruments={instrumentsList}
+        currentSymbol={symbol}
+        timeframe={timeframe}
+        chartMode={chartMode}
+        activePanel={activePanel}
+        overlays={{ vwap: showVWAP, imbalances: showImbalances, delta: showDeltaNumbers, cvd: showCVD }}
+        autoFollow={viewport.autoFollow}
+        actions={paletteActions}
       />
 
-      {/* Onboarding Primer Guide Modal */}
-      <OnboardingCard
-        symbol={symbol}
-        forceVisible={showOnboardingModal}
-        onClose={() => setShowOnboardingModal(false)}
-      />
+      {/* System Status Diagnostics Modal (lazy: only loads when actually opened) */}
+      {showSystemStatus && (
+        <React.Suspense fallback={null}>
+          <SystemStatusModal isOpen onClose={() => setShowSystemStatus(false)} activeSymbol={symbol} />
+        </React.Suspense>
+      )}
+
+      {/* Onboarding Primer Guide Modal (lazy, stays mounted for first-run guidance) */}
+      <React.Suspense fallback={null}>
+        <OnboardingCard
+          symbol={symbol}
+          forceVisible={showOnboardingModal}
+          onClose={() => setShowOnboardingModal(false)}
+        />
+      </React.Suspense>
     </div>
   );
 };

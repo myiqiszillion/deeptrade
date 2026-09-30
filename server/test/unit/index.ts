@@ -1,11 +1,29 @@
-import { runAuthTests } from './auth.test.js';
-import { runEntitlementTests } from './entitlement.test.js';
-import { runMarketDataStoreTests } from './marketDataStore.test.js';
-import { runSessionCalendarTests } from './sessionCalendar.test.js';
-import { runFootprintEngineTests } from './footprintEngine.test.js';
-import { runReplaySessionTests } from './replaySession.test.js';
-import { runValidateTests } from './validate.test.js';
-import { runRegressionAuditTests } from './regression_audit.test.js';
+/**
+ * Unit suite entry point.
+ *
+ * The environment is pinned BEFORE any module is imported: suites must never touch a developer's
+ * real SQLite file, and MarketDataStore reads STORAGE_PATH when its singleton is constructed at
+ * import time. Hence the dynamic imports below.
+ */
+process.env.NODE_ENV = 'test';
+process.env.STORAGE_PATH = ':memory:';
+
+const { runAuthTests } = await import('./auth.test.js');
+const { runEntitlementTests } = await import('./entitlement.test.js');
+const { runMarketDataStoreTests } = await import('./marketDataStore.test.js');
+const { runSessionCalendarTests } = await import('./sessionCalendar.test.js');
+const { runFootprintEngineTests } = await import('./footprintEngine.test.js');
+const { runReplaySessionTests } = await import('./replaySession.test.js');
+const { runValidateTests } = await import('./validate.test.js');
+const { runRegressionAuditTests } = await import('./regression_audit.test.js');
+const { runPasswordTests } = await import('./passwords.test.js');
+const { runLoginGuardTests } = await import('./loginGuard.test.js');
+const { runBillingTests } = await import('./billing.test.js');
+const { runRetentionTests } = await import('./retention.test.js');
+const { runDatabentoUsageTests } = await import('./databentoUsage.test.js');
+const { runInstrumentCatalogTests } = await import('./instruments.test.js');
+const { runInstrumentDefinitionTests } = await import('./instrumentDefinitions.test.js');
+const { runQuoteBoardTests } = await import('./quoteBoard.test.js');
 
 async function main() {
   console.log('======================================================');
@@ -21,6 +39,14 @@ async function main() {
   await runReplaySessionTests();
   await runValidateTests();
   await runRegressionAuditTests();
+  await runPasswordTests();
+  await runLoginGuardTests();
+  await runBillingTests();
+  await runRetentionTests();
+  await runDatabentoUsageTests();
+  await runInstrumentCatalogTests();
+  await runInstrumentDefinitionTests();
+  await runQuoteBoardTests();
 
   const elapsed = Date.now() - start;
   console.log('\n======================================================');

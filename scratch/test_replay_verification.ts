@@ -1,3 +1,4 @@
+// @ts-nocheck
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -58,7 +59,7 @@ async function runReplayVerification() {
     const wsUrl = `ws://127.0.0.1:${port}`;
     const ws = new WebSocket(wsUrl);
     const messages: any[] = [];
-    ws.on('message', (data) => {
+    ws.on('message', (data: any) => {
       try {
         messages.push(JSON.parse(data.toString()));
       } catch {}

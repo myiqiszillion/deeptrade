@@ -25,6 +25,9 @@ export async function runWebSocketIntegrationTests(): Promise<void> {
     MAX_SESSIONS: '5',
     MAX_SESSIONS_PER_USER: '2',
     DEFAULT_SYMBOL: 'ES',
+    // Hermetic run: STORAGE_PATH outranks NODE_ENV=test in MarketDataStore, so an inherited value
+    // from the dev shell would make the test server read/write the real market_data.sqlite.
+    STORAGE_PATH: ':memory:',
   };
 
   const server = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {

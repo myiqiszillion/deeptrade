@@ -1,6 +1,8 @@
 import { HistoricalBar, Tick } from '../types.js';
 import { DBN_CONSTANTS } from './databentoTransport.js';
 import { DATABENTO_SYMBOL_MAP } from './databentoAdapter.js';
+import { HISTORY_BARS_DEFAULT, HISTORY_BARS_MAX } from './historyDepth.js';
+import { VENDOR_USAGE_PROVIDER, guardVendorSpend, recordVendorSpend } from './databentoUsage.js';
 
 export interface DatabentoHistoryOptions {
   barMinutes?: number;
@@ -171,6 +173,7 @@ export async function getAvailableDatasetEnd(
   fetchFn: typeof fetch = fetch,
   baseUrl = 'https://hist.databento.com'
 ): Promise<number | null> {
+  if (process.env.DATABENTO_TRANSPORT_READY === '0') return null;
   const now = Date.now();
   if (cachedDatasetRange && now - cachedDatasetRange.ts < 60_000) {
     const parsed = new Date(cachedDatasetRange.end).getTime();
@@ -193,17 +196,24 @@ export async function fetchDatabentoBars(
   options: DatabentoHistoryOptions = {}
 ): Promise<HistoricalBar[]> {
   const apiKey = config.apiKey || process.env.DATABENTO_API_KEY;
-  if (!apiKey) return [];
+  if (!apiKey || process.env.DATABENTO_TRANSPORT_READY === '0') return [];
 
   const dataset = config.dataset || process.env.DATABENTO_DATASET || 'GLBX.MDP3';
   const { querySymbol, queryStypeIn } = resolveQuerySymbol(symbol, config.stypeIn);
 
   const barMinutes = options.barMinutes || 1;
-  const elements = Math.min(options.elements || 500, 1000);
+  const elements = Math.min(options.elements || HISTORY_BARS_DEFAULT, HISTORY_BARS_MAX);
 
   let schema = 'ohlcv-1m';
   if (barMinutes >= 1440) schema = 'ohlcv-1d';
   else if (barMinutes >= 60) schema = 'ohlcv-1h';
+
+  // The API returns the FIRST `limit` records inside the window, so the limit has to cover the whole
+  // window: sub-hour timeframes are aggregated from 1-minute records (barMinutes records per bar),
+  // while ohlcv-1h/1d return one record per output bar. Undersizing this silently truncates the
+  // NEWEST bars — that is what made 5m/15m/30m history end hours (or days) before "now".
+  const recordsPerBar = schema === 'ohlcv-1m' ? barMinutes : 1;
+  const recordLimit = Math.min(elements * recordsPerBar * 2, 30000);
 
   const baseUrl = options.baseUrl || 'https://hist.databento.com';
   const fetchFn = options.fetchFn || fetch;
@@ -228,10 +238,31 @@ export async function fetchDatabentoBars(
       start,
       end,
       encoding: 'json',
-      limit: String(elements * 2),
+      limit: String(recordLimit),
     }).toString();
 
   const authHeader = 'Basic ' + Buffer.from(`${apiKey}:`).toString('base64');
+
+  // Spend guard: with DATABENTO_MONTHLY_USD_BUDGET (or DATABENTO_COST_LOG=1) the vendor is asked for a
+  // price before the paid request goes out. Without those env vars this is a no-op, so no extra request.
+  const spendVerdict = await guardVendorSpend({
+    provider: VENDOR_USAGE_PROVIDER,
+    label: `${symbol} ${schema} ${startIso} -> ${endIso} (${elements} bars)`,
+    query: {
+      dataset,
+      schema,
+      start: startIso,
+      end: endIso,
+      symbols: querySymbol,
+      stype_in: queryStypeIn,
+      mode: 'historical-streaming',
+    },
+    apiKey,
+    fetchFn,
+    baseUrl,
+    signal: options.signal,
+  });
+  if (!spendVerdict.allowed) return [];
 
   try {
     let res = await fetchFn(buildUrl(querySymbol, startIso, endIso), {
@@ -305,6 +336,10 @@ export async function fetchDatabentoBars(
     const finalBars =
       schema === 'ohlcv-1m' && barMinutes > 1 ? aggregateBars(bars, barMinutes) : bars;
 
+    if (finalBars.length > 0 && spendVerdict.estimatedUsd !== null) {
+      recordVendorSpend(VENDOR_USAGE_PROVIDER, spendVerdict.estimatedUsd, 1);
+    }
+
     return finalBars.slice(-elements);
   } catch (err: any) {
     if (err?.name === 'AbortError') return [];
@@ -323,7 +358,7 @@ export async function fetchDatabentoTrades(
   options: DatabentoTradesOptions = {}
 ): Promise<Tick[]> {
   const apiKey = config.apiKey || process.env.DATABENTO_API_KEY;
-  if (!apiKey) return [];
+  if (!apiKey || process.env.DATABENTO_TRANSPORT_READY === '0') return [];
 
   const dataset = config.dataset || process.env.DATABENTO_DATASET || 'GLBX.MDP3';
   const { querySymbol, queryStypeIn } = resolveQuerySymbol(symbol, config.stypeIn);
@@ -360,6 +395,26 @@ export async function fetchDatabentoTrades(
     }).toString();
 
   const authHeader = 'Basic ' + Buffer.from(`${apiKey}:`).toString('base64');
+
+  // Same spend guard as the bars path: tick pulls are the expensive part of a metered Databento bill.
+  const spendVerdict = await guardVendorSpend({
+    provider: VENDOR_USAGE_PROVIDER,
+    label: `${symbol} trades ${startIso} -> ${endIso} (limit ${limit})`,
+    query: {
+      dataset,
+      schema: 'trades',
+      start: startIso,
+      end: endIso,
+      symbols: querySymbol,
+      stype_in: queryStypeIn,
+      mode: 'historical-streaming',
+    },
+    apiKey,
+    fetchFn,
+    baseUrl,
+    signal: options.signal,
+  });
+  if (!spendVerdict.allowed) return [];
 
   try {
     let res = await fetchFn(buildUrl(querySymbol, startIso, endIso), {
@@ -446,6 +501,11 @@ export async function fetchDatabentoTrades(
     }
 
     ticks.sort((a, b) => a.timestamp - b.timestamp);
+
+    if (ticks.length > 0 && spendVerdict.estimatedUsd !== null) {
+      recordVendorSpend(VENDOR_USAGE_PROVIDER, spendVerdict.estimatedUsd, 1);
+    }
+
     return ticks.slice(-limit);
   } catch (err: any) {
     if (err?.name === 'AbortError') return [];

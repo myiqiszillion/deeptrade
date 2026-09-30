@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      NODE_ENV: test
+      # Tests must never touch a developer database; the suites enforce :memory: themselves.
+      STORAGE_PATH: ':memory:'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck (server + client)
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: Protocol drift check
+        run: pnpm test:protocol
+      - name: Unit tests
+        run: pnpm test:unit
+      - name: Build (server dist + client bundle)
+        run: pnpm build
+      - name: Client bundle smoke test (UI product markers)
+        run: pnpm test:client
+      - name: Integration tests (spawn the built server)
+        run: pnpm test:integration

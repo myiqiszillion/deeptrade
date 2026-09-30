@@ -17,6 +17,15 @@ import {
   WSServerMessage,
 } from '../types';
 
+/** Same key the REST client uses, so a login in the SPA authenticates the socket too. */
+export function readAuthToken(): string | null {
+  try {
+    return localStorage.getItem('deepchart_jwt_token');
+  } catch {
+    return null;
+  }
+}
+
 export interface WSListeners {
   onInitState?: (data: {
     symbol: string;
@@ -49,6 +58,11 @@ export interface WSListeners {
   onOptionsFlow?: (trade: OptionsFlowTrade) => void;
   onReplayState?: (progress: ReplayProgress) => void;
   onConnectionChange?: (connected: boolean) => void;
+  /**
+   * Server-initiated close that needs product UI rather than a silent retry:
+   * 1008 = authentication/entitlement refused, 1013 = server at capacity.
+   */
+  onServerClose?: (info: { code: number; reason: string }) => void;
   onHistoryResponse?: (response: {
     symbol: string;
     timeframe: string;
@@ -122,7 +136,10 @@ export class DeepChartWSClient {
     }
 
     try {
-      this.ws = new WebSocket(this.url);
+      // The token travels in the WebSocket subprotocol header: browsers cannot set Authorization
+      // on a WS handshake, and query strings leak credentials into server logs.
+      const token = readAuthToken();
+      this.ws = token ? new WebSocket(this.url, ['deepchart-token', token]) : new WebSocket(this.url);
 
       this.ws.onopen = () => {
         this.isConnected = true;
@@ -192,7 +209,7 @@ export class DeepChartWSClient {
         }
       };
 
-      this.ws.onclose = () => {
+      this.ws.onclose = (event: CloseEvent) => {
         this.stopPing();
         this.isConnected = false;
         this.listeners.onConnectionChange?.(false);
@@ -201,6 +218,22 @@ export class DeepChartWSClient {
           console.log('[DeepChart WS] Disconnected (intentional).');
           return;
         }
+
+        const code = event?.code ?? 1006;
+        const reason = event?.reason || '';
+        if (code === 1008) {
+          // Authentication / entitlement refused: retrying cannot help until the user signs in.
+          console.warn(`[DeepChart WS] Server refused the session (${code}): ${reason}`);
+          this.listeners.onServerClose?.({ code, reason: reason || 'Not authorized' });
+          return;
+        }
+        if (code === 1013) {
+          this.listeners.onServerClose?.({ code, reason: reason || 'Server at capacity' });
+          console.log('[DeepChart WS] Server at capacity. Retrying in 15s...');
+          this.reconnectTimer = setTimeout(() => this.connect(), 15000);
+          return;
+        }
+
         console.log('[DeepChart WS] Disconnected. Reconnecting in 2s...');
         this.reconnectTimer = setTimeout(() => this.connect(), 2000);
       };

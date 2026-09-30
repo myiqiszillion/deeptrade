@@ -1,13 +1,39 @@
-export type AssetClass = 'EQUITY_INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND';
+export type AssetClass =
+  | 'EQUITY_INDEX'
+  | 'COMMODITY'
+  | 'ENERGY'
+  | 'BOND'
+  | 'METALS'
+  | 'AGRICULTURE'
+  | 'FX'
+  | 'RATES'
+  | 'CRYPTO';
+
+/** UI grouping for the instrument picker. */
+export type InstrumentCategory =
+  | 'INDEX'
+  | 'COMMODITY'
+  | 'ENERGY'
+  | 'BOND'
+  | 'METALS'
+  | 'AGRICULTURE'
+  | 'FX'
+  | 'RATES'
+  | 'CRYPTO'
+  /** Vendor-discovered instrument whose unit of measure we cannot categorise confidently. */
+  | 'OTHER';
+
+export type ExchangeName = 'CME' | 'NYMEX' | 'COMEX' | 'CBOT';
+
 export type ContractType = 'CONTINUOUS' | 'SPECIFIC';
 
 export interface FuturesInstrument {
   symbol: string;
   rootSymbol: string;
   name: string;
-  category: 'INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND';
+  category: InstrumentCategory;
   assetClass: AssetClass;
-  exchange: 'CME' | 'NYMEX' | 'COMEX' | 'CBOT';
+  exchange: ExchangeName;
   tickSize: number;
   pointValue: number; // USD per full point move
   tickValue: number;  // USD per minimum tick move
@@ -213,8 +239,8 @@ export const FUTURES_INSTRUMENTS: Record<string, FuturesInstrument> = {
     symbol: 'GC',
     rootSymbol: 'GC',
     name: 'Gold Futures',
-    category: 'COMMODITY',
-    assetClass: 'COMMODITY',
+    category: 'METALS',
+    assetClass: 'METALS',
     exchange: 'COMEX',
     tickSize: 0.1,
     pointValue: 100.0,
@@ -235,8 +261,8 @@ export const FUTURES_INSTRUMENTS: Record<string, FuturesInstrument> = {
     symbol: 'MGC',
     rootSymbol: 'MGC',
     name: 'Micro Gold Futures',
-    category: 'COMMODITY',
-    assetClass: 'COMMODITY',
+    category: 'METALS',
+    assetClass: 'METALS',
     exchange: 'COMEX',
     tickSize: 0.1,
     pointValue: 10.0,
@@ -305,6 +331,7 @@ export const FUTURES_INSTRUMENTS: Record<string, FuturesInstrument> = {
     tickSize: 0.001,
     pointValue: 10000.0,
     tickValue: 10.0,
+    microSymbol: 'MNG',
     initialMargin: 6000,
     dayTradingMargin: 1000,
     basePrice: 2.85,
@@ -316,6 +343,135 @@ export const FUTURES_INSTRUMENTS: Record<string, FuturesInstrument> = {
     sessionScheduleId: 'NYMEX_ENERGY',
   },
 };
+
+/**
+ * CME Group product universe (the liquid roots of what Databento serves as `GLBX.MDP3`).
+ *
+ * Rows are declared once and expanded into full {@link FuturesInstrument} records: `tickValue` is always
+ * derived as `pointValue × tickSize` so the two can never drift apart (a wrong tick/multiplier means wrong
+ * P&L, wrong whale notches and wrong footprint grouping — the one class of bug this app must not ship).
+ *
+ * Specs (contract unit → point value, minimum price increment) come from CME Group contract
+ * specifications; each row states the unit so the number is auditable:
+ *   metals/energy/ags → NYMEX/COMEX/CBOT spec sheets, rates → CBOT, FX/crypto → CME.
+ * `initialMargin`/`dayTradingMargin` stay 0 unless verified: the UI hides unknown margins instead of
+ * inventing them (ask your broker or wire a margin feed before showing risk numbers).
+ */
+interface SpecRow {
+  symbol: string;
+  name: string;
+  category: InstrumentCategory;
+  assetClass: AssetClass;
+  exchange: ExchangeName;
+  /** USD per full point of price movement (= contract unit × quote convention). */
+  pointValue: number;
+  /** Minimum price increment in price units. */
+  tickSize: number;
+  basePrice: number;
+  sessionScheduleId: string;
+  underlyingIndex?: string;
+  microSymbol?: string;
+  microTickValue?: number;
+  parentSymbol?: string;
+  isMicro?: boolean;
+}
+
+const SPEC_TABLE: SpecRow[] = [
+  // --- COMEX metals (unit: troy oz / lb) ---
+  { symbol: 'SI', name: 'Silver', category: 'METALS', assetClass: 'METALS', exchange: 'COMEX', pointValue: 5000, tickSize: 0.005, basePrice: 48.0, sessionScheduleId: 'COMEX_METALS', microSymbol: 'SIL' },
+  { symbol: 'SIL', name: 'Micro Silver', category: 'METALS', assetClass: 'METALS', exchange: 'COMEX', pointValue: 1000, tickSize: 0.005, basePrice: 48.0, sessionScheduleId: 'COMEX_METALS', parentSymbol: 'SI' },
+  { symbol: 'HG', name: 'Copper', category: 'METALS', assetClass: 'METALS', exchange: 'COMEX', pointValue: 25000, tickSize: 0.0005, basePrice: 4.6, sessionScheduleId: 'COMEX_METALS', microSymbol: 'MHG' },
+  { symbol: 'MHG', name: 'Micro Copper', category: 'METALS', assetClass: 'METALS', exchange: 'COMEX', pointValue: 2500, tickSize: 0.0005, basePrice: 4.6, sessionScheduleId: 'COMEX_METALS', parentSymbol: 'HG' },
+
+  // --- NYMEX energy (unit: bbl / mmBtu / gal) ---
+  { symbol: 'MNG', name: 'Micro Henry Hub Natural Gas', category: 'ENERGY', assetClass: 'ENERGY', exchange: 'NYMEX', pointValue: 1000, tickSize: 0.001, basePrice: 2.85, sessionScheduleId: 'NYMEX_ENERGY', parentSymbol: 'NG' },
+  { symbol: 'RB', name: 'RBOB Gasoline', category: 'ENERGY', assetClass: 'ENERGY', exchange: 'NYMEX', pointValue: 42000, tickSize: 0.0001, basePrice: 2.05, sessionScheduleId: 'NYMEX_ENERGY' },
+  { symbol: 'HO', name: 'NY Harbor ULSD (Heating Oil)', category: 'ENERGY', assetClass: 'ENERGY', exchange: 'NYMEX', pointValue: 42000, tickSize: 0.0001, basePrice: 2.35, sessionScheduleId: 'NYMEX_ENERGY' },
+
+  // --- Grains / softs / livestock (quoted in cents: 1 full point = 100 cents) ---
+  { symbol: 'ZC', name: 'Corn', category: 'AGRICULTURE', assetClass: 'AGRICULTURE', exchange: 'CBOT', pointValue: 50, tickSize: 0.25, basePrice: 430.0, sessionScheduleId: 'CBOT_AG' },
+  { symbol: 'ZS', name: 'Soybeans', category: 'AGRICULTURE', assetClass: 'AGRICULTURE', exchange: 'CBOT', pointValue: 50, tickSize: 0.25, basePrice: 1050.0, sessionScheduleId: 'CBOT_AG' },
+  { symbol: 'ZW', name: 'Chicago SRW Wheat', category: 'AGRICULTURE', assetClass: 'AGRICULTURE', exchange: 'CBOT', pointValue: 50, tickSize: 0.25, basePrice: 550.0, sessionScheduleId: 'CBOT_AG' },
+  { symbol: 'ZL', name: 'Soybean Oil', category: 'AGRICULTURE', assetClass: 'AGRICULTURE', exchange: 'CBOT', pointValue: 600, tickSize: 0.01, basePrice: 50.0, sessionScheduleId: 'CBOT_AG' },
+  { symbol: 'LE', name: 'Live Cattle', category: 'AGRICULTURE', assetClass: 'AGRICULTURE', exchange: 'CME', pointValue: 400, tickSize: 0.025, basePrice: 230.0, sessionScheduleId: 'CME_LIVESTOCK' },
+  { symbol: 'HE', name: 'Lean Hogs', category: 'AGRICULTURE', assetClass: 'AGRICULTURE', exchange: 'CME', pointValue: 400, tickSize: 0.025, basePrice: 85.0, sessionScheduleId: 'CME_LIVESTOCK' },
+  { symbol: 'GF', name: 'Feeder Cattle', category: 'AGRICULTURE', assetClass: 'AGRICULTURE', exchange: 'CME', pointValue: 500, tickSize: 0.025, basePrice: 300.0, sessionScheduleId: 'CME_LIVESTOCK' },
+
+  // --- CBOT interest rates (quoted in points of par: 1 point = $1,000 / $2,000) ---
+  { symbol: 'ZT', name: '2-Year T-Note', category: 'RATES', assetClass: 'RATES', exchange: 'CBOT', pointValue: 2000, tickSize: 0.00390625, basePrice: 104.0, sessionScheduleId: 'CBOT_RATES' },
+  { symbol: 'ZF', name: '5-Year T-Note', category: 'RATES', assetClass: 'RATES', exchange: 'CBOT', pointValue: 1000, tickSize: 0.0078125, basePrice: 110.0, sessionScheduleId: 'CBOT_RATES' },
+  { symbol: 'ZN', name: '10-Year T-Note', category: 'RATES', assetClass: 'RATES', exchange: 'CBOT', pointValue: 1000, tickSize: 0.015625, basePrice: 113.0, sessionScheduleId: 'CBOT_RATES' },
+  { symbol: 'ZB', name: '30-Year T-Bond', category: 'RATES', assetClass: 'RATES', exchange: 'CBOT', pointValue: 1000, tickSize: 0.03125, basePrice: 118.0, sessionScheduleId: 'CBOT_RATES' },
+
+  // --- CME FX (all quote in USD per unit of the foreign currency) ---
+  { symbol: '6E', name: 'Euro FX', category: 'FX', assetClass: 'FX', exchange: 'CME', pointValue: 125000, tickSize: 0.00005, basePrice: 1.17, sessionScheduleId: 'CME_FX', microSymbol: 'M6E' },
+  { symbol: 'M6E', name: 'Micro EUR/USD', category: 'FX', assetClass: 'FX', exchange: 'CME', pointValue: 12500, tickSize: 0.0001, basePrice: 1.17, sessionScheduleId: 'CME_FX', parentSymbol: '6E' },
+  { symbol: '6J', name: 'Japanese Yen', category: 'FX', assetClass: 'FX', exchange: 'CME', pointValue: 12500000, tickSize: 0.0000005, basePrice: 0.0067, sessionScheduleId: 'CME_FX' },
+  { symbol: '6B', name: 'British Pound', category: 'FX', assetClass: 'FX', exchange: 'CME', pointValue: 62500, tickSize: 0.0001, basePrice: 1.34, sessionScheduleId: 'CME_FX', microSymbol: 'M6B' },
+  { symbol: 'M6B', name: 'Micro GBP/USD', category: 'FX', assetClass: 'FX', exchange: 'CME', pointValue: 6250, tickSize: 0.0001, basePrice: 1.34, sessionScheduleId: 'CME_FX', parentSymbol: '6B' },
+  { symbol: '6A', name: 'Australian Dollar', category: 'FX', assetClass: 'FX', exchange: 'CME', pointValue: 100000, tickSize: 0.00005, basePrice: 0.66, sessionScheduleId: 'CME_FX', microSymbol: 'M6A' },
+  { symbol: 'M6A', name: 'Micro AUD/USD', category: 'FX', assetClass: 'FX', exchange: 'CME', pointValue: 10000, tickSize: 0.0001, basePrice: 0.66, sessionScheduleId: 'CME_FX', parentSymbol: '6A' },
+  { symbol: '6C', name: 'Canadian Dollar', category: 'FX', assetClass: 'FX', exchange: 'CME', pointValue: 100000, tickSize: 0.00005, basePrice: 0.72, sessionScheduleId: 'CME_FX' },
+  { symbol: 'MSF', name: 'Micro CHF/USD', category: 'FX', assetClass: 'FX', exchange: 'CME', pointValue: 12500, tickSize: 0.0001, basePrice: 1.13, sessionScheduleId: 'CME_FX', isMicro: true },
+
+  // --- CME crypto (quoted in USD; CME Globex trades Sun–Fri CT) ---
+  { symbol: 'BTC', name: 'Bitcoin', category: 'CRYPTO', assetClass: 'CRYPTO', exchange: 'CME', pointValue: 5, tickSize: 5, basePrice: 95000, sessionScheduleId: 'CME_CRYPTO', microSymbol: 'MBT' },
+  { symbol: 'MBT', name: 'Micro Bitcoin', category: 'CRYPTO', assetClass: 'CRYPTO', exchange: 'CME', pointValue: 0.1, tickSize: 5, basePrice: 95000, sessionScheduleId: 'CME_CRYPTO', parentSymbol: 'BTC' },
+  { symbol: 'MET', name: 'Micro Ether', category: 'CRYPTO', assetClass: 'CRYPTO', exchange: 'CME', pointValue: 0.1, tickSize: 0.5, basePrice: 3200, sessionScheduleId: 'CME_CRYPTO', isMicro: true },
+];
+
+export const INSTRUMENT_CATEGORIES: InstrumentCategory[] = [
+  'INDEX',
+  'COMMODITY',
+  'ENERGY',
+  'BOND',
+  'METALS',
+  'AGRICULTURE',
+  'FX',
+  'RATES',
+  'CRYPTO',
+  'OTHER',
+];
+
+export const EXCHANGE_NAMES: ExchangeName[] = ['CME', 'NYMEX', 'COMEX', 'CBOT'];
+
+/** Derive tick value from the contract's point value so the two can never disagree. */
+export function tickValueFor(pointValue: number, tickSize: number): number {
+  return Number((pointValue * tickSize).toFixed(10));
+}
+
+function specRowToInstrument(row: SpecRow): FuturesInstrument {
+  return {
+    symbol: row.symbol,
+    rootSymbol: row.symbol,
+    name: row.name,
+    category: row.category,
+    assetClass: row.assetClass,
+    exchange: row.exchange,
+    tickSize: row.tickSize,
+    pointValue: row.pointValue,
+    tickValue: tickValueFor(row.pointValue, row.tickSize),
+    microSymbol: row.microSymbol,
+    microTickValue: row.microTickValue,
+    // 0 = not verified: the picker hides unknown margins rather than showing an invented number.
+    initialMargin: 0,
+    dayTradingMargin: 0,
+    underlyingIndex: row.underlyingIndex,
+    basePrice: row.basePrice,
+    timezone: 'America/Chicago',
+    currency: 'USD',
+    multiplier: row.pointValue,
+    isMicro: row.isMicro ?? Boolean(row.parentSymbol),
+    parentSymbol: row.parentSymbol,
+    contractType: 'CONTINUOUS',
+    sessionScheduleId: row.sessionScheduleId,
+  };
+}
+
+for (const row of SPEC_TABLE) {
+  if (!FUTURES_INSTRUMENTS[row.symbol]) FUTURES_INSTRUMENTS[row.symbol] = specRowToInstrument(row);
+}
+
 
 /**
  * Check if a symbol represents a continuous contract (e.g. 'ES', 'NQ') vs a specific contract month ('ESH6', 'ESZ26').
@@ -409,3 +565,104 @@ export function formatVendorSymbol(
 
   return symbol;
 }
+
+/**
+ * Operator-added instruments: `EXTRA_INSTRUMENTS="ZC:5000:0.25:Corn:AGRICULTURE:CBOT;QH:42000:0.01"`.
+ *
+ * Databento serves every CME Group product as `GLBX.MDP3` (CME/CBOT/NYMEX/COMEX), but there is no
+ * "list every instrument with specs" endpoint — and a wrong multiplier silently corrupts P&L, whale
+ * notches and footprint grouping. So the long tail is opt-in: supply the verified spec (contract unit →
+ * point value, minimum price increment) and the root becomes a first-class instrument with no code change.
+ *
+ * Format: `SYMBOL:POINT_VALUE:TICK_SIZE[:NAME[:CATEGORY[:EXCHANGE[:UNDERLYING_INDEX]]]]`, `;`-separated.
+ * Invalid rows are rejected with a reason (fail-closed) and surfaced through EXTRA_INSTRUMENT_ERRORS.
+ */
+export const EXTRA_INSTRUMENT_ERRORS: string[] = [];
+
+export function parseExtraInstruments(
+  raw: string | undefined | null
+): { instruments: FuturesInstrument[]; errors: string[] } {
+  const instruments: FuturesInstrument[] = [];
+  const errors: string[] = [];
+  if (!raw || !raw.trim()) return { instruments, errors };
+
+  for (const chunk of raw.split(';')) {
+    const entry = chunk.trim();
+    if (!entry) continue;
+
+    const [symbolRaw, pointValueRaw, tickSizeRaw, nameRaw, categoryRaw, exchangeRaw, underlyingRaw] =
+      entry.split(':').map((part) => part.trim());
+
+    const symbol = (symbolRaw || '').toUpperCase();
+    if (!/^[A-Z0-9]{1,6}$/.test(symbol)) {
+      errors.push(`"${entry}": symbol must be 1-6 alphanumeric characters`);
+      continue;
+    }
+
+    const pointValue = Number(pointValueRaw);
+    if (!Number.isFinite(pointValue) || pointValue <= 0) {
+      errors.push(`"${entry}": pointValue must be a positive number (USD per full point)`);
+      continue;
+    }
+
+    const tickSize = Number(tickSizeRaw);
+    if (!Number.isFinite(tickSize) || tickSize <= 0) {
+      errors.push(`"${entry}": tickSize must be a positive number (minimum price increment)`);
+      continue;
+    }
+
+    const category = (categoryRaw ? categoryRaw.toUpperCase() : 'COMMODITY') as InstrumentCategory;
+    if (!INSTRUMENT_CATEGORIES.includes(category)) {
+      errors.push(`"${entry}": category must be one of ${INSTRUMENT_CATEGORIES.join(', ')}`);
+      continue;
+    }
+
+    const exchange = (exchangeRaw ? exchangeRaw.toUpperCase() : 'CME') as ExchangeName;
+    if (!EXCHANGE_NAMES.includes(exchange)) {
+      errors.push(`"${entry}": exchange must be one of ${EXCHANGE_NAMES.join(', ')}`);
+      continue;
+    }
+
+    instruments.push({
+      symbol,
+      rootSymbol: symbol,
+      name: nameRaw || symbol,
+      category,
+      assetClass: category === 'INDEX' ? 'EQUITY_INDEX' : (category as AssetClass),
+      exchange,
+      tickSize,
+      pointValue,
+      tickValue: tickValueFor(pointValue, tickSize),
+      initialMargin: 0,
+      dayTradingMargin: 0,
+      underlyingIndex: underlyingRaw ? underlyingRaw.toUpperCase() : undefined,
+      basePrice: 0,
+      timezone: 'America/Chicago',
+      currency: 'USD',
+      multiplier: pointValue,
+      isMicro: false,
+      contractType: 'CONTINUOUS',
+      sessionScheduleId: `${exchange}_CUSTOM`,
+    });
+  }
+
+  return { instruments, errors };
+}
+
+{
+  const { instruments, errors } = parseExtraInstruments(process.env.EXTRA_INSTRUMENTS);
+  EXTRA_INSTRUMENT_ERRORS.push(...errors);
+  for (const instrument of instruments) {
+    if (FUTURES_INSTRUMENTS[instrument.symbol]) {
+      EXTRA_INSTRUMENT_ERRORS.push(
+        `"${instrument.symbol}": already in the built-in catalog (extra entry ignored)`
+      );
+      continue;
+    }
+    FUTURES_INSTRUMENTS[instrument.symbol] = instrument;
+  }
+  for (const error of EXTRA_INSTRUMENT_ERRORS) {
+    console.warn(`[Instruments] EXTRA_INSTRUMENTS rejected -> ${error}`);
+  }
+}
+

@@ -1,0 +1,48 @@
+# DeepChart — single-host production deployment (app + automatic HTTPS).
+#
+#   cp .env.example .env      # then set AUTH_JWT_SECRET, ADMIN_*, DOMAIN and provider keys
+#   docker compose up -d --build
+#
+# The app also serves the built client, so Caddy is only a TLS terminator + reverse proxy.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 8080
+      STORAGE_PATH: /app/data/market_data.sqlite
+      LOG_FORMAT: json
+      ENABLE_HSTS: '1'
+    volumes:
+      - app-data:/app/data
+      - ./backups:/app/backups
+    expose:
+      - '8080'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/healthz']
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  app-data:
+  caddy-data:
+  caddy-config:

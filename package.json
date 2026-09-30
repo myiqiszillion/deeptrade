@@ -9,15 +9,20 @@
     "build": "pnpm --filter @deepchart/server build && pnpm --filter client build",
     "typecheck": "pnpm --filter @deepchart/server exec tsc -p tsconfig.test.json --noEmit && pnpm --filter client exec tsc -p tsconfig.app.json --noEmit && pnpm --filter client exec tsc -p tsconfig.node.json --noEmit",
     "lint": "pnpm --filter client lint",
-    "test": "pnpm test:protocol && pnpm test:unit && pnpm test:integration",
+    "test": "pnpm test:protocol && pnpm test:unit && pnpm test:integration && pnpm test:client",
     "test:unit": "pnpm --filter @deepchart/server exec tsx test/unit/index.ts",
     "test:integration": "pnpm --filter @deepchart/server exec tsx test/integration/index.ts && pnpm --filter @deepchart/server exec tsx test/integration/tradovateAdapter.test.ts && pnpm --filter @deepchart/server exec tsx test/integration/databentoAdapter.test.ts",
     "test:protocol": "node scripts/check-protocol-drift.mjs",
+  "test:client": "node scripts/check-client-bundle.mjs",
     "test:offline": "pnpm test",
     "test:live": "pnpm verify",
     "verify": "pnpm --filter @deepchart/server exec tsx src/verify_e2e.ts",
     "verify:p0": "pnpm --filter @deepchart/server exec tsx src/verify_p0.ts",
-    "verify:types": "node scripts/check-protocol-drift.mjs"
+    "verify:types": "node scripts/check-protocol-drift.mjs",
+    "db:backup": "node scripts/backup_db.mjs"
+  },
+  "engines": {
+    "node": ">=22.13"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

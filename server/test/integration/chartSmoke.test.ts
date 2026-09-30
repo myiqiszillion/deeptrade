@@ -15,6 +15,7 @@ export async function runChartSmokeTests(): Promise<void> {
   const port = (probe.address() as net.AddressInfo).port;
   await new Promise((resolve) => probe.close(resolve));
 
+  const ADMIN_SECRET = 'chart-smoke-admin-secret';
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     NODE_ENV: 'test',
@@ -23,6 +24,11 @@ export async function runChartSmokeTests(): Promise<void> {
     FUTURES_PROVIDER: 'tradovate',
     DEMO: '0',
     DEV_HOOKS: '1',
+    ADMIN_SECRET,
+    // Hermetic run: an inherited STORAGE_PATH (dev shell / exported .env) outranks NODE_ENV=test
+    // inside MarketDataStore, which would point the test server at the real dev SQLite file. Stored
+    // ES bars then show up as REAL_BARS history and this suite asserts against stale data.
+    STORAGE_PATH: ':memory:',
   };
   for (const key of Object.keys(env)) {
     if (key.startsWith('TRADOVATE_')) delete env[key];
@@ -101,9 +107,18 @@ export async function runChartSmokeTests(): Promise<void> {
     );
 
     const health = (await fetch(`${base}/healthz`).then((r) => r.json())) as any;
-    assert.equal(health.feed, 'tradovate');
-    assert.equal(health.historySource, 'NONE');
-    assert.match(health.feedReason, /TRADOVATE_USERNAME/);
+    assert.equal(health.status, 'ok');
+    assert.equal(health.feedStatus, 'UNAVAILABLE');
+    // The public payload is deliberately minimal: internals need operator credentials.
+    assert.equal(health.feed, undefined, 'Public health check must not leak the provider');
+    assert.equal(health.feedReason, undefined, 'Public health check must not leak feed reasons');
+
+    const detailed = (await fetch(`${base}/healthz`, { headers: { 'x-admin-secret': ADMIN_SECRET } }).then((r) =>
+      r.json()
+    )) as any;
+    assert.equal(detailed.feed, 'tradovate');
+    assert.equal(detailed.historySource, 'NONE');
+    assert.match(detailed.feedReason, /TRADOVATE_USERNAME/);
     console.log('  [PASS] Chart history server smoke test passed.');
   } finally {
     socket?.terminate();

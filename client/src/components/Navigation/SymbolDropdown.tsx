@@ -1,18 +1,41 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Search, ChevronDown, Check, X } from 'lucide-react';
-import { FuturesInstrument } from '../../types';
+import { Check, ChevronDown, Search, Star, X } from 'lucide-react';
+import { FuturesInstrument, InstrumentCategory } from '../../types';
+import { loadFavoriteSymbols, loadRecentSymbols, toggleFavoriteSymbol } from '../../services/symbolPrefs';
 
 export interface InstrumentOption {
   symbol: string;
   name: string;
   exchange?: string;
-  category?: 'INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND' | string;
+  category?: InstrumentCategory | string;
   tickSize?: number;
   pointValue?: number;
   dayTradingMargin?: number;
   isLive?: boolean;
-  feedStatus?: 'LIVE' | 'CONNECTING' | 'UNAVAILABLE' | string;
+  feedStatus?: 'LIVE' | 'CONNECTING' | 'IDLE' | 'UNAVAILABLE' | 'ERROR' | string;
+  /** True when the server already tracks a market context for this symbol (someone subscribed). */
+  subscribed?: boolean;
+  /** False when no vendor is configured at all (FUTURES_PROVIDER=none): nothing can ever go live. */
+  feedConfigured?: boolean;
 }
+
+/** Tab order for the picker; categories not listed here are appended after these. */
+const CATEGORY_ORDER: string[] = ['INDEX', 'METALS', 'ENERGY', 'RATES', 'FX', 'AGRICULTURE', 'CRYPTO', 'COMMODITY', 'BOND', 'OTHER'];
+
+const CATEGORY_LABELS: Record<string, string> = {
+  ALL: 'All',
+  INDEX: 'Indices',
+  METALS: 'Metals',
+  ENERGY: 'Energy',
+  RATES: 'Rates',
+  FX: 'FX',
+  AGRICULTURE: 'Ags',
+  CRYPTO: 'Crypto',
+  COMMODITY: 'Commodity',
+  BOND: 'Bonds',
+  OTHER: 'Other',
+  FAVORITES: 'Favourites',
+};
 
 interface SymbolDropdownProps {
   currentSymbol: string;
@@ -47,7 +70,8 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeCategory, setActiveCategory] = useState<'ALL' | 'INDEX' | 'COMMODITY' | 'ENERGY'>('ALL');
+  const [activeCategory, setActiveCategory] = useState<string>('ALL');
+  const [favorites, setFavorites] = useState<string[]>(() => loadFavoriteSymbols());
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -66,15 +90,10 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
 
-  // Global hotkey Ctrl+K to toggle symbol search
+  // Escape closes the picker. Ctrl+K belongs to the command palette (one owner per shortcut).
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setIsOpen((prev) => !prev);
-      } else if (e.key === 'Escape' && isOpen) {
-        setIsOpen(false);
-      }
+      if (e.key === 'Escape' && isOpen) setIsOpen(false);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
@@ -84,18 +103,57 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
     return instruments && instruments.length > 0 ? instruments : DEFAULT_INSTRUMENTS;
   }, [instruments]);
 
+  // Tabs follow the data: adding instruments (or EXTRA_INSTRUMENTS on the server) never needs a UI change.
+  const categoryTabs = useMemo(() => {
+    const present = new Set<string>();
+    for (const item of instrumentList) {
+      if (item.category) present.add(String(item.category).toUpperCase());
+    }
+    const ordered = CATEGORY_ORDER.filter((cat) => present.has(cat));
+    const extras = Array.from(present)
+      .filter((cat) => !CATEGORY_ORDER.includes(cat))
+      .sort();
+    const tabs = ['ALL', ...ordered, ...extras];
+    // Only offer the Favourites tab once something is actually starred.
+    return favorites.length > 0 ? ['FAVORITES', ...tabs] : tabs;
+  }, [instrumentList, favorites.length]);
+
+  /** Number of instruments behind each tab — tells you at a glance where a market lives. */
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = { ALL: instrumentList.length, FAVORITES: 0 };
+    for (const item of instrumentList) {
+      const key = String(item.category || 'OTHER').toUpperCase();
+      counts[key] = (counts[key] || 0) + 1;
+      if (favorites.includes(item.symbol)) counts.FAVORITES += 1;
+    }
+    return counts;
+  }, [instrumentList, favorites]);
+
+  const externalSymbols = useMemo(() => new Set(instrumentList.map((item) => item.symbol)), [instrumentList]);
+
   const filteredInstruments = useMemo(() => {
-    return instrumentList.filter((item) => {
-      const matchesCategory = activeCategory === 'ALL' || item.category === activeCategory;
-      const query = searchQuery.trim().toLowerCase();
-      const matchesSearch =
-        !query ||
-        item.symbol.toLowerCase().includes(query) ||
-        item.name.toLowerCase().includes(query) ||
-        (item.exchange && item.exchange.toLowerCase().includes(query));
-      return matchesCategory && matchesSearch;
-    });
-  }, [instrumentList, searchQuery, activeCategory]);
+    const starred = favorites.filter((symbol) => externalSymbols.has(symbol));
+    const recent = loadRecentSymbols().filter((symbol) => externalSymbols.has(symbol));
+    return instrumentList
+      .filter((item) => {
+        const matchesCategory =
+          activeCategory === 'ALL' ||
+          (activeCategory === 'FAVORITES' ? favorites.includes(item.symbol) : item.category === activeCategory);
+        const query = searchQuery.trim().toLowerCase();
+        const matchesSearch =
+          !query ||
+          item.symbol.toLowerCase().includes(query) ||
+          item.name.toLowerCase().includes(query) ||
+          (item.exchange && item.exchange.toLowerCase().includes(query));
+        return matchesCategory && matchesSearch;
+      })
+      .sort((a, b) => {
+        if (activeCategory !== 'ALL' || searchQuery.trim()) return 0;
+        // Unfiltered view: the markets you touched most recently float to the top.
+        const rank = (symbol: string) => (starred.includes(symbol) ? 0 : recent.includes(symbol) ? 1 : 2);
+        return rank(a.symbol) - rank(b.symbol);
+      });
+  }, [instrumentList, searchQuery, activeCategory, favorites, externalSymbols]);
 
   const activeItem =
     instrumentList.find((i) => i.symbol === currentSymbol) || {
@@ -161,19 +219,26 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
             </span>
           </div>
 
-          {/* Category Tabs */}
-          <div className="flex items-center gap-1 px-2 py-1.5 border-b border-[#1C2630] bg-[#0B0F14] text-[10px]">
-            {(['ALL', 'INDEX', 'COMMODITY', 'ENERGY'] as const).map((cat) => (
+          {/* Category Tabs (derived from the instrument list, with counts) */}
+          <div className="flex items-center gap-1 px-2 py-1.5 border-b border-[#1C2630] bg-[#0B0F14] text-[10px] overflow-x-auto">
+            {categoryTabs.map((cat) => (
               <button
                 key={cat}
                 onClick={() => setActiveCategory(cat)}
-                className={`px-2 py-0.5 rounded font-mono font-medium transition-colors ${
+                title={
+                  cat === 'FAVORITES'
+                    ? 'Your starred instruments'
+                    : `${categoryCounts[cat] ?? 0} instrument(s) in ${CATEGORY_LABELS[cat] || cat}`
+                }
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono font-medium whitespace-nowrap transition-colors ${
                   activeCategory === cat
                     ? 'bg-[#1C2630] text-[#E7EDF3]'
                     : 'text-[#7F8B97] hover:text-[#E7EDF3]'
                 }`}
               >
-                {cat === 'ALL' ? 'All' : cat === 'INDEX' ? 'Indices' : cat === 'COMMODITY' ? 'Metals' : 'Energy'}
+                {cat === 'FAVORITES' && <Star size={10} className="text-[#F5B942]" fill="currentColor" />}
+                <span>{CATEGORY_LABELS[cat] || cat}</span>
+                <span className="text-[#4E5965]">{categoryCounts[cat] ?? 0}</span>
               </button>
             ))}
           </div>
@@ -182,14 +247,15 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
           <div className="max-h-64 overflow-y-auto divide-y divide-[#1C2630]/40 p-1">
             {filteredInstruments.map((inst) => {
               const isSelected = inst.symbol === currentSymbol;
+              const isFavorite = favorites.includes(inst.symbol);
               return (
+                <div key={inst.symbol} className="flex items-stretch gap-0.5 group/row">
                 <button
-                  key={inst.symbol}
                   onClick={() => {
                     onSelectSymbol(inst.symbol);
                     setIsOpen(false);
                   }}
-                  className={`w-full flex items-center justify-between p-1.5 rounded transition-colors text-left group ${
+                  className={`flex-1 min-w-0 flex items-center justify-between p-1.5 rounded transition-colors text-left ${
                     isSelected
                       ? 'bg-[#161E28] border border-[#25303A] text-white'
                       : 'hover:bg-[#111720] text-[#7F8B97] border border-transparent'
@@ -228,24 +294,72 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
 
                   <div className="flex items-center gap-2 shrink-0 pl-2">
                     {inst.isLive || inst.feedStatus === 'LIVE' ? (
-                      <span className="flex items-center gap-1 text-[9px] text-[#19C37D] font-mono font-medium px-1.5 py-0.2 rounded bg-[#19C37D]/10 border border-[#19C37D]/20">
+                      <span
+                        className="flex items-center gap-1 text-[9px] text-[#19C37D] font-mono font-medium px-1.5 py-0.2 rounded bg-[#19C37D]/10 border border-[#19C37D]/20"
+                        title="Đang có dữ liệu realtime đã kiểm định cho mã này"
+                      >
                         <span className="w-1.5 h-1.5 rounded-full bg-[#19C37D]" />
                         <span>LIVE</span>
                       </span>
                     ) : inst.feedStatus === 'CONNECTING' ? (
-                      <span className="flex items-center gap-1 text-[9px] text-amber-400 font-mono font-medium px-1.5 py-0.2 rounded bg-amber-400/10 border border-amber-400/20">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                      <span
+                        className="flex items-center gap-1 text-[9px] text-amber-400 font-mono font-medium px-1.5 py-0.2 rounded bg-amber-400/10 border border-amber-400/20"
+                        title="Đang bắt tay với vendor cho mã này (đã subscribe)"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
                         <span>CONNECTING</span>
                       </span>
-                    ) : (
-                      <span className="flex items-center gap-1 text-[9px] text-[#7F8B97] font-mono font-medium px-1.5 py-0.2 rounded bg-[#10151C] border border-[#1C2630]">
+                    ) : inst.feedStatus === 'ERROR' ? (
+                      <span
+                        className="flex items-center gap-1 text-[9px] text-[#F05252] font-mono font-medium px-1.5 py-0.2 rounded bg-[#F05252]/10 border border-[#F05252]/25"
+                        title="Feed lỗi — mở Diagnostics để xem lý do"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#F05252]" />
+                        <span>ERROR</span>
+                      </span>
+                    ) : inst.subscribed ? (
+                      <span
+                        className="flex items-center gap-1 text-[9px] text-[#7F8B97] font-mono font-medium px-1.5 py-0.2 rounded bg-[#10151C] border border-[#1C2630]"
+                        title="Đã subscribe nhưng chưa có tick hợp lệ (vendor chưa gửi dữ liệu)"
+                      >
                         <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
-                        <span>UNAVAILABLE</span>
+                        <span>NO DATA</span>
+                      </span>
+                    ) : inst.feedConfigured === false ? (
+                      <span
+                        className="flex items-center gap-1 text-[9px] text-[#7F8B97] font-mono font-medium px-1.5 py-0.2 rounded bg-[#10151C] border border-[#1C2630]"
+                        title="Server chưa cấu hình vendor dữ liệu (FUTURES_PROVIDER=none) — không thể có realtime"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                        <span>NO VENDOR</span>
+                      </span>
+                    ) : (
+                      <span
+                        className="flex items-center gap-1 text-[9px] text-[#7F8B97] font-mono font-medium px-1.5 py-0.2 rounded bg-[#10151C] border border-[#1C2630]"
+                        title="Chưa kết nối: server bật feed theo nhu cầu — chọn mã này để bắt đầu"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                        <span>IDLE</span>
                       </span>
                     )}
                     {isSelected && <Check size={13} className="text-[#22D3EE]" />}
                   </div>
                 </button>
+                <button
+                  type="button"
+                  aria-label={isFavorite ? `Remove ${inst.symbol} from favourites` : `Add ${inst.symbol} to favourites`}
+                  aria-pressed={isFavorite}
+                  title={isFavorite ? 'Bỏ khỏi yêu thích' : 'Thêm vào yêu thích'}
+                  onClick={() => setFavorites(toggleFavoriteSymbol(inst.symbol))}
+                  className={`px-1.5 rounded transition-colors ${
+                    isFavorite
+                      ? 'text-[#F5B942]'
+                      : 'text-[#3A4756] opacity-0 group-hover/row:opacity-100 hover:text-[#F5B942]'
+                  }`}
+                >
+                  <Star size={13} fill={isFavorite ? 'currentColor' : 'none'} />
+                </button>
+                </div>
               );
             })}
 
@@ -256,10 +370,21 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
             )}
           </div>
 
-          {/* Quick Footer hint */}
-          <div className="px-2.5 py-1 bg-[#080B0F] border-t border-[#1C2630] flex items-center justify-between text-[10px] text-[#4E5965] font-mono">
-            <span>CME Globex · MDP 3.0 Realtime Feeds</span>
-            <span>Ctrl+K</span>
+          {/* Quick Footer: what the per-instrument badges mean */}
+          <div className="px-2.5 py-1 bg-[#080B0F] border-t border-[#1C2630] flex items-center justify-between gap-2 text-[9.5px] text-[#4E5965] font-mono">
+            <span className="flex items-center gap-2 flex-wrap">
+              <span className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#19C37D]" /> live
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" /> connecting
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-600" /> idle (chưa subscribe)
+              </span>
+              <span className="hidden xl:inline">· chọn một mã để server bật feed theo nhu cầu</span>
+            </span>
+            <span className="shrink-0">CME Globex · MDP 3.0</span>
           </div>
         </div>
       )}

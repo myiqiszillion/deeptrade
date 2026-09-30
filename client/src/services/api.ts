@@ -4,7 +4,11 @@ const API_BASE = typeof window !== 'undefined' ? (window.location.port === '5173
 
 export interface InstrumentSummary extends FuturesInstrument {
   provider: string;
-  feedStatus: 'LIVE' | 'CONNECTING' | 'UNAVAILABLE';
+  feedStatus: 'LIVE' | 'CONNECTING' | 'IDLE' | 'UNAVAILABLE' | 'ERROR';
+  /** True when the server already tracks a market context for this symbol (someone subscribed). */
+  subscribed?: boolean;
+  /** False when no vendor is configured at all (FUTURES_PROVIDER=none): nothing can ever go live. */
+  feedConfigured?: boolean;
   isLive: boolean;
 }
 
@@ -129,6 +133,60 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
   return (await res.json()) as T;
 }
 
+export interface PlanSummary {
+  id: string;
+  name: string;
+  priceUsdMonthly: number;
+  features: string[];
+  maxConcurrentSessions: number;
+  historyDays: number;
+  dataTypes: string[];
+  symbolPatterns: string[];
+}
+
+export interface AuthConfigResponse {
+  authRequired: boolean;
+  devMode: boolean;
+  registrationEnabled: boolean;
+  billingConfigured: boolean;
+  defaultPlanId: string;
+  plans: PlanSummary[];
+}
+
+export interface SubscriptionResponse {
+  userId: string;
+  planId: string;
+  status: 'active' | 'past_due' | 'canceled';
+  currentPeriodEnd: number;
+  provider: string;
+}
+
+export function clearStoredToken(): void {
+  try {
+    localStorage.removeItem('deepchart_jwt_token');
+  } catch {}
+}
+
+export function hasStoredToken(): boolean {
+  return Boolean(getStoredToken());
+}
+
+export interface WatchlistQuote {
+  symbol: string;
+  price: number;
+  ts: number;
+  ageMs: number;
+  source: string;
+  stale: boolean;
+}
+
+export interface QuoteBoardResponse {
+  enabled: boolean;
+  ttlMs?: number;
+  quotes: WatchlistQuote[];
+  hint?: string;
+}
+
 export const deepchartApi = {
   async getInstruments(): Promise<InstrumentSummary[]> {
     const data = await apiFetch<{ instruments: InstrumentSummary[]; total: number }>('/api/v1/instruments');
@@ -137,6 +195,13 @@ export const deepchartApi = {
 
   async getInstrument(symbol: string): Promise<{ instrument: FuturesInstrument; feedStatus: string; provider: string }> {
     return apiFetch<{ instrument: FuturesInstrument; feedStatus: string; provider: string }>(`/api/v1/instruments/${symbol}`);
+  },
+
+  /** Watchlist last-trade quotes. Returns `enabled:false` when the operator has not opted in. */
+  async getQuotes(symbols: string[]): Promise<QuoteBoardResponse> {
+    const list = symbols.slice(0, 8).map((s) => encodeURIComponent(s)).join(',');
+    const data = await apiFetch<QuoteBoardResponse>(`/api/v1/quotes?symbols=${list}`);
+    return data ?? { enabled: false, quotes: [] };
   },
 
   async getStatus(): Promise<SystemStatus> {
@@ -169,11 +234,11 @@ export const deepchartApi = {
     return apiFetch<ReplayStats>(`/api/v1/replay/stats?symbol=${encodeURIComponent(symbol)}`);
   },
 
-  async login(username = 'guest', role: 'user' | 'admin' = 'user'): Promise<{ token: string; user: any }> {
-    const res = await apiFetch<{ token: string; user: any }>('/api/v1/auth/login', {
+  async login(username: string, password: string): Promise<{ token: string; user: any; plan?: PlanSummary }> {
+    const res = await apiFetch<{ token: string; user: any; plan?: PlanSummary }>('/api/v1/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, role }),
+      body: JSON.stringify({ username, password }),
     });
     if (res?.token) {
       saveStoredToken(res.token);
@@ -181,7 +246,48 @@ export const deepchartApi = {
     return res;
   },
 
-  async getMe(): Promise<{ user: any; entitlements: any[] }> {
-    return apiFetch<{ user: any; entitlements: any[] }>('/api/v1/auth/me');
+  async register(username: string, password: string): Promise<{ token: string; user: any; plan?: PlanSummary }> {
+    const res = await apiFetch<{ token: string; user: any; plan?: PlanSummary }>('/api/v1/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (res?.token) {
+      saveStoredToken(res.token);
+    }
+    return res;
+  },
+
+  async logout(): Promise<void> {
+    try {
+      await apiFetch<{ message: string }>('/api/v1/auth/logout', { method: 'POST' });
+    } catch {
+      // Revocation is best effort: the client drops the token either way.
+    }
+    clearStoredToken();
+  },
+
+  async getAuthConfig(): Promise<AuthConfigResponse> {
+    return apiFetch<AuthConfigResponse>('/api/v1/auth/config');
+  },
+
+  async getBillingPlans(): Promise<{ plans: PlanSummary[]; billingConfigured: boolean }> {
+    return apiFetch<{ plans: PlanSummary[]; billingConfigured: boolean }>('/api/v1/billing/plans');
+  },
+
+  async getSubscription(): Promise<{ subscription: SubscriptionResponse | null; plan: PlanSummary }> {
+    return apiFetch<{ subscription: SubscriptionResponse | null; plan: PlanSummary }>('/api/v1/billing/subscription');
+  },
+
+  async startCheckout(planId: string): Promise<{ url: string }> {
+    return apiFetch<{ url: string }>('/api/v1/billing/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ planId }),
+    });
+  },
+
+  async getMe(): Promise<{ user: any; entitlements: any[]; plan?: PlanSummary }> {
+    return apiFetch<{ user: any; entitlements: any[]; plan?: PlanSummary }>('/api/v1/auth/me');
   },
 };

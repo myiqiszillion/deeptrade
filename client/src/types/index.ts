@@ -1,13 +1,35 @@
 export type OrderSide = 'buy' | 'sell' | 'unknown';
 
-export type AssetClass = 'EQUITY_INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND';
+export type AssetClass =
+  | 'EQUITY_INDEX'
+  | 'COMMODITY'
+  | 'ENERGY'
+  | 'BOND'
+  | 'METALS'
+  | 'AGRICULTURE'
+  | 'FX'
+  | 'RATES'
+  | 'CRYPTO';
+
+export type InstrumentCategory =
+  | 'INDEX'
+  | 'COMMODITY'
+  | 'ENERGY'
+  | 'BOND'
+  | 'METALS'
+  | 'AGRICULTURE'
+  | 'FX'
+  | 'RATES'
+  | 'CRYPTO'
+  | 'OTHER';
+
 export type ContractType = 'CONTINUOUS' | 'SPECIFIC';
 
 export interface FuturesInstrument {
   symbol: string;
   rootSymbol?: string;
   name: string;
-  category: 'INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND';
+  category: InstrumentCategory;
   assetClass?: AssetClass;
   exchange: 'CME' | 'NYMEX' | 'COMEX' | 'CBOT';
   tickSize: number;

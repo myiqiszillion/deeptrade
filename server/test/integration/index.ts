@@ -1,6 +1,7 @@
 import { runChartSmokeTests } from './chartSmoke.test.js';
 import { runHistoryApiTests } from './historyApi.test.js';
 import { runWebSocketIntegrationTests } from './websocket.test.js';
+import { runAuthFlowTests } from './authFlow.test.js';
 
 async function main() {
   console.log('======================================================');
@@ -11,6 +12,7 @@ async function main() {
   await runChartSmokeTests();
   await runHistoryApiTests();
   await runWebSocketIntegrationTests();
+  await runAuthFlowTests();
 
   const elapsed = Date.now() - start;
   console.log('\n======================================================');

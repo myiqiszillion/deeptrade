@@ -1,5 +1,5 @@
 # --- Build stage ---
-FROM node:22-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -7,10 +7,11 @@ COPY client/package.json client/
 COPY server/package.json server/
 RUN pnpm install --frozen-lockfile
 COPY . .
+# `pnpm build` clears server/dist first (see server/package.json) so stale modules cannot ship.
 RUN pnpm build
 
 # --- Runtime stage ---
-FROM node:22-alpine AS runtime
+FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 RUN corepack enable
@@ -30,7 +31,12 @@ USER node
 ENV HOST=0.0.0.0
 ENV PORT=8080
 ENV STORAGE_PATH=/app/data/market_data.sqlite
+# Authentication on by default: set AUTH_JWT_SECRET (32+ chars) or the container refuses to boot.
 ENV AUTH_REQUIRED=1
+ENV STORE_RETENTION_DAYS=30
+# Candles are cheap to keep and expensive to re-pull: one year of bars, 30 days of ticks.
+ENV STORE_BARS_RETENTION_DAYS=365
+ENV LOG_FORMAT=json
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
