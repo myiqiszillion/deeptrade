@@ -8,6 +8,8 @@
 process.env.NODE_ENV = 'test';
 process.env.STORAGE_PATH = ':memory:';
 
+export {};
+
 const { runAuthTests } = await import('./auth.test.js');
 const { runEntitlementTests } = await import('./entitlement.test.js');
 const { runMarketDataStoreTests } = await import('./marketDataStore.test.js');
@@ -20,10 +22,17 @@ const { runPasswordTests } = await import('./passwords.test.js');
 const { runLoginGuardTests } = await import('./loginGuard.test.js');
 const { runBillingTests } = await import('./billing.test.js');
 const { runRetentionTests } = await import('./retention.test.js');
-const { runDatabentoUsageTests } = await import('./databentoUsage.test.js');
-const { runInstrumentCatalogTests } = await import('./instruments.test.js');
-const { runInstrumentDefinitionTests } = await import('./instrumentDefinitions.test.js');
-const { runQuoteBoardTests } = await import('./quoteBoard.test.js');
+const runInstrumentCatalogTests = (await import('./instruments.test.js')).runInstrumentCatalogTests;
+const runQuoteBoardTests = (await import('./quoteBoard.test.js')).runQuoteBoardTests;
+const { runDatabentoNormalizerTests } = await import('./databentoNormalizer.test.js');
+const { runDatabentoClientTests } = await import('./databentoClient.test.js');
+const { runDatabentoLiveTests } = await import('./databentoLive.test.js');
+const { runBatchIngestionTests } = await import('./batchIngestion.test.js');
+const { runDatabentoStorageTests } = await import('./databentoStorage.test.js');
+const { runOptionsRoutesTests } = await import('./optionsRoutes.test.js');
+const { runDatabentoConfigTests } = await import('./databentoConfig.test.js');
+const { runInstrumentSyncTests } = await import('./instrumentSync.test.js');
+const { runOptionsMathTests } = await import('./optionsMath.test.js');
 
 async function main() {
   console.log('======================================================');
@@ -43,10 +52,17 @@ async function main() {
   await runLoginGuardTests();
   await runBillingTests();
   await runRetentionTests();
-  await runDatabentoUsageTests();
   await runInstrumentCatalogTests();
-  await runInstrumentDefinitionTests();
   await runQuoteBoardTests();
+  await runDatabentoNormalizerTests();
+  await runDatabentoClientTests();
+  await runDatabentoLiveTests();
+  await runBatchIngestionTests();
+  await runDatabentoStorageTests();
+  await runOptionsRoutesTests();
+  await runDatabentoConfigTests();
+  await runInstrumentSyncTests();
+  await runOptionsMathTests();
 
   const elapsed = Date.now() - start;
   console.log('\n======================================================');

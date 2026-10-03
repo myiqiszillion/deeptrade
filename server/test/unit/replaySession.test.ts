@@ -52,7 +52,7 @@ export async function runReplaySessionTests(): Promise<void> {
   const mockSource: ReplayDataSource = {
     async loadTicks(options) {
       assert.equal(options.symbol, 'ES');
-      assert.equal(options.provider, 'tradovate');
+      assert.equal(options.provider, 'databento');
       return [
         { id: 'p1', timestamp: 1700000010000, price: 5001.0, size: 2, side: 'buy' },
         { id: 'p2', timestamp: 1700000011000, price: 5001.25, size: 4, side: 'sell' },
@@ -60,7 +60,7 @@ export async function runReplaySessionTests(): Promise<void> {
     },
   };
 
-  const loadedCount = await replay.loadFromSource(mockSource, { provider: 'tradovate', limit: 10 });
+  const loadedCount = await replay.loadFromSource(mockSource, { provider: 'databento', limit: 10 });
   assert.equal(loadedCount, 2);
   assert.equal(replay.replayEngine.getProgress().totalTicks, 2);
 

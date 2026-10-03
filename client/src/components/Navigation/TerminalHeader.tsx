@@ -29,6 +29,8 @@ interface TerminalHeaderProps {
   planName?: string | null;
   role?: string | null;
   onSignOut?: () => void;
+  viewMode?: 'chart' | 'cockpit';
+  onToggleViewMode?: () => void;
 }
 
 export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
@@ -55,6 +57,8 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
   planName,
   role,
   onSignOut,
+  viewMode,
+  onToggleViewMode,
 }) => {
   const tickSize = instrument?.tickSize || 0.25;
   const isLiveFeed = feedStatus === 'LIVE' && isConnected;
@@ -98,6 +102,36 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
       <div className="header-price-badge tabular-nums" title={`Last traded price (${symbol})`}>
         <span className="header-price-value">{currentPrice > 0 ? formatPrice(currentPrice, tickSize) : '—'}</span>
       </div>
+
+      {/* View Mode Switcher: Chart vs Cockpit HUD */}
+      {onToggleViewMode && (
+        <div className="flex items-center p-0.5 rounded bg-[#06090e] border border-[#00f2fe]/30 text-xs font-mono ml-1">
+          <button
+            type="button"
+            onClick={viewMode === 'cockpit' ? onToggleViewMode : undefined}
+            className={`px-2 py-0.5 rounded transition-all text-[11px] font-semibold flex items-center gap-1 ${
+              viewMode !== 'cockpit'
+                ? 'bg-[#1C2630] text-[#E7EDF3] shadow-sm'
+                : 'text-[#7F8B97] hover:text-[#E7EDF3]'
+            }`}
+          >
+            <span>CHART</span>
+          </button>
+          <button
+            type="button"
+            onClick={viewMode !== 'cockpit' ? onToggleViewMode : undefined}
+            className={`px-2 py-0.5 rounded transition-all text-[11px] font-bold flex items-center gap-1.5 ${
+              viewMode === 'cockpit'
+                ? 'cyber-btn-active text-[#00f2fe] glow-text-cyan'
+                : 'text-[#00f2fe]/80 hover:text-[#00f2fe]'
+            }`}
+            title="Switch to Futuristic Cyber Cockpit HUD (Hotkey: M)"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-[#00f2fe] shadow-[0_0_6px_#00f2fe] animate-pulse" />
+            <span>COCKPIT HUD</span>
+          </button>
+        </div>
+      )}
 
       {/* 4. Session context: range + replay state */}
       {highPrice !== undefined && lowPrice !== undefined && highPrice > lowPrice && (

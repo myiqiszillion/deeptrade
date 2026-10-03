@@ -52,6 +52,9 @@ const OnboardingCard = React.lazy(() =>
 const TickReplayWidget = React.lazy(() =>
   import('./components/Backtest/TickReplayWidget').then((m) => ({ default: m.TickReplayWidget }))
 );
+const CockpitDashboard = React.lazy(() =>
+  import('./components/Cockpit/CockpitDashboard').then((m) => ({ default: m.CockpitDashboard }))
+);
 
 /** Placeholder that keeps the layout from jumping while a lazy panel streams in. */
 const PanelSkeleton: React.FC<{ className?: string }> = ({ className }) => (
@@ -61,25 +64,37 @@ const PanelSkeleton: React.FC<{ className?: string }> = ({ className }) => (
 );
 
 const POPULAR_FUTURES = [
+  { symbol: 'SPY', name: 'SPDR S&P 500 ETF' },
+  { symbol: 'QQQ', name: 'Invesco QQQ Trust' },
+  { symbol: 'IWM', name: 'iShares Russell 2000 ETF' },
+  { symbol: 'SPX', name: 'S&P 500 Index' },
+  { symbol: 'NDX', name: 'Nasdaq 100 Index' },
+  { symbol: 'VIX', name: 'CBOE Volatility Index' },
+  { symbol: 'AAPL', name: 'Apple Inc.' },
+  { symbol: 'NVDA', name: 'NVIDIA Corp.' },
+  { symbol: 'TSLA', name: 'Tesla, Inc.' },
+  { symbol: 'MSFT', name: 'Microsoft Corp.' },
+  { symbol: 'MSTR', name: 'MicroStrategy Inc.' },
+  { symbol: 'COIN', name: 'Coinbase Global Inc.' },
   { symbol: 'ES', name: 'E-mini S&P 500 (CME Globex)' },
   { symbol: 'NQ', name: 'E-mini Nasdaq 100 (CME Globex)' },
   { symbol: 'MES', name: 'Micro E-mini S&P 500 (CME)' },
   { symbol: 'MNQ', name: 'Micro E-mini Nasdaq 100 (CME)' },
   { symbol: 'YM', name: 'E-mini Dow Jones (CBOT)' },
-  { symbol: 'MYM', name: 'Micro E-mini Dow Jones (CBOT)' },
   { symbol: 'RTY', name: 'E-mini Russell 2000 (CME)' },
-  { symbol: 'M2K', name: 'Micro Russell 2000 (CME)' },
   { symbol: 'GC', name: 'Gold Futures (COMEX)' },
-  { symbol: 'MGC', name: 'Micro Gold Futures (COMEX)' },
   { symbol: 'CL', name: 'Crude Oil (NYMEX)' },
-  { symbol: 'MCL', name: 'Micro Crude Oil (NYMEX)' },
   { symbol: 'NG', name: 'Natural Gas (NYMEX)' },
+  { symbol: 'BTC', name: 'Bitcoin' },
+  { symbol: 'ETH', name: 'Ethereum' },
+  { symbol: 'SOL', name: 'Solana' },
+  { symbol: 'DOGE', name: 'Dogecoin' }
 ];
 
 const SETTINGS_STORAGE_KEY = 'deepchart_free_settings_v1';
 
 interface SavedSettings {
-  activePanel?: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | null;
+  activePanel?: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Darkpool' | '13F' | null;
   dockMode?: 'split' | 'single';
   symbol?: string;
   timeframe?: string;
@@ -296,6 +311,7 @@ export const App: React.FC = () => {
 
   // Replay protocol state
   const [replayProgress, setReplayProgress] = useState<ReplayProgress | undefined>();
+  const [replayFrame, setReplayFrame] = useState<{ timestamp: number; price: number; volume: number; gex?: number | null; iv?: number | null; esPrice?: number | null; nqPrice?: number | null; signal?: any } | null>(null);
   const [sessionMode, setSessionMode] = useState<'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED'>('LIVE');
   const [deepTradeThresholdUsd, setDeepTradeThresholdUsd] = useState<number | undefined>();
   const [historySource, setHistorySource] = useState<'NONE' | 'REAL_TICKS' | 'REAL_BARS'>('NONE');
@@ -336,12 +352,47 @@ export const App: React.FC = () => {
   // Features & Panels Toggles (restored from browser storage)
   const [activePanel, setActivePanel] = useState<SavedSettings['activePanel']>(
     savedSettings.activePanel === null ? null :
-      ['DOM', 'Profile', 'Tape', 'GEX', 'Flow'].includes(savedSettings.activePanel ?? '') ? savedSettings.activePanel : 'DOM'
+      ['DOM', 'Profile', 'Tape', 'GEX', 'Flow', 'Darkpool', '13F'].includes(savedSettings.activePanel ?? '') ? savedSettings.activePanel : 'DOM'
   );
   const [instrumentsList, setInstrumentsList] = useState<InstrumentOption[]>(POPULAR_FUTURES);
   const [showSystemStatus, setShowSystemStatus] = useState(false);
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<'chart' | 'cockpit'>(() => {
+    try {
+      return (localStorage.getItem('deepchart_view_mode') as 'chart' | 'cockpit') || 'chart';
+    } catch {
+      return 'chart';
+    }
+  });
+
+  const handleToggleViewMode = () => {
+    setViewMode((prev) => {
+      const next = prev === 'chart' ? 'cockpit' : 'chart';
+      try {
+        localStorage.setItem('deepchart_view_mode', next);
+      } catch {}
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement
+      )
+        return;
+      if (e.key === 'm' || e.key === 'M') {
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          handleToggleViewMode();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
   // Layout is persisted together: which side the dock sits on and whether the watchlist is open.
   const [dockSide, setDockSide] = useState<'left' | 'right'>(() => {
     try {
@@ -486,8 +537,10 @@ export const App: React.FC = () => {
         case '2':
         case '3':
         case '4':
-        case '5': {
-          const panels = ['DOM', 'Profile', 'Tape', 'GEX', 'Flow'] as const;
+        case '5':
+        case '6':
+        case '7': {
+          const panels = ['DOM', 'Profile', 'Tape', 'GEX', 'Flow', 'Darkpool', '13F'] as const;
           const target = panels[Number(key) - 1];
           setActivePanel((prev) => (prev === target ? null : target));
           break;
@@ -700,6 +753,7 @@ export const App: React.FC = () => {
           setSessionMode('REPLAY_PAUSED');
         }
       },
+      onReplayFrame: (frame) => setReplayFrame(frame),
       onHistoryResponse: (resp) => {
         isLoadingHistoryRef.current = false;
         setIsLoadingHistory(false);
@@ -1017,34 +1071,38 @@ export const App: React.FC = () => {
         planName={sessionPlan?.name ?? null}
         role={currentUser?.role ?? null}
         onSignOut={currentUser ? () => void handleLogout() : undefined}
+        viewMode={viewMode}
+        onToggleViewMode={handleToggleViewMode}
       />
 
-      {/* 2. Chart Workspace Secondary Toolbar */}
-      <ChartToolbar
-        chartMode={chartMode}
-        onChartModeChange={setChartMode}
-        timeframe={timeframe}
-        onTimeframeChange={handleTimeframeChange}
-        clusterMultiplier={clusterMultiplier}
-        onClusterChange={(c) => setClusterMultiplier(c)}
-        showVWAP={showVWAP}
-        onToggleVWAP={() => setShowVWAP(!showVWAP)}
-        showImbalances={showImbalances}
-        onToggleImbalances={() => setShowImbalances(!showImbalances)}
-        showDeltaNumbers={showDeltaNumbers}
-        onToggleDeltaNumbers={() => setShowDeltaNumbers(!showDeltaNumbers)}
-        showCVD={showCVD}
-        onToggleCVD={() => setShowCVD(!showCVD)}
-        signalFilters={signalFilters}
-        onToggleSignalFilter={handleToggleSignalFilter}
-        autoFollow={viewport.autoFollow ?? true}
-        onToggleAutoFollow={handleToggleAutoFollow}
-        onFitView={handleFitView}
-        onZoomIn={handleZoomIn}
-        onZoomOut={handleZoomOut}
-        activePanel={activePanel}
-        onSelectPanel={(p) => setActivePanel(activePanel === p ? null : p)}
-      />
+      {/* 2. Chart Workspace Secondary Toolbar (visible only in chart mode) */}
+      {viewMode === 'chart' && (
+        <ChartToolbar
+          chartMode={chartMode}
+          onChartModeChange={setChartMode}
+          timeframe={timeframe}
+          onTimeframeChange={handleTimeframeChange}
+          clusterMultiplier={clusterMultiplier}
+          onClusterChange={(c) => setClusterMultiplier(c)}
+          showVWAP={showVWAP}
+          onToggleVWAP={() => setShowVWAP(!showVWAP)}
+          showImbalances={showImbalances}
+          onToggleImbalances={() => setShowImbalances(!showImbalances)}
+          showDeltaNumbers={showDeltaNumbers}
+          onToggleDeltaNumbers={() => setShowDeltaNumbers(!showDeltaNumbers)}
+          showCVD={showCVD}
+          onToggleCVD={() => setShowCVD(!showCVD)}
+          signalFilters={signalFilters}
+          onToggleSignalFilter={handleToggleSignalFilter}
+          autoFollow={viewport.autoFollow ?? true}
+          onToggleAutoFollow={handleToggleAutoFollow}
+          onFitView={handleFitView}
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
+          activePanel={activePanel}
+          onSelectPanel={(p) => setActivePanel(activePanel === p ? null : p)}
+        />
+      )}
 
       {showHelp && (
         <div className="flex items-center justify-between px-3 py-1.5 bg-[#10151C] border-b border-[#1C2630] text-[11px] text-[#22D3EE] font-mono">
@@ -1092,124 +1150,146 @@ export const App: React.FC = () => {
           onScreenshot={handleScreenshot}
           onToggleFullscreen={handleToggleFullscreen}
           isFullscreen={isFullscreen}
+          viewMode={viewMode}
+          onToggleCockpit={handleToggleViewMode}
         />
 
         {/* Dock when docked left: same component, divider on its right edge */}
         {dockSide === 'left' && dockElement}
 
-        {/* Center: Footprint Chart Canvas & CVD Panel */}
-        <div className="flex-1 flex flex-col min-w-0 h-full">
-          <div className="flex-1 min-h-0 relative" id="chart-surface">
-            {(bars.length > 0 || historyBars.length > 0) && (
-              <FootprintCanvas
-                bars={bars}
-                historyBars={historyBars}
-                isLive={sessionMode === 'LIVE' && feedStatus === 'LIVE'}
-                sessionMode={sessionMode}
-                currentPrice={
-                  sessionMode === 'LIVE'
-                    ? currentPrice
-                    : bars[bars.length - 1]?.close ?? historyBars[historyBars.length - 1]?.close ?? currentPrice
-                }
-                vwapPoints={vwapPoints}
-                deepTrades={deepTrades}
-                absorptions={absorptions}
-                gexProfile={gexProfile}
-                showVWAP={showVWAP}
-                showImbalances={showImbalances}
-                showDeltaNumbers={showDeltaNumbers}
-                signalFilters={signalFilters}
-                tickSize={instrument?.tickSize || 0.25}
-                clusterMultiplier={clusterMultiplier}
+        {/* Center: Footprint Chart Canvas & CVD Panel OR Cockpit Dashboard */}
+        {viewMode === 'cockpit' ? (
+          <React.Suspense fallback={<div className="flex-1 dc-skeleton opacity-40 m-3 rounded-lg" />}>
+            <CockpitDashboard
+              symbol={symbol}
+              instrument={instrument}
+              currentPrice={currentPrice}
+              orderbook={orderbook}
+              tape={tape}
+              recentTicks={recentTicks}
+              deepTrades={deepTrades}
+              gexProfile={gexProfile}
+              isConnected={isConnected}
+              onSelectSymbol={handleSelectSymbol}
+              onReturnToChart={() => setViewMode('chart')}
+              highPrice={sessionStats.high}
+              lowPrice={sessionStats.low}
+            />
+          </React.Suspense>
+        ) : (
+          <div className="flex-1 flex flex-col min-w-0 h-full">
+            <div className="flex-1 min-h-0 relative" id="chart-surface">
+              {(bars.length > 0 || historyBars.length > 0) && (
+                <FootprintCanvas
+                  bars={bars}
+                  historyBars={historyBars}
+                  isLive={sessionMode === 'LIVE' && feedStatus === 'LIVE'}
+                  sessionMode={sessionMode}
+                  currentPrice={
+                    sessionMode === 'LIVE'
+                      ? currentPrice
+                      : bars[bars.length - 1]?.close ?? historyBars[historyBars.length - 1]?.close ?? currentPrice
+                  }
+                  vwapPoints={vwapPoints}
+                  deepTrades={deepTrades}
+                  absorptions={absorptions}
+                  gexProfile={gexProfile}
+                  showVWAP={showVWAP}
+                  showImbalances={showImbalances}
+                  showDeltaNumbers={showDeltaNumbers}
+                  signalFilters={signalFilters}
+                  tickSize={instrument?.tickSize || 0.25}
+                  clusterMultiplier={clusterMultiplier}
+                  symbol={symbol}
+                  timeframe={timeframe}
+                  chartMode={chartMode}
+                  viewport={viewport}
+                  onViewportChange={setViewport}
+                  crosshairX={crosshairX}
+                  onCrosshairChange={setCrosshairX}
+                />
+              )}
+
+              {/* TradingView-style legend: symbol · timeframe · OHLC of the last bar · indicator chips */}
+              <ChartLegend
                 symbol={symbol}
                 timeframe={timeframe}
                 chartMode={chartMode}
-                viewport={viewport}
-                onViewportChange={setViewport}
-                crosshairX={crosshairX}
-                onCrosshairChange={setCrosshairX}
+                exchange={instrument?.exchange}
+                lastBar={lastRenderedBar}
+                previousClose={previousBarClose}
+                feedStatus={feedStatus}
+                overlays={{ vwap: showVWAP, imbalances: showImbalances, delta: showDeltaNumbers, cvd: showCVD }}
+                onToggleOverlay={toggleOverlay}
+                decimals={decimalsForTick(instrument?.tickSize)}
               />
-            )}
 
-            {/* TradingView-style legend: symbol · timeframe · OHLC of the last bar · indicator chips */}
-            <ChartLegend
-              symbol={symbol}
-              timeframe={timeframe}
-              chartMode={chartMode}
-              exchange={instrument?.exchange}
-              lastBar={lastRenderedBar}
-              previousClose={previousBarClose}
-              feedStatus={feedStatus}
-              overlays={{ vwap: showVWAP, imbalances: showImbalances, delta: showDeltaNumbers, cvd: showCVD }}
-              onToggleOverlay={toggleOverlay}
-              decimals={decimalsForTick(instrument?.tickSize)}
-            />
-
-            {bars.length === 0 && historyBars.length === 0 && (
-              <div className="chart-empty-state" role="status">
-                <div className="empty-state-box">
-                  <div className="font-mono text-[11px] text-[#22D3EE] font-semibold tracking-wide uppercase">
-                    {symbol} · {timeframe} · {chartMode}
-                  </div>
-                  <h2>
-                    {sessionMode !== 'LIVE'
-                      ? 'No replay records'
-                      : isLoadingHistory
-                        ? 'Loading market history…'
-                        : feedStatus === 'LIVE'
-                          ? 'Waiting for the first validated tick'
-                          : 'Feed unavailable for this instrument'}
-                  </h2>
-                  <p>
-                    {feedStatus === 'LIVE'
-                      ? `Connected and subscribed. The chart draws only validated ${symbol} trades — nothing is simulated, so an empty tape stays empty.`
-                      : isConnected
-                        ? 'The server has no validated real-time source for this instrument. Check the provider configuration and your vendor entitlement, then open Diagnostics for the exact reason.'
-                        : 'Reconnecting to the engine… if this persists, open Diagnostics to inspect the session.'}
-                  </p>
-                  <div className="empty-state-actions">
-                    <button className="terminal-btn" onClick={() => setShowSystemStatus(true)}>
-                      <Activity size={13} /> Open diagnostics
-                    </button>
-                    <button className="terminal-btn" onClick={() => setShowOnboardingModal(true)}>
-                      <BookOpen size={13} /> How to read this chart
-                    </button>
-                    <button className="terminal-btn" onClick={() => setPaletteOpen(true)}>
-                      <Search size={13} /> Switch instrument (Ctrl+K)
-                    </button>
-                  </div>
-                  <div className="flex justify-between items-center pt-3 mt-4 border-t border-[#1C2630] text-[10px] text-[#7F8B97] font-mono">
-                    <span>
-                      Engine:{' '}
-                      <strong style={{ color: isConnected ? 'var(--ok)' : 'var(--danger)' }}>
-                        {isConnected ? 'Connected' : 'Offline'}
-                      </strong>
-                    </span>
-                    <span>
-                      Provider: <strong className="text-[#E7EDF3]">{instrument?.exchange ? 'Licensed vendor' : 'CME'}</strong>
-                    </span>
+              {bars.length === 0 && historyBars.length === 0 && (
+                <div className="chart-empty-state" role="status">
+                  <div className="empty-state-box">
+                    <div className="font-mono text-[11px] text-[#22D3EE] font-semibold tracking-wide uppercase">
+                      {symbol} · {timeframe} · {chartMode}
+                    </div>
+                    <h2>
+                      {sessionMode !== 'LIVE'
+                        ? 'No replay records'
+                        : isLoadingHistory
+                          ? 'Loading market history…'
+                          : feedStatus === 'LIVE'
+                            ? 'Waiting for the first validated tick'
+                            : 'Feed unavailable for this instrument'}
+                    </h2>
+                    <p>
+                      {feedStatus === 'LIVE'
+                        ? `Connected and subscribed. The chart draws only validated ${symbol} trades — nothing is simulated, so an empty tape stays empty.`
+                        : isConnected
+                          ? 'The server has no validated real-time source for this instrument. Check the provider configuration and your vendor entitlement, then open Diagnostics for the exact reason.'
+                          : 'Reconnecting to the engine… if this persists, open Diagnostics to inspect the session.'}
+                    </p>
+                    <div className="empty-state-actions">
+                      <button className="terminal-btn" onClick={() => setShowSystemStatus(true)}>
+                        <Activity size={13} /> Open diagnostics
+                      </button>
+                      <button className="terminal-btn" onClick={() => setShowOnboardingModal(true)}>
+                        <BookOpen size={13} /> How to read this chart
+                      </button>
+                      <button className="terminal-btn" onClick={() => setPaletteOpen(true)}>
+                        <Search size={13} /> Switch instrument (Ctrl+K)
+                      </button>
+                    </div>
+                    <div className="flex justify-between items-center pt-3 mt-4 border-t border-[#1C2630] text-[10px] text-[#7F8B97] font-mono">
+                      <span>
+                        Engine:{' '}
+                        <strong style={{ color: isConnected ? 'var(--ok)' : 'var(--danger)' }}>
+                          {isConnected ? 'Connected' : 'Offline'}
+                        </strong>
+                      </span>
+                      <span>
+                        Provider: <strong className="text-[#E7EDF3]">{instrument?.exchange ? 'Licensed vendor' : 'CME'}</strong>
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
+            </div>
+
+            {/* Sub-panel: CVD Panel */}
+            {showCVD && (bars.length > 0 || historyBars.length > 0) && (
+              <CVDPanel
+                bars={bars}
+                historyBars={historyBars}
+                currentCVD={currentCVD}
+                viewport={viewport}
+                crosshairX={crosshairX}
+                onViewportChange={setViewport}
+                onCrosshairChange={setCrosshairX}
+                height={cvdHeight}
+                onHeightChange={setCvdHeight}
+                onClose={() => setShowCVD(false)}
+              />
             )}
           </div>
-
-          {/* Sub-panel: CVD Panel */}
-          {showCVD && (bars.length > 0 || historyBars.length > 0) && (
-            <CVDPanel
-              bars={bars}
-              historyBars={historyBars}
-              currentCVD={currentCVD}
-              viewport={viewport}
-              crosshairX={crosshairX}
-              onViewportChange={setViewport}
-              onCrosshairChange={setCrosshairX}
-              height={cvdHeight}
-              onHeightChange={setCvdHeight}
-              onClose={() => setShowCVD(false)}
-            />
-          )}
-        </div>
+        )}
 
         {/* Dock on the right (the left position renders before the chart) */}
         {dockSide === 'right' && dockElement}
@@ -1232,6 +1312,7 @@ export const App: React.FC = () => {
         <React.Suspense fallback={<PanelSkeleton className="h-[74px] border-t border-[#1C2630]" />}>
           <TickReplayWidget
             progress={replayProgress}
+            replayFrame={replayFrame}
             symbol={symbol}
             feedStatus={feedStatus}
             historySource={historySource}

@@ -21,7 +21,7 @@ export async function runChartSmokeTests(): Promise<void> {
     NODE_ENV: 'test',
     PORT: String(port),
     HOST: '127.0.0.1',
-    FUTURES_PROVIDER: 'tradovate',
+    FUTURES_PROVIDER: 'databento',
     DEMO: '0',
     DEV_HOOKS: '1',
     ADMIN_SECRET,
@@ -30,9 +30,7 @@ export async function runChartSmokeTests(): Promise<void> {
     // ES bars then show up as REAL_BARS history and this suite asserts against stale data.
     STORAGE_PATH: ':memory:',
   };
-  for (const key of Object.keys(env)) {
-    if (key.startsWith('TRADOVATE_')) delete env[key];
-  }
+  delete env.DATABENTO_API_KEY;
 
   const server = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {
     cwd: root,
@@ -116,9 +114,9 @@ export async function runChartSmokeTests(): Promise<void> {
     const detailed = (await fetch(`${base}/healthz`, { headers: { 'x-admin-secret': ADMIN_SECRET } }).then((r) =>
       r.json()
     )) as any;
-    assert.equal(detailed.feed, 'tradovate');
+    assert.equal(detailed.feed, 'databento');
     assert.equal(detailed.historySource, 'NONE');
-    assert.match(detailed.feedReason, /TRADOVATE_USERNAME/);
+    assert.match(detailed.feedReason, /DATABENTO_API_KEY/);
     console.log('  [PASS] Chart history server smoke test passed.');
   } finally {
     socket?.terminate();

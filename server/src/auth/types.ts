@@ -22,7 +22,7 @@ export type DataType = 'BARS' | 'TICKS' | 'FOOTPRINT' | 'L2_BOOK' | 'MBO' | 'REP
 export interface Entitlement {
   id: string;
   userId: string;
-  provider: string; // 'cme' | 'cbot' | 'comex' | 'nymex' | 'tradovate' | 'databento' | '*'
+  provider: string; // 'databento' | 'binance' | '*'
   exchange?: string; // 'CME' | 'NYMEX' | 'COMEX' | 'CBOT' | '*'
   symbolPattern?: string; // e.g. 'ES*', 'NQ*', '*'
   dataTypes: DataType[];

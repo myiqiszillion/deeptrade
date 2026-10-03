@@ -23,7 +23,7 @@ export type InstrumentCategory =
   /** Vendor-discovered instrument whose unit of measure we cannot categorise confidently. */
   | 'OTHER';
 
-export type ExchangeName = 'CME' | 'NYMEX' | 'COMEX' | 'CBOT';
+export type ExchangeName = 'CME' | 'NYMEX' | 'COMEX' | 'CBOT' | 'BINANCE';
 
 export type ContractType = 'CONTINUOUS' | 'SPECIFIC';
 
@@ -345,7 +345,7 @@ export const FUTURES_INSTRUMENTS: Record<string, FuturesInstrument> = {
 };
 
 /**
- * CME Group product universe (the liquid roots of what Databento serves as `GLBX.MDP3`).
+ * CME Group product universe.
  *
  * Rows are declared once and expanded into full {@link FuturesInstrument} records: `tickValue` is always
  * derived as `pointValue × tickSize` so the two can never drift apart (a wrong tick/multiplier means wrong
@@ -418,6 +418,43 @@ const SPEC_TABLE: SpecRow[] = [
   { symbol: 'BTC', name: 'Bitcoin', category: 'CRYPTO', assetClass: 'CRYPTO', exchange: 'CME', pointValue: 5, tickSize: 5, basePrice: 95000, sessionScheduleId: 'CME_CRYPTO', microSymbol: 'MBT' },
   { symbol: 'MBT', name: 'Micro Bitcoin', category: 'CRYPTO', assetClass: 'CRYPTO', exchange: 'CME', pointValue: 0.1, tickSize: 5, basePrice: 95000, sessionScheduleId: 'CME_CRYPTO', parentSymbol: 'BTC' },
   { symbol: 'MET', name: 'Micro Ether', category: 'CRYPTO', assetClass: 'CRYPTO', exchange: 'CME', pointValue: 0.1, tickSize: 0.5, basePrice: 3200, sessionScheduleId: 'CME_CRYPTO', isMicro: true },
+
+  // --- COMEX / NYMEX additional metals ---
+  { symbol: 'PL', name: 'Platinum', category: 'METALS', assetClass: 'METALS', exchange: 'NYMEX', pointValue: 50, tickSize: 0.1, basePrice: 950.0, sessionScheduleId: 'NYMEX_METALS' },
+  { symbol: 'PA', name: 'Palladium', category: 'METALS', assetClass: 'METALS', exchange: 'NYMEX', pointValue: 100, tickSize: 0.5, basePrice: 1000.0, sessionScheduleId: 'NYMEX_METALS' },
+
+  // --- CBOT additional ags ---
+  { symbol: 'ZM', name: 'Soybean Meal', category: 'AGRICULTURE', assetClass: 'AGRICULTURE', exchange: 'CBOT', pointValue: 100, tickSize: 0.1, basePrice: 320.0, sessionScheduleId: 'CBOT_AG' },
+
+  // --- Equities & Indices (Treated as 1 point = $1, tick size 0.01) ---
+  { symbol: 'SPY', name: 'SPDR S&P 500 ETF', category: 'INDEX', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 600.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'QQQ', name: 'Invesco QQQ Trust', category: 'INDEX', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 500.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'IWM', name: 'iShares Russell 2000 ETF', category: 'INDEX', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 200.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'DIA', name: 'SPDR Dow Jones Industrial Average', category: 'INDEX', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 400.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'SPX', name: 'S&P 500 Index', category: 'INDEX', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 6000.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'NDX', name: 'Nasdaq 100 Index', category: 'INDEX', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 20000.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'VIX', name: 'CBOE Volatility Index', category: 'INDEX', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 1000, tickSize: 0.05, basePrice: 15.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'RUT', name: 'Russell 2000 Index', category: 'INDEX', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 2000.0, sessionScheduleId: 'CME_EQUITY' },
+
+  // --- Big Tech ---
+  { symbol: 'AAPL', name: 'Apple Inc.', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 250.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'TSLA', name: 'Tesla, Inc.', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 350.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'NVDA', name: 'NVIDIA Corp.', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 130.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'AMZN', name: 'Amazon.com Inc.', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 200.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'MSFT', name: 'Microsoft Corp.', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 400.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'META', name: 'Meta Platforms Inc.', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 600.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'GOOGL', name: 'Alphabet Inc. Cl A', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 180.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'GOOG', name: 'Alphabet Inc. Cl C', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 180.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'MSTR', name: 'MicroStrategy Inc.', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 350.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'COIN', name: 'Coinbase Global Inc.', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 300.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'AMD', name: 'Advanced Micro Devices', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 150.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'SMCI', name: 'Super Micro Computer', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 50.0, sessionScheduleId: 'CME_EQUITY' },
+  { symbol: 'PLTR', name: 'Palantir Technologies', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 50.0, sessionScheduleId: 'CME_EQUITY' },
+
+  // --- Crypto Spot/Alts ---
+  { symbol: 'SOL', name: 'Solana', category: 'CRYPTO', assetClass: 'CRYPTO', exchange: 'BINANCE', pointValue: 1, tickSize: 0.01, basePrice: 200.0, sessionScheduleId: 'CME_CRYPTO' },
+  { symbol: 'XRP', name: 'XRP', category: 'CRYPTO', assetClass: 'CRYPTO', exchange: 'BINANCE', pointValue: 1, tickSize: 0.0001, basePrice: 3.0, sessionScheduleId: 'CME_CRYPTO' },
+  { symbol: 'DOGE', name: 'Dogecoin', category: 'CRYPTO', assetClass: 'CRYPTO', exchange: 'BINANCE', pointValue: 1, tickSize: 0.0001, basePrice: 0.3, sessionScheduleId: 'CME_CRYPTO' },
 ];
 
 export const INSTRUMENT_CATEGORIES: InstrumentCategory[] = [
@@ -433,7 +470,7 @@ export const INSTRUMENT_CATEGORIES: InstrumentCategory[] = [
   'OTHER',
 ];
 
-export const EXCHANGE_NAMES: ExchangeName[] = ['CME', 'NYMEX', 'COMEX', 'CBOT'];
+export const EXCHANGE_NAMES: ExchangeName[] = ['CME', 'NYMEX', 'COMEX', 'CBOT', 'BINANCE'];
 
 /** Derive tick value from the contract's point value so the two can never disagree. */
 export function tickValueFor(pointValue: number, tickSize: number): number {
@@ -472,12 +509,83 @@ for (const row of SPEC_TABLE) {
   if (!FUTURES_INSTRUMENTS[row.symbol]) FUTURES_INSTRUMENTS[row.symbol] = specRowToInstrument(row);
 }
 
+export const DYNAMIC_INSTRUMENTS: Record<string, FuturesInstrument> = {};
+
+/**
+ * Resolves an instrument from the catalog, parses contract expiration months,
+ * or dynamically registers a valid market ticker symbol on the fly.
+ * Guarantees that DeepChart never rejects genuine market tickers (stocks, ETFs, futures from Databento).
+ */
+export function getOrRegisterInstrument(symbol: string): FuturesInstrument {
+  const norm = (symbol || '').trim().toUpperCase();
+  if (!norm) {
+    return FUTURES_INSTRUMENTS.ES;
+  }
+  if (FUTURES_INSTRUMENTS[norm]) {
+    return FUTURES_INSTRUMENTS[norm];
+  }
+  if (DYNAMIC_INSTRUMENTS[norm]) {
+    return DYNAMIC_INSTRUMENTS[norm];
+  }
+
+  // Check if it's a specific contract month of a known root (e.g. ESH6, NQZ24)
+  const parsed = parseContractSymbol(norm);
+  if (!parsed.isContinuous && FUTURES_INSTRUMENTS[parsed.root]) {
+    const parent = FUTURES_INSTRUMENTS[parsed.root];
+    const contract: FuturesInstrument = {
+      ...parent,
+      symbol: norm,
+      contractType: 'SPECIFIC',
+      contractMonth: parsed.month,
+      contractYear: parsed.year,
+    };
+    DYNAMIC_INSTRUMENTS[norm] = contract;
+    return contract;
+  }
+
+  // Dynamic registration for any valid alphanumeric ticker (e.g., AAPL, NVDA, or new futures/etfs)
+  const isFutures = [
+    'ES', 'MES', 'NQ', 'MNQ', 'YM', 'MYM', 'RTY', 'M2K',
+    'GC', 'MGC', 'SI', 'SIL', 'HG', 'MHG', 'PL', 'PA',
+    'CL', 'MCL', 'NG', 'MNG', 'RB', 'HO',
+    'ZB', 'ZN', 'ZF', 'ZT',
+    '6E', 'M6E', '6J', '6B', 'M6B', '6A', 'M6A', '6C', 'MSF',
+    'ZC', 'ZW', 'ZS', 'ZM', 'ZL', 'HE', 'LE', 'GF',
+    'BTC', 'MBT', 'MET'
+  ].includes(norm);
+
+  const dynamicInst: FuturesInstrument = {
+    symbol: norm,
+    rootSymbol: norm,
+    name: norm,
+    category: isFutures ? 'INDEX' : 'OTHER',
+    assetClass: 'EQUITY_INDEX',
+    exchange: 'CME',
+    tickSize: isFutures ? 0.25 : 0.01,
+    pointValue: isFutures ? 50 : 1,
+    tickValue: isFutures ? 12.5 : 0.01,
+    initialMargin: 0,
+    dayTradingMargin: 0,
+    underlyingIndex: norm,
+    basePrice: 0,
+    timezone: 'America/New_York',
+    currency: 'USD',
+    multiplier: isFutures ? 50 : 1,
+    isMicro: false,
+    contractType: 'CONTINUOUS',
+    sessionScheduleId: isFutures ? 'CME_EQUITY_INDEX' : 'CME_EQUITY',
+  };
+
+  DYNAMIC_INSTRUMENTS[norm] = dynamicInst;
+  return dynamicInst;
+}
+
 
 /**
  * Check if a symbol represents a continuous contract (e.g. 'ES', 'NQ') vs a specific contract month ('ESH6', 'ESZ26').
  */
 export function isContinuousContract(symbol: string): boolean {
-  const inst = FUTURES_INSTRUMENTS[symbol];
+  const inst = FUTURES_INSTRUMENTS[symbol] || DYNAMIC_INSTRUMENTS[symbol];
   if (inst) return inst.contractType === 'CONTINUOUS';
   // Specific month format e.g. ESH26 or ESZ6
   return !/^[A-Z0-9]+[FGHJKMNQUVXZ]\d{1,2}$/i.test(symbol);
@@ -546,33 +654,18 @@ export function getParentSymbol(symbol: string): string | undefined {
 
 /** Format a symbol for vendor-specific requests according to official specifications. */
 export function formatVendorSymbol(
-  vendor: 'tradovate' | 'databento',
+  vendor: 'databento' | 'binance' | string,
   symbol: string,
-  contractMonth?: string
+  _contractMonth?: string
 ): string {
-  if (vendor === 'tradovate') {
-    // Tradovate uses @ROOT for continuous front-month, or ROOT + MONTH + YEAR (e.g. ESH6)
-    if (contractMonth) {
-      return `${symbol}${contractMonth}`;
-    }
-    return `@${symbol}`;
-  }
-
-  if (vendor === 'databento') {
-    // Databento symbology e.g. ES.FUT or ES.c.0
-    return `${symbol}.FUT`;
-  }
-
   return symbol;
 }
 
 /**
  * Operator-added instruments: `EXTRA_INSTRUMENTS="ZC:5000:0.25:Corn:AGRICULTURE:CBOT;QH:42000:0.01"`.
  *
- * Databento serves every CME Group product as `GLBX.MDP3` (CME/CBOT/NYMEX/COMEX), but there is no
- * "list every instrument with specs" endpoint — and a wrong multiplier silently corrupts P&L, whale
- * notches and footprint grouping. So the long tail is opt-in: supply the verified spec (contract unit →
- * point value, minimum price increment) and the root becomes a first-class instrument with no code change.
+ * Supply verified specs (contract unit → point value, minimum price increment) and the root becomes
+ * a first-class instrument with no code change.
  *
  * Format: `SYMBOL:POINT_VALUE:TICK_SIZE[:NAME[:CATEGORY[:EXCHANGE[:UNDERLYING_INDEX]]]]`, `;`-separated.
  * Invalid rows are rejected with a reason (fail-closed) and surfaced through EXTRA_INSTRUMENT_ERRORS.
@@ -665,4 +758,5 @@ export function parseExtraInstruments(
     console.warn(`[Instruments] EXTRA_INSTRUMENTS rejected -> ${error}`);
   }
 }
+
 

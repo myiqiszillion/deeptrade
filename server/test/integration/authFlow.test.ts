@@ -47,7 +47,7 @@ export async function runAuthFlowTests(): Promise<void> {
     TRUST_PROXY: '1',
   };
   for (const key of Object.keys(env)) {
-    if (key.startsWith('TRADOVATE_') || key.startsWith('DATABENTO_')) delete env[key];
+    if (key.startsWith('UW_')) delete env[key];
   }
 
   const server = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {

@@ -87,7 +87,7 @@ export function classifyAggressorSide(tick: Tick): 'buy' | 'sell' | 'unknown' {
 }
 
 /**
- * A REAL historical bar that preceded the live session (e.g. Tradovate `md/getchart`).
+ * A REAL historical bar that preceded the live session (e.g. Databento historical bars).
  *
  * Deliberately NOT a `FootprintBar`: a bar is an aggregate and physically cannot yield a
  * per-price bid/ask split. Keeping a separate, narrower type makes that limitation structural
@@ -188,7 +188,7 @@ export interface DataCoverage {
 }
 
 export type WSClientMessage =
-  | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'cme' | 'databento' | 'tradovate' | string }
+  | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'databento' | 'binance' | string }
   | { type: 'REPLAY_CONTROL'; action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP' | 'RETURN_TO_LIVE'; speed?: number; timestamp?: number }
   | { type: 'FETCH_HISTORY'; symbol: string; timeframe: string; provider?: string; beforeTime?: number; limit?: number; requestId?: string }
   | { type: 'PING'; timestamp?: number };
@@ -211,7 +211,7 @@ export type WSServerMessage =
       /** How the chart history was seeded: real ticks, real vendor bars, or live-only. */
       historySource?: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
       /**
-       * REAL vendor bars that preceded the live session (Tradovate `md/getchart`).
+       * REAL vendor bars that preceded the live session (Databento historical bars).
        *
        * Bar-level aggregates ONLY — there is deliberately no per-price breakdown, because a
        * bar cannot yield one. Expanding these into synthetic prints would invent the footprint
@@ -236,6 +236,7 @@ export type WSServerMessage =
   | { type: 'GEX_UPDATE'; profile: GEXProfile }
   | { type: 'OPTIONS_FLOW'; trade: OptionsFlowTrade }
   | { type: 'REPLAY_STATE'; progress: { isPlaying: boolean; currentIndex: number; totalTicks: number; speed: number; currentTime?: number; isEnded?: boolean; mode?: 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED' } }
+  | { type: 'REPLAY_FRAME'; frame: { timestamp: number; price: number; volume: number; gex?: number | null; iv?: number | null; esPrice?: number | null; nqPrice?: number | null; signal?: any } }
   | { type: 'PONG'; timestamp: number }
   | { type: 'ERROR'; code: string; message: string }
   | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; provider?: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number | { provider: string; symbol: string; timeframe?: string; beforeTime: number; beforeId?: string }; requestId?: string };

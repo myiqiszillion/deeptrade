@@ -16,24 +16,24 @@ export async function runMarketDataStoreTests(): Promise<void> {
     const store = new MarketDataStore(TEST_DB);
 
     // 1. Trade Persistence & Deduplication
-    store.saveTrades(sampleTicks, 'ES', 'tradovate');
+    store.saveTrades(sampleTicks, 'ES', 'databento');
     // Save again to verify deduplication
-    store.saveTrades(sampleTicks, 'ES', 'tradovate');
+    store.saveTrades(sampleTicks, 'ES', 'databento');
 
-    const tradesResult = store.queryTrades({ provider: 'tradovate', symbol: 'ES', limit: 10 });
+    const tradesResult = store.queryTrades({ provider: 'databento', symbol: 'ES', limit: 10 });
     assert.equal(tradesResult.trades.length, 3, 'Must have exactly 3 deduplicated trades');
     assert.equal(tradesResult.trades[0].id, 't_1');
     assert.equal(tradesResult.trades[1].id, 't_2');
     assert.equal(tradesResult.trades[2].id, 't_3');
 
     // 2. Composite Cursor Pagination
-    const page1 = store.queryTrades({ provider: 'tradovate', symbol: 'ES', limit: 2 });
+    const page1 = store.queryTrades({ provider: 'databento', symbol: 'ES', limit: 2 });
     assert.equal(page1.trades.length, 2, 'Page 1 must return 2 trades');
     assert.equal(page1.hasMore, true, 'Page 1 must have more trades');
     assert.ok(page1.cursor, 'Page 1 must return cursor');
 
     const page2 = store.queryTrades({
-      provider: 'tradovate',
+      provider: 'databento',
       symbol: 'ES',
       beforeTime: page1.cursor!.beforeTime,
       beforeId: page1.cursor!.beforeId,
@@ -43,18 +43,18 @@ export async function runMarketDataStoreTests(): Promise<void> {
     assert.equal(page2.trades[0].id, 't_1');
 
     // 3. Provider Scoping (no cross-provider leakage)
-    const databentoTrades = store.queryTrades({ provider: 'databento', symbol: 'ES', limit: 10 });
-    assert.equal(databentoTrades.trades.length, 0, 'Querying different provider must return 0 trades');
+    const otherProviderTrades = store.queryTrades({ provider: 'binance', symbol: 'ES', limit: 10 });
+    assert.equal(otherProviderTrades.trades.length, 0, 'Querying different provider must return 0 trades');
 
     // 4. Bar Persistence & Pagination
-    store.saveBars(sampleHistoricalBars, 'ES', '1m', 'tradovate');
-    const barsResult = store.queryBars({ provider: 'tradovate', symbol: 'ES', timeframe: '1m', limit: 2 });
+    store.saveBars(sampleHistoricalBars, 'ES', '1m', 'databento');
+    const barsResult = store.queryBars({ provider: 'databento', symbol: 'ES', timeframe: '1m', limit: 2 });
     assert.equal(barsResult.bars.length, 2, 'Must return 2 most recent bars');
     assert.equal(barsResult.hasMore, true);
     assert.ok(barsResult.cursor);
 
     const earlierBars = store.queryBars({
-      provider: 'tradovate',
+      provider: 'databento',
       symbol: 'ES',
       timeframe: '1m',
       beforeTime: barsResult.cursor!.beforeTime,
@@ -64,7 +64,7 @@ export async function runMarketDataStoreTests(): Promise<void> {
     assert.equal(earlierBars.hasMore, false);
 
     // 5. Gap Recording
-    store.recordGap('ES', 'tradovate', 1700000000000, 1700000010000, 'network_disconnect');
+    store.recordGap('ES', 'databento', 1700000000000, 1700000010000, 'network_disconnect');
     const gaps = store.getGaps('ES');
     assert.equal(gaps.length, 1);
     assert.equal(gaps[0].reason, 'network_disconnect');
@@ -95,8 +95,8 @@ export async function runMarketDataStoreTests(): Promise<void> {
     store.close();
 
     const reopenedStore = new MarketDataStore(TEST_DB);
-    assert.equal(reopenedStore.queryTrades({ provider: 'tradovate', symbol: 'ES', limit: 10 }).trades.length, 3);
-    assert.equal(reopenedStore.queryBars({ provider: 'tradovate', symbol: 'ES', timeframe: '1m', limit: 10 }).bars.length, 4);
+    assert.equal(reopenedStore.queryTrades({ provider: 'databento', symbol: 'ES', limit: 10 }).trades.length, 3);
+    assert.equal(reopenedStore.queryBars({ provider: 'databento', symbol: 'ES', timeframe: '1m', limit: 10 }).bars.length, 4);
     assert.equal(reopenedStore.getUser('u_p1')?.username, 'persistent1');
     assert.equal(reopenedStore.isTokenJtiRevoked('jti_p1'), true);
     reopenedStore.close();

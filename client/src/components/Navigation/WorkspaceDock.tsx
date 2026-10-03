@@ -6,6 +6,18 @@ import { ProfileOverlay } from '../Profile/ProfileOverlay';
 import { SpeedOfTapeWidget } from '../Tape/SpeedOfTapeWidget';
 import { GEXPanel } from '../Options/GEXPanel';
 import { OptionsFlowWidget } from '../Options/OptionsFlowWidget';
+import { DarkpoolWidget } from '../Darkpool/DarkpoolWidget';
+import { Institutional13FWidget } from '../Institutional/Institutional13FWidget';
+import { SignalPanel } from '../Intelligence/SignalPanel';
+import { SimilarDaysPanel } from '../Intelligence/SimilarDaysPanel';
+import { EventTimeline } from '../Intelligence/EventTimeline';
+import { CrossAssetPanel } from '../Intelligence/CrossAssetPanel';
+import { VolSurfacePanel } from '../Options/VolSurface';
+import { SymbolSearch } from '../SymbolSearch/SymbolSearch';
+import { DataExplorer } from '../DataExplorer/DataExplorer';
+import { BacktestPanel } from '../Research/BacktestPanel';
+import { ResearchLabPanel } from '../Research/ResearchLabPanel';
+import { CopilotPanel } from '../AI/CopilotPanel';
 import {
   DeepTrade,
   FuturesInstrument,
@@ -19,10 +31,10 @@ import {
 } from '../../types';
 
 interface WorkspaceDockProps {
-  activePanel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | null;
+  activePanel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Darkpool' | '13F' | 'Signal' | 'History' | 'Events' | 'Cross' | 'Vol' | 'Backtest' | 'Lab' | 'Copilot' | 'SymbolSearch' | 'DataExplorer' | null;
   onClose: () => void;
   /** Switch panels without leaving the dock (the toolbar is far away when you are reading order flow). */
-  onSelectPanel: (panel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow') => void;
+  onSelectPanel: (panel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Darkpool' | '13F' | 'Signal' | 'History' | 'Events' | 'Cross' | 'Vol' | 'Backtest' | 'Lab' | 'Copilot' | 'SymbolSearch' | 'DataExplorer') => void;
   /** Which side of the chart the dock is anchored to; the divider follows it. */
   side: 'left' | 'right';
   onToggleSide: () => void;
@@ -42,12 +54,24 @@ interface WorkspaceDockProps {
 
 const DOCK_WIDTH_STORAGE_KEY = 'deepchart_dock_width_v1';
 
-const PANELS: Array<{ id: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow'; label: string; hint: string }> = [
+const PANELS: Array<{ id: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Darkpool' | '13F' | 'Signal' | 'History' | 'Events' | 'Cross' | 'Vol' | 'Backtest' | 'Lab' | 'Copilot' | 'SymbolSearch' | 'DataExplorer'; label: string; hint: string }> = [
   { id: 'DOM', label: 'DOM', hint: 'Depth of market ladder with live resting size' },
   { id: 'Profile', label: 'Profile', hint: 'Volume Profile + TPO (Market Profile) for the session' },
   { id: 'Tape', label: 'Tape', hint: 'Speed of tape and block (whale) prints' },
   { id: 'GEX', label: 'GEX', hint: 'Gamma exposure from a real option chain' },
   { id: 'Flow', label: 'Flow', hint: 'Options flow prints' },
+  { id: 'Darkpool', label: 'Darkpool', hint: 'Darkpool block trades' },
+  { id: '13F', label: '13F', hint: 'Institutional holdings' },
+  { id: 'Signal', label: 'Signal', hint: 'Feature scores (no BUY/SELL)' },
+  { id: 'History', label: 'Similar', hint: 'Historical similar days' },
+  { id: 'Events', label: 'Events', hint: 'Event timeline' },
+  { id: 'Cross', label: 'Cross', hint: 'Cross-asset evidence' },
+  { id: 'Vol', label: 'Vol', hint: 'Volatility surface' },
+  { id: 'Backtest', label: 'Backtest', hint: 'Backtest occurrences & moves' },
+  { id: 'Lab', label: 'Lab', hint: 'Research Lab query' },
+  { id: 'Copilot', label: 'Copilot', hint: 'QuantDecay Copilot' },
+  { id: 'SymbolSearch', label: 'Symbols', hint: 'Symbol search' },
+  { id: 'DataExplorer', label: 'Explorer', hint: 'Data Explorer' },
 ];
 
 export const WorkspaceDock: React.FC<WorkspaceDockProps> = ({
@@ -197,12 +221,30 @@ export const WorkspaceDock: React.FC<WorkspaceDockProps> = ({
         )}
 
         {activePanel === 'GEX' && (
-          <GEXPanel profile={gexProfile} currentPrice={currentPrice} />
+          <GEXPanel symbol={symbol} currentPrice={currentPrice} />
         )}
 
         {activePanel === 'Flow' && (
-          <OptionsFlowWidget flowTrades={optionsFlow} />
+          <OptionsFlowWidget symbol={symbol} />
         )}
+
+        {activePanel === 'Darkpool' && (
+          <DarkpoolWidget symbol={symbol} />
+        )}
+
+        {activePanel === '13F' && (
+          <Institutional13FWidget />
+        )}
+        {activePanel === 'Signal' && <SignalPanel symbol={symbol} />}
+        {activePanel === 'History' && <SimilarDaysPanel symbol={symbol} />}
+        {activePanel === 'Events' && <EventTimeline symbol={symbol} />}
+        {activePanel === 'Cross' && <CrossAssetPanel symbol={symbol} />}
+        {activePanel === 'Vol' && <VolSurfacePanel symbol={symbol} />}
+        {activePanel === 'Backtest' && <BacktestPanel symbol={symbol} />}
+        {activePanel === 'Lab' && <ResearchLabPanel symbol={symbol} />}
+        {activePanel === 'Copilot' && <CopilotPanel symbol={symbol} />}
+        {activePanel === 'SymbolSearch' && <SymbolSearch />}
+        {activePanel === 'DataExplorer' && <DataExplorer />}
       </div>
     </aside>
   );

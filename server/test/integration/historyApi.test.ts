@@ -27,7 +27,6 @@ export async function runHistoryApiTests(): Promise<void> {
     // Pin the vendor away too: the feed-state assertions below must not depend on the developer's shell
     // (an inherited FUTURES_PROVIDER would start a real vendor connection during the test run).
     FUTURES_PROVIDER: 'none',
-    DATABENTO_TRANSPORT_READY: '0',
     DATABENTO_API_KEY: '',
   };
 
@@ -66,11 +65,11 @@ export async function runHistoryApiTests(): Promise<void> {
     assert.ok(Array.isArray(esData.bars));
 
     // 2. Query with options
-    const nqRes = await fetch(`${base}/api/v1/history?symbol=NQ&timeframe=1m&provider=tradovate&limit=5`);
+    const nqRes = await fetch(`${base}/api/v1/history?symbol=NQ&timeframe=1m&provider=databento&limit=5`);
     assert.equal(nqRes.status, 200);
     const nqData = (await nqRes.json()) as any;
     assert.equal(nqData.symbol, 'NQ');
-    assert.equal(nqData.provider, 'tradovate');
+    assert.equal(nqData.provider, 'databento');
     assert.ok(Array.isArray(nqData.bars));
 
     // 3. P0 Auth Regression: Client cannot self-assign admin role via POST /api/v1/auth/login

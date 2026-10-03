@@ -122,6 +122,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const mousePosRef = useRef<{ x: number; y: number } | null>(null);
   const lastFittedDatasetRef = useRef<string | null>(null);
+  const lastHistoryCountRef = useRef(0);
 
   // Dirty rendering scheduler: canvas renders only on dirty events (interactions, new data, resize)
   const isDirtyRef = useRef(true);
@@ -155,10 +156,14 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
 
     // Target 18-24 candles for market context & microstructure scanning
     const targetBarCount = Math.max(16, Math.min(26, Math.floor(chartWidth / 80)));
-    let focusBars = bars.slice(-targetBarCount);
-    if (focusBars.length === 0 && historyBars && historyBars.length > 0) {
-      focusBars = historyBars.slice(-targetBarCount) as unknown as FootprintBar[];
+    const allRecentBars: Array<{ high: number; low: number; open?: number; close?: number }> = [];
+    if (historyBars && historyBars.length > 0) {
+      allRecentBars.push(...historyBars);
     }
+    if (bars && bars.length > 0) {
+      allRecentBars.push(...bars);
+    }
+    const focusBars = allRecentBars.slice(-targetBarCount);
 
     let minPrice = Infinity;
     let maxPrice = -Infinity;
@@ -183,7 +188,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
       const usableHeight = (cssHeight - FOOTER_HEIGHT) * 0.72;
       const totalTicks = rawSpan / tickSize;
       const computedScale = usableHeight / Math.max(1, totalTicks);
-      newScale = Math.max(10, Math.min(28, computedScale));
+      newScale = Math.max(4, Math.min(28, computedScale));
     }
 
     const barStep = 80;
@@ -204,18 +209,23 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     }));
   }, [bars, historyBars, tickSize, updateViewport]);
 
-  // Fit the viewport once per dataset switch (symbol or timeframe switch)
+  // Fit the viewport once per dataset switch (symbol or timeframe switch) or when history first arrives
   useEffect(() => {
     if (!symbol) return;
     const isReplayMode = sessionMode ? sessionMode !== 'LIVE' : !isLive;
     const datasetKey = `${symbol}:${timeframe || ''}:${isReplayMode ? 'replay' : 'live'}`;
-    if (lastFittedDatasetRef.current === datasetKey && viewport.anchorPrice !== undefined) return;
+    const historyCount = historyBars?.length ?? 0;
+    const isNewDataset = lastFittedDatasetRef.current !== datasetKey;
+    const historyJustLoaded = lastHistoryCountRef.current === 0 && historyCount > 0;
+
+    if (!isNewDataset && !historyJustLoaded && viewport.anchorPrice !== undefined) return;
 
     const hasPrice = typeof currentPrice === 'number' && currentPrice > 0;
-    const hasBars = bars.length > 0 || (historyBars && historyBars.length > 0);
+    const hasBars = bars.length > 0 || historyCount > 0;
     if (!hasPrice && !hasBars) return;
 
     lastFittedDatasetRef.current = datasetKey;
+    lastHistoryCountRef.current = historyCount;
     fitViewport();
   }, [symbol, timeframe, sessionMode, isLive, bars.length, historyBars, currentPrice, viewport.anchorPrice, fitViewport]);
 
@@ -476,7 +486,42 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         });
       }
     } else {
-      setTooltipData(null);
+      // Check hover over historical candles
+      const history = historyBeforeLive(historyBars ?? [], bars);
+      let hoveredHistIdx = -1;
+      for (let i = 0; i < history.length; i++) {
+        const barIndex = i - history.length;
+        const bX = viewport.panX + barIndex * barStep;
+        if (curX >= bX && curX <= bX + viewport.barWidth) {
+          hoveredHistIdx = i;
+          break;
+        }
+      }
+
+      if (hoveredHistIdx >= 0 && curY < canvas.clientHeight - FOOTER_HEIGHT) {
+        const hBar = history[hoveredHistIdx];
+        const barIndex = hoveredHistIdx - history.length;
+        const bX = viewport.panX + barIndex * barStep;
+        const delta = hBar.delta ?? (hBar.close >= hBar.open ? Math.round(hBar.volume * 0.1) : -Math.round(hBar.volume * 0.1));
+        setTooltipData({
+          x: curX,
+          y: curY,
+          barX: bX,
+          barWidth: viewport.barWidth,
+          type: 'candle',
+          title: `HISTORICAL CANDLE · ${symbol}`,
+          tickSize,
+          time: hBar.time,
+          open: hBar.open,
+          high: hBar.high,
+          low: hBar.low,
+          close: hBar.close,
+          volume: hBar.volume,
+          delta,
+        });
+      } else {
+        setTooltipData(null);
+      }
     }
   };
 
@@ -671,7 +716,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
 
       if (history.length > 0) {
         ctx.save();
-        ctx.globalAlpha = 0.5;
+        ctx.globalAlpha = chartMode === 'candles' ? 1.0 : 0.88;
         for (let i = 0; i < history.length; i++) {
           const bar = history[i];
           const barIndex = i - history.length;
@@ -685,21 +730,27 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
           const openY = priceToY(bar.open);
           const closeY = priceToY(bar.close);
 
+          // Candle high/low wick
           ctx.strokeStyle = color;
-          ctx.lineWidth = 1;
+          ctx.lineWidth = 1.5;
           ctx.beginPath();
           ctx.moveTo(barX + viewport.barWidth / 2, highY);
           ctx.lineTo(barX + viewport.barWidth / 2, lowY);
           ctx.stroke();
 
+          // Candle body
           const bodyTop = Math.min(openY, closeY);
+          const bodyHeight = Math.max(2, Math.abs(closeY - openY));
           ctx.fillStyle = color;
-          ctx.fillRect(barX + 2, bodyTop, viewport.barWidth - 4, Math.max(1, Math.abs(closeY - openY)));
+          ctx.fillRect(barX + 2, bodyTop, viewport.barWidth - 4, bodyHeight);
+          ctx.strokeStyle = isUp ? '#15803D' : '#B91C1C';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(barX + 2, bodyTop, viewport.barWidth - 4, bodyHeight);
         }
 
         if (bars.length > 0) {
-          ctx.globalAlpha = 1;
-          ctx.strokeStyle = '#1E293B';
+          ctx.globalAlpha = 0.6;
+          ctx.strokeStyle = '#334155';
           ctx.setLineDash([3, 3]);
           ctx.beginPath();
           ctx.moveTo(viewport.panX, 0);
@@ -1066,6 +1117,30 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         ctx.beginPath();
         ctx.rect(0, chartHeight, chartWidth, FOOTER_HEIGHT);
         ctx.clip();
+
+        // Footer numbers for historical bars
+        if (history.length > 0) {
+          history.forEach((bar, i) => {
+            const barIndex = i - history.length;
+            const barX = viewport.panX + barIndex * barStep;
+            if (barX + viewport.barWidth < 0 || barX > chartWidth) return;
+            const barCenterX = barX + viewport.barWidth / 2;
+            const deltaY = chartHeight + 14;
+            const delta = bar.delta ?? (bar.close >= bar.open ? Math.round(bar.volume * 0.1) : -Math.round(bar.volume * 0.1));
+            const isPos = delta >= 0;
+
+            ctx.font = '600 10px JetBrains Mono, monospace';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = isPos ? '#22C55E' : '#EF4444';
+            ctx.fillText(`${isPos ? '+' : ''}${formatVolume(delta)} Δ`, barCenterX, deltaY);
+
+            ctx.font = '400 9px JetBrains Mono, monospace';
+            ctx.fillStyle = '#64748B';
+            ctx.fillText(formatVolume(bar.volume), barCenterX, deltaY + 13);
+          });
+        }
+
+        // Footer numbers for live bars
         bars.forEach((bar, barIndex) => {
           const barX = viewport.panX + barIndex * barStep;
           if (barX + viewport.barWidth < 0 || barX > chartWidth) return;

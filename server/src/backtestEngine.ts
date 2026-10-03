@@ -49,14 +49,14 @@ export class BacktestReplayEngine {
   }
 
   public start(speed = 1) {
-    this.playbackSpeed = speed;
+    this.playbackSpeed = Math.max(0.1, Math.min(100, speed));
     this.isReplaying = true;
     this.notifyProgress();
 
     if (this.intervalTimer) clearInterval(this.intervalTimer);
 
-    // Dynamic timer interval based on playback speed
-    const stepIntervalMs = Math.max(10, Math.floor(100 / this.playbackSpeed));
+    const baseMs = this.playbackSpeed <= 1 ? 200 : 100;
+    const stepIntervalMs = Math.max(10, Math.floor(baseMs / this.playbackSpeed));
 
     this.intervalTimer = setInterval(() => {
       if (!this.isReplaying || this.playbackIndex >= this.recordedTicks.length) {
@@ -64,8 +64,8 @@ export class BacktestReplayEngine {
         return;
       }
 
-      // Step multiple ticks if speed is high
-      const ticksToEmit = Math.max(1, Math.floor(this.playbackSpeed / 5));
+      // Step multiple ticks if speed is high; 0.5x still emits 1 tick per interval (slower via interval)
+      const ticksToEmit = this.playbackSpeed >= 5 ? Math.max(1, Math.floor(this.playbackSpeed / 5)) : 1;
       for (let i = 0; i < ticksToEmit && this.playbackIndex < this.recordedTicks.length; i++) {
         const tick = this.recordedTicks[this.playbackIndex];
         this.playbackIndex++;

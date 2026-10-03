@@ -46,19 +46,75 @@ interface SymbolDropdownProps {
 }
 
 const DEFAULT_INSTRUMENTS: InstrumentOption[] = [
+  // --- Equity Index Futures ---
   { symbol: 'ES', name: 'E-mini S&P 500', exchange: 'CME', category: 'INDEX', tickSize: 0.25, pointValue: 50, dayTradingMargin: 500 },
-  { symbol: 'NQ', name: 'E-mini Nasdaq 100', exchange: 'CME', category: 'INDEX', tickSize: 0.25, pointValue: 20, dayTradingMargin: 1000 },
   { symbol: 'MES', name: 'Micro E-mini S&P 500', exchange: 'CME', category: 'INDEX', tickSize: 0.25, pointValue: 5, dayTradingMargin: 50 },
+  { symbol: 'NQ', name: 'E-mini Nasdaq 100', exchange: 'CME', category: 'INDEX', tickSize: 0.25, pointValue: 20, dayTradingMargin: 1000 },
   { symbol: 'MNQ', name: 'Micro E-mini Nasdaq 100', exchange: 'CME', category: 'INDEX', tickSize: 0.25, pointValue: 2, dayTradingMargin: 100 },
   { symbol: 'YM', name: 'E-mini Dow Jones', exchange: 'CBOT', category: 'INDEX', tickSize: 1.0, pointValue: 5, dayTradingMargin: 500 },
   { symbol: 'MYM', name: 'Micro E-mini Dow Jones', exchange: 'CBOT', category: 'INDEX', tickSize: 1.0, pointValue: 0.5, dayTradingMargin: 50 },
   { symbol: 'RTY', name: 'E-mini Russell 2000', exchange: 'CME', category: 'INDEX', tickSize: 0.1, pointValue: 50, dayTradingMargin: 500 },
   { symbol: 'M2K', name: 'Micro Russell 2000', exchange: 'CME', category: 'INDEX', tickSize: 0.1, pointValue: 5, dayTradingMargin: 50 },
-  { symbol: 'GC', name: 'Gold Futures', exchange: 'COMEX', category: 'COMMODITY', tickSize: 0.1, pointValue: 100, dayTradingMargin: 1000 },
-  { symbol: 'MGC', name: 'Micro Gold Futures', exchange: 'COMEX', category: 'COMMODITY', tickSize: 0.1, pointValue: 10, dayTradingMargin: 100 },
+
+  // --- Metals ---
+  { symbol: 'GC', name: 'Gold Futures', exchange: 'COMEX', category: 'METALS', tickSize: 0.1, pointValue: 100, dayTradingMargin: 1000 },
+  { symbol: 'MGC', name: 'Micro Gold Futures', exchange: 'COMEX', category: 'METALS', tickSize: 0.1, pointValue: 10, dayTradingMargin: 100 },
+  { symbol: 'SI', name: 'Silver Futures', exchange: 'COMEX', category: 'METALS', tickSize: 0.005, pointValue: 5000, dayTradingMargin: 1000 },
+  { symbol: 'HG', name: 'Copper Futures', exchange: 'COMEX', category: 'METALS', tickSize: 0.0005, pointValue: 25000, dayTradingMargin: 1000 },
+  { symbol: 'PL', name: 'Platinum Futures', exchange: 'NYMEX', category: 'METALS', tickSize: 0.1, pointValue: 50, dayTradingMargin: 1000 },
+  { symbol: 'PA', name: 'Palladium Futures', exchange: 'NYMEX', category: 'METALS', tickSize: 0.5, pointValue: 100, dayTradingMargin: 1000 },
+
+  // --- Energy ---
   { symbol: 'CL', name: 'Crude Oil', exchange: 'NYMEX', category: 'ENERGY', tickSize: 0.01, pointValue: 1000, dayTradingMargin: 1000 },
   { symbol: 'MCL', name: 'Micro WTI Crude Oil', exchange: 'NYMEX', category: 'ENERGY', tickSize: 0.01, pointValue: 100, dayTradingMargin: 100 },
   { symbol: 'NG', name: 'Natural Gas', exchange: 'NYMEX', category: 'ENERGY', tickSize: 0.001, pointValue: 10000, dayTradingMargin: 1000 },
+  { symbol: 'RB', name: 'RBOB Gasoline', exchange: 'NYMEX', category: 'ENERGY', tickSize: 0.0001, pointValue: 42000, dayTradingMargin: 1000 },
+  { symbol: 'HO', name: 'Heating Oil', exchange: 'NYMEX', category: 'ENERGY', tickSize: 0.0001, pointValue: 42000, dayTradingMargin: 1000 },
+
+  // --- Rates & Bonds ---
+  { symbol: 'ZT', name: '2-Year T-Note', exchange: 'CBOT', category: 'RATES', tickSize: 0.0039, pointValue: 2000, dayTradingMargin: 500 },
+  { symbol: 'ZF', name: '5-Year T-Note', exchange: 'CBOT', category: 'RATES', tickSize: 0.0078, pointValue: 1000, dayTradingMargin: 500 },
+  { symbol: 'ZN', name: '10-Year T-Note', exchange: 'CBOT', category: 'RATES', tickSize: 0.0156, pointValue: 1000, dayTradingMargin: 500 },
+  { symbol: 'ZB', name: '30-Year T-Bond', exchange: 'CBOT', category: 'RATES', tickSize: 0.03125, pointValue: 1000, dayTradingMargin: 500 },
+
+  // --- Currencies (FX) ---
+  { symbol: '6E', name: 'Euro FX', exchange: 'CME', category: 'FX', tickSize: 0.00005, pointValue: 125000, dayTradingMargin: 500 },
+  { symbol: '6J', name: 'Japanese Yen', exchange: 'CME', category: 'FX', tickSize: 0.0000005, pointValue: 12500000, dayTradingMargin: 500 },
+  { symbol: '6B', name: 'British Pound', exchange: 'CME', category: 'FX', tickSize: 0.0001, pointValue: 62500, dayTradingMargin: 500 },
+  { symbol: '6A', name: 'Australian Dollar', exchange: 'CME', category: 'FX', tickSize: 0.00005, pointValue: 100000, dayTradingMargin: 500 },
+  { symbol: '6C', name: 'Canadian Dollar', exchange: 'CME', category: 'FX', tickSize: 0.00005, pointValue: 100000, dayTradingMargin: 500 },
+
+  // --- Agriculture ---
+  { symbol: 'ZC', name: 'Corn', exchange: 'CBOT', category: 'AGRICULTURE', tickSize: 0.25, pointValue: 50, dayTradingMargin: 500 },
+  { symbol: 'ZW', name: 'Chicago SRW Wheat', exchange: 'CBOT', category: 'AGRICULTURE', tickSize: 0.25, pointValue: 50, dayTradingMargin: 500 },
+  { symbol: 'ZS', name: 'Soybeans', exchange: 'CBOT', category: 'AGRICULTURE', tickSize: 0.25, pointValue: 50, dayTradingMargin: 500 },
+  { symbol: 'ZM', name: 'Soybean Meal', exchange: 'CBOT', category: 'AGRICULTURE', tickSize: 0.1, pointValue: 100, dayTradingMargin: 500 },
+  { symbol: 'ZL', name: 'Soybean Oil', exchange: 'CBOT', category: 'AGRICULTURE', tickSize: 0.01, pointValue: 600, dayTradingMargin: 500 },
+  { symbol: 'HE', name: 'Lean Hogs', exchange: 'CME', category: 'AGRICULTURE', tickSize: 0.025, pointValue: 400, dayTradingMargin: 500 },
+  { symbol: 'LE', name: 'Live Cattle', exchange: 'CME', category: 'AGRICULTURE', tickSize: 0.025, pointValue: 400, dayTradingMargin: 500 },
+
+  // --- Crypto ---
+  { symbol: 'BTC', name: 'Bitcoin Futures', exchange: 'CME', category: 'CRYPTO', tickSize: 5, pointValue: 5, dayTradingMargin: 1000 },
+
+  // --- Equities & ETFs ---
+  { symbol: 'SPY', name: 'SPDR S&P 500 ETF', exchange: 'CME', category: 'INDEX', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'QQQ', name: 'Invesco QQQ Trust', exchange: 'CME', category: 'INDEX', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'IWM', name: 'iShares Russell 2000 ETF', exchange: 'CME', category: 'INDEX', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'DIA', name: 'SPDR Dow Jones Industrial', exchange: 'CME', category: 'INDEX', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'SPX', name: 'S&P 500 Index', exchange: 'CME', category: 'INDEX', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'NDX', name: 'Nasdaq 100 Index', exchange: 'CME', category: 'INDEX', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'VIX', name: 'CBOE Volatility Index', exchange: 'CME', category: 'INDEX', tickSize: 0.05, pointValue: 1000 },
+  { symbol: 'AAPL', name: 'Apple Inc.', exchange: 'CME', category: 'OTHER', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'NVDA', name: 'NVIDIA Corp.', exchange: 'CME', category: 'OTHER', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'TSLA', name: 'Tesla, Inc.', exchange: 'CME', category: 'OTHER', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'MSFT', name: 'Microsoft Corp.', exchange: 'CME', category: 'OTHER', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'AMZN', name: 'Amazon.com Inc.', exchange: 'CME', category: 'OTHER', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'META', name: 'Meta Platforms Inc.', exchange: 'CME', category: 'OTHER', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'GOOGL', name: 'Alphabet Inc.', exchange: 'CME', category: 'OTHER', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'AMD', name: 'Advanced Micro Devices', exchange: 'CME', category: 'OTHER', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'PLTR', name: 'Palantir Technologies', exchange: 'CME', category: 'OTHER', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'COIN', name: 'Coinbase Global', exchange: 'CME', category: 'OTHER', tickSize: 0.01, pointValue: 100 },
+  { symbol: 'MSTR', name: 'MicroStrategy Inc.', exchange: 'CME', category: 'OTHER', tickSize: 0.01, pointValue: 100 },
 ];
 
 export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
@@ -171,7 +227,7 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
       {/* Trigger Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 h-8 px-2.5 rounded-[3px] bg-[#10151C] hover:bg-[#141A23] border border-[#1C2630] hover:border-[#25303A] transition-colors text-left group"
+        className="flex items-center gap-2 h-8 px-2.5 rounded-[3px] bg-[#1E222D] hover:bg-[#141A23] border border-[#1C2630] hover:border-[#25303A] transition-colors text-left group"
         title="Switch Instrument Contract (Ctrl+K)"
         aria-expanded={isOpen}
       >
@@ -203,7 +259,15 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search symbol (ES, NQ, MES, Gold, Crude)..."
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && searchQuery.trim()) {
+                  e.preventDefault();
+                  const targetSym = searchQuery.trim().toUpperCase();
+                  onSelectSymbol(targetSym);
+                  setIsOpen(false);
+                }
+              }}
+              placeholder="Search or enter any symbol (ES, NQ, SPY, NVDA)..."
               className="w-full bg-transparent border-none outline-none text-[#E7EDF3] text-xs placeholder:text-[#4E5965] font-mono"
             />
             {searchQuery && (
@@ -214,7 +278,7 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
                 <X size={12} />
               </button>
             )}
-            <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#10151C] text-[#7F8B97] font-mono shrink-0 border border-[#1C2630]">
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#1E222D] text-[#7F8B97] font-mono shrink-0 border border-[#1C2630]">
               ESC
             </span>
           </div>
@@ -265,8 +329,8 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
                     <div
                       className={`w-7 h-7 rounded flex items-center justify-center font-bold text-xs font-mono shrink-0 border ${
                         isSelected
-                          ? 'bg-[#10151C] text-[#22D3EE] border-[#22D3EE]/40'
-                          : 'bg-[#10151C] text-[#E7EDF3] border-[#1C2630]'
+                          ? 'bg-[#1E222D] text-[#22D3EE] border-[#22D3EE]/40'
+                          : 'bg-[#1E222D] text-[#E7EDF3] border-[#1C2630]'
                       }`}
                     >
                       {inst.symbol}
@@ -274,7 +338,7 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
                     <div className="flex flex-col min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className="font-semibold text-xs text-[#E7EDF3] truncate">{inst.name}</span>
-                        <span className="text-[9px] px-1 py-0.2 rounded bg-[#10151C] text-[#7F8B97] font-mono">
+                        <span className="text-[9px] px-1 py-0.2 rounded bg-[#1E222D] text-[#7F8B97] font-mono">
                           {inst.exchange}
                         </span>
                       </div>
@@ -304,7 +368,7 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
                     ) : inst.feedStatus === 'CONNECTING' ? (
                       <span
                         className="flex items-center gap-1 text-[9px] text-amber-400 font-mono font-medium px-1.5 py-0.2 rounded bg-amber-400/10 border border-amber-400/20"
-                        title="Đang bắt tay với vendor cho mã này (đã subscribe)"
+                        title="Connecting to vendor..."
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
                         <span>CONNECTING</span>
@@ -312,31 +376,31 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
                     ) : inst.feedStatus === 'ERROR' ? (
                       <span
                         className="flex items-center gap-1 text-[9px] text-[#F05252] font-mono font-medium px-1.5 py-0.2 rounded bg-[#F05252]/10 border border-[#F05252]/25"
-                        title="Feed lỗi — mở Diagnostics để xem lý do"
+                        title="Feed error - check Diagnostics"
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-[#F05252]" />
                         <span>ERROR</span>
                       </span>
                     ) : inst.subscribed ? (
                       <span
-                        className="flex items-center gap-1 text-[9px] text-[#7F8B97] font-mono font-medium px-1.5 py-0.2 rounded bg-[#10151C] border border-[#1C2630]"
-                        title="Đã subscribe nhưng chưa có tick hợp lệ (vendor chưa gửi dữ liệu)"
+                        className="flex items-center gap-1 text-[9px] text-[#7F8B97] font-mono font-medium px-1.5 py-0.2 rounded bg-[#1E222D] border border-[#1C2630]"
+                        title="Subscribed, awaiting first tick"
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
                         <span>NO DATA</span>
                       </span>
                     ) : inst.feedConfigured === false ? (
                       <span
-                        className="flex items-center gap-1 text-[9px] text-[#7F8B97] font-mono font-medium px-1.5 py-0.2 rounded bg-[#10151C] border border-[#1C2630]"
-                        title="Server chưa cấu hình vendor dữ liệu (FUTURES_PROVIDER=none) — không thể có realtime"
+                        className="flex items-center gap-1 text-[9px] text-[#7F8B97] font-mono font-medium px-1.5 py-0.2 rounded bg-[#1E222D] border border-[#1C2630]"
+                        title="No data vendor configured on server"
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
                         <span>NO VENDOR</span>
                       </span>
                     ) : (
                       <span
-                        className="flex items-center gap-1 text-[9px] text-[#7F8B97] font-mono font-medium px-1.5 py-0.2 rounded bg-[#10151C] border border-[#1C2630]"
-                        title="Chưa kết nối: server bật feed theo nhu cầu — chọn mã này để bắt đầu"
+                        className="flex items-center gap-1 text-[9px] text-[#7F8B97] font-mono font-medium px-1.5 py-0.2 rounded bg-[#1E222D] border border-[#1C2630]"
+                        title="Idle: select to connect feed"
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
                         <span>IDLE</span>
@@ -349,7 +413,7 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
                   type="button"
                   aria-label={isFavorite ? `Remove ${inst.symbol} from favourites` : `Add ${inst.symbol} to favourites`}
                   aria-pressed={isFavorite}
-                  title={isFavorite ? 'Bỏ khỏi yêu thích' : 'Thêm vào yêu thích'}
+                  title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
                   onClick={() => setFavorites(toggleFavoriteSymbol(inst.symbol))}
                   className={`px-1.5 rounded transition-colors ${
                     isFavorite
@@ -364,14 +428,29 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
             })}
 
             {filteredInstruments.length === 0 && (
-              <div className="p-4 text-center text-[#7F8B97] text-xs">
-                No matching futures instrument for "{searchQuery}"
+              <div className="p-4 text-center text-[#7F8B97] text-xs flex flex-col items-center gap-2">
+                <div>No catalog match for "{searchQuery}"</div>
+                {searchQuery.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sym = searchQuery.trim().toUpperCase();
+                      onSelectSymbol(sym);
+                      setIsOpen(false);
+                    }}
+                    className="px-3 py-1.5 rounded bg-[#1C2630] hover:bg-[#25303A] text-[#22D3EE] font-mono text-xs font-semibold border border-[#22D3EE]/30 hover:border-[#22D3EE]/60 transition-colors flex items-center gap-1.5"
+                  >
+                    <span>Load</span>
+                    <span className="underline decoration-[#22D3EE]">{searchQuery.trim().toUpperCase()}</span>
+                    <span>directly from Databento API</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
 
           {/* Quick Footer: what the per-instrument badges mean */}
-          <div className="px-2.5 py-1 bg-[#080B0F] border-t border-[#1C2630] flex items-center justify-between gap-2 text-[9.5px] text-[#4E5965] font-mono">
+          <div className="px-2.5 py-1 bg-[#131722] border-t border-[#1C2630] flex items-center justify-between gap-2 text-[9.5px] text-[#4E5965] font-mono">
             <span className="flex items-center gap-2 flex-wrap">
               <span className="flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#19C37D]" /> live
@@ -382,7 +461,7 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
               <span className="flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-slate-600" /> idle (chưa subscribe)
               </span>
-              <span className="hidden xl:inline">· chọn một mã để server bật feed theo nhu cầu</span>
+              <span className="hidden xl:inline">· select symbol to trigger on-demand feed</span>
             </span>
             <span className="shrink-0">CME Globex · MDP 3.0</span>
           </div>

@@ -72,6 +72,7 @@ export interface WSListeners {
     cursor?: number | { provider: string; symbol: string; timeframe?: string; beforeTime: number; beforeId?: string };
     requestId?: string;
   }) => void;
+  onReplayFrame?: (frame: { timestamp: number; price: number; volume: number; gex?: number | null; iv?: number | null; esPrice?: number | null; nqPrice?: number | null; signal?: any }) => void;
   onError?: (error: { code: string; message: string }) => void;
   onLatencyUpdate?: (latencyMs: number) => void;
 }
@@ -194,6 +195,9 @@ export class DeepChartWSClient {
             case 'HISTORY_RESPONSE':
               this.listeners.onHistoryResponse?.(msg);
               break;
+            case 'REPLAY_FRAME':
+              this.listeners.onReplayFrame?.((msg as any).frame);
+              break;
             case 'PONG':
               if (typeof (msg as any).timestamp === 'number') {
                 const rtt = Math.max(1, Date.now() - (msg as any).timestamp);
@@ -252,7 +256,7 @@ export class DeepChartWSClient {
     }
   }
 
-  public subscribe(symbol: string, source?: 'cme' | 'databento' | 'tradovate' | string, timeframe?: string) {
+  public subscribe(symbol: string, source?: 'databento' | 'binance' | string, timeframe?: string) {
     this.send({
       type: 'SUBSCRIBE',
       symbol,

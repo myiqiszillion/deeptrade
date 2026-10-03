@@ -5,7 +5,10 @@ import { ProfileEngine } from './profileEngine.js';
 import { ChartSession } from './session.js';
 import { Tick } from './types.js';
 import { VWAPEngine } from './vwapEngine.js';
+import { marketDataStore } from './storage/marketDataStore.js';
+import { snapshotStore } from './quant/snapshotStore.js';
 import { TIMEFRAMES } from './marketData/marketContext.js';
+import { evaluateSignals } from './signals/featureScores.js';
 
 export interface ReplayDataSource {
   loadTicks(options: {
@@ -72,6 +75,34 @@ export class ReplaySession {
       if (vwapPoint) {
         this.session.send({ type: 'VWAP_UPDATE', point: vwapPoint });
       }
+
+      // Synced REPLAY_FRAME: price + volume + best-effort GEX/IV/ES/NQ/signal for that timestamp
+      try {
+        const bars = this.footprintEngine.getAllBars();
+        const lastBar = bars[bars.length - 1];
+        const snap = snapshotStore.getLatest(this.symbol) ?? (marketDataStore.getLatestExposure(this.symbol) as any);
+        const gex = snap?.totals?.gex ?? snap?.totals?.gex ?? null;
+        const iv = (snap as any)?.iv ?? null;
+        let esPrice: number | null = null, nqPrice: number | null = null;
+        try {
+          const esBars = marketDataStore.queryBars({ provider: 'databento', symbol: 'ES', timeframe: this.timeframe, limit: 1, beforeTime: tick.timestamp + 1 } as any);
+          esPrice = esBars.bars[0]?.close ?? null;
+          const nqBars = marketDataStore.queryBars({ provider: 'databento', symbol: 'NQ', timeframe: this.timeframe, limit: 1, beforeTime: tick.timestamp + 1 } as any);
+          nqPrice = nqBars.bars[0]?.close ?? null;
+        } catch {}
+        let signal: any = null;
+        try { signal = evaluateSignals(this.symbol); } catch {}
+        this.session.send({
+          type: 'REPLAY_FRAME',
+          frame: {
+            timestamp: tick.timestamp,
+            price: tick.price,
+            volume: lastBar?.volume ?? tick.size,
+            gex, iv, esPrice, nqPrice,
+            signal: signal ? { scores: signal.scores, confidence: signal.confidence } : null,
+          },
+        });
+      } catch {}
 
       const now = Date.now();
       if (now - this.lastProfileUpdate > 500) {

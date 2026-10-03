@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
+import { BarChart2, RefreshCcw } from 'lucide-react';
 import { TPOProfileData, VolumeProfileData } from '../../types';
 import { formatPrice, formatVolume } from '../../services/priceFormat';
 
@@ -109,12 +110,18 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
       <div className="flex-1 overflow-y-auto font-mono text-[10px] custom-scrollbar flex flex-col">
         {activeTab === 'VP' ? (
           sortedVpLevels.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-500 font-sans text-xs gap-2 my-auto">
-              <span className="font-semibold text-slate-400 text-[11px]">VOLUME PROFILE UNAVAILABLE</span>
-              <span className="text-[10px] text-slate-500 max-w-[200px]">
-                No volume distribution data available yet for this instrument session.
-              </span>
-            </div>
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-[#7F8B97] font-sans text-xs gap-3 my-auto">
+  <BarChart2 size={32} className="text-[#3A4756] mb-1" />
+  <div className="flex flex-col gap-1">
+    <span className="font-bold text-[#E7EDF3] text-sm">VOLUME PROFILE UNAVAILABLE</span>
+    <span className="text-[11px] text-[#7F8B97] max-w-[220px] leading-relaxed">
+      No volume distribution data available yet for this instrument session.
+    </span>
+  </div>
+  <button className="mt-2 flex items-center gap-1.5 px-3 py-1.5 bg-[#1C2630] hover:bg-[#25303A] text-[#E7EDF3] font-medium rounded border border-[#2A2E39] transition-colors">
+    <RefreshCcw size={12} /> Retry Connection
+  </button>
+</div>
           ) : (
             <div className="divide-y divide-white/[0.03]">
               {sortedVpLevels.slice(0, 100).map((lvl) => {
@@ -163,12 +170,18 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
             </div>
           )
         ) : aggregatedTpo.prices.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-500 font-sans text-xs gap-2 my-auto">
-            <span className="font-semibold text-slate-400 text-[11px]">MARKET PROFILE UNAVAILABLE</span>
-            <span className="text-[10px] text-slate-500 max-w-[200px]">
-              No TPO bracket data available yet for this instrument session.
-            </span>
-          </div>
+          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-[#7F8B97] font-sans text-xs gap-3 my-auto">
+  <BarChart2 size={32} className="text-[#3A4756] mb-1" />
+  <div className="flex flex-col gap-1">
+    <span className="font-bold text-[#E7EDF3] text-sm">MARKET PROFILE UNAVAILABLE</span>
+    <span className="text-[11px] text-[#7F8B97] max-w-[220px] leading-relaxed">
+      No TPO bracket data available yet for this instrument session.
+    </span>
+  </div>
+  <button className="mt-2 flex items-center gap-1.5 px-3 py-1.5 bg-[#1C2630] hover:bg-[#25303A] text-[#E7EDF3] font-medium rounded border border-[#2A2E39] transition-colors">
+    <RefreshCcw size={12} /> Retry Connection
+  </button>
+</div>
         ) : (
           <div className="divide-y divide-white/[0.03]">
             {aggregatedTpo.prices.slice(0, 100).map((price) => {
@@ -216,3 +229,4 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
     </div>
   );
 };
+

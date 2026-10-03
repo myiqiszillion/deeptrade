@@ -162,6 +162,8 @@ export class SessionCalendar {
   ): boolean {
     if (prevTimestamp <= 0 || currentTimestamp <= 0) return false;
     if (currentTimestamp <= prevTimestamp) return false;
+    // Crypto trades 24/7: intraday profile & VWAP never roll over on a session boundary.
+    if (scheduleId === 'CRYPTO_247') return false;
 
     const prevInfo = this.getSessionInfo(prevTimestamp, scheduleId);
     const currInfo = this.getSessionInfo(currentTimestamp, scheduleId);

@@ -10,6 +10,7 @@ import {
   PanelLeft,
   PanelRight,
   Play,
+  Radio,
   RotateCcw,
   Search,
   ZoomIn,
@@ -33,6 +34,8 @@ interface ToolRailProps {
   onScreenshot: () => void;
   onToggleFullscreen: () => void;
   isFullscreen: boolean;
+  viewMode?: 'chart' | 'cockpit';
+  onToggleCockpit?: () => void;
 }
 
 /**
@@ -58,11 +61,25 @@ export const ToolRail: React.FC<ToolRailProps> = ({
   onScreenshot,
   onToggleFullscreen,
   isFullscreen,
+  viewMode,
+  onToggleCockpit,
 }) => (
   <nav className="tv-toolrail" aria-label="Chart tools">
     <button className="tv-rail-btn" onClick={onOpenPalette} title="Symbol search (Ctrl+K)" aria-label="Symbol search">
       <Search size={15} />
     </button>
+
+    {onToggleCockpit && (
+      <button
+        className={`tv-rail-btn ${viewMode === 'cockpit' ? 'active text-[#00f2fe]' : 'text-[#00f2fe]/70 hover:text-[#00f2fe]'}`}
+        onClick={onToggleCockpit}
+        title="Toggle Futuristic Cyber Cockpit HUD (Hotkey: M)"
+        aria-label="Toggle Cockpit HUD"
+        aria-pressed={viewMode === 'cockpit'}
+      >
+        <Radio size={15} className={viewMode === 'cockpit' ? 'animate-pulse text-[#00f2fe]' : ''} />
+      </button>
+    )}
 
     <div className="tv-rail-sep" />
 

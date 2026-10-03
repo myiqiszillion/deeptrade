@@ -1,9 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import { resolve } from 'node:path';
 import { mkdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { FootprintBar, HistoricalBar, Tick } from '../types.js';
 import { MarketTrade } from '../marketData/types.js';
 import { Entitlement, User } from '../auth/types.js';
+import { OptionContractDefinition, OptionStatisticRecord } from '../databento/types.js';
+import { IMarketDataStore } from './types.js';
 
 export interface BarQueryOptions {
   provider: string;
@@ -71,11 +74,14 @@ export interface InstrumentSpecRow {
   updatedAt?: number;
 }
 
-export class MarketDataStore {
+export class MarketDataStore implements IMarketDataStore {
   private db: DatabaseSync;
+  private dbPath: string;
   private insertTradeStmt: any;
   private insertBarStmt: any;
   private insertGapStmt: any;
+  private insertOptionDefStmt: any;
+  private insertOptionStatStmt: any;
   private writeFailures = 0;
   private lastWriteWarningTs = 0;
 
@@ -102,6 +108,7 @@ export class MarketDataStore {
     }
 
     this.db = new DatabaseSync(resolvedPath);
+    this.dbPath = resolvedPath;
     this.initSchema();
   }
 
@@ -130,6 +137,8 @@ export class MarketDataStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_trades_query_scoped ON trades(provider, symbol, ts DESC, trade_id DESC);
+      -- Retention deletes scan by ts alone: without this the chunked purge full-scans the table per batch.
+      CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts);
 
       CREATE TABLE IF NOT EXISTS bars (
         provider TEXT NOT NULL,
@@ -161,9 +170,9 @@ export class MarketDataStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_gaps_lookup ON gaps(symbol, from_ts DESC);
+      CREATE INDEX IF NOT EXISTS idx_gaps_to_ts ON gaps(to_ts);
 
-      -- Metered vendor spend ledger (Databento bills historical pulls per GB on top of the monthly
-      -- subscription). One row per provider+month so a restart cannot silently forget the total.
+      -- Metered vendor spend ledger. One row per provider+month so a restart cannot silently forget the total.
       CREATE TABLE IF NOT EXISTS vendor_usage (
         provider TEXT NOT NULL,
         month TEXT NOT NULL,
@@ -238,6 +247,86 @@ export class MarketDataStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_revoked_tokens_exp ON revoked_tokens(expires_at);
+
+      CREATE TABLE IF NOT EXISTS option_definitions (
+        symbol TEXT PRIMARY KEY,
+        underlying TEXT NOT NULL,
+        expiration TEXT NOT NULL,
+        expiration_ts INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        strike REAL NOT NULL,
+        multiplier INTEGER NOT NULL DEFAULT 100,
+        dte INTEGER,
+        instrument_id INTEGER,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_option_defs_underlying ON option_definitions(underlying, expiration, strike);
+
+      CREATE TABLE IF NOT EXISTS option_statistics (
+        symbol TEXT NOT NULL,
+        time INTEGER NOT NULL,
+        open_interest INTEGER,
+        settlement_price REAL,
+        cleared_volume INTEGER,
+        PRIMARY KEY (symbol, time)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_option_stats_symbol ON option_statistics(symbol, time DESC);
+
+      CREATE TABLE IF NOT EXISTS exposure_snapshots (
+        underlying TEXT NOT NULL,
+        asOf INTEGER NOT NULL,
+        spot REAL NOT NULL,
+        totals TEXT NOT NULL,
+        walls TEXT NOT NULL,
+        levels TEXT NOT NULL,
+        gammaFlip REAL,
+        regime TEXT NOT NULL,
+        dataSource TEXT NOT NULL,
+        PRIMARY KEY (underlying, asOf)
+      );
+      CREATE INDEX IF NOT EXISTS idx_exposure_underlying ON exposure_snapshots(underlying, asOf DESC);
+
+      CREATE TABLE IF NOT EXISTS instrument_master (
+        instrument_id INTEGER PRIMARY KEY,
+        dataset TEXT NOT NULL,
+        publisher_id INTEGER NOT NULL,
+        raw_symbol TEXT NOT NULL,
+        security_type TEXT NOT NULL,
+        asset TEXT NOT NULL,
+        underlying TEXT,
+        exchange TEXT NOT NULL,
+        venue TEXT,
+        activation TEXT,
+        expiration TEXT,
+        strike REAL,
+        option_type TEXT,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        tick_size REAL NOT NULL,
+        multiplier INTEGER NOT NULL DEFAULT 1,
+        figi TEXT, isin TEXT, cusip TEXT,
+        parent_instrument_id INTEGER,
+        is_continuous INTEGER NOT NULL DEFAULT 0,
+        continuous_root TEXT,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_master_dataset ON instrument_master(dataset, asset);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_master_raw ON instrument_master(dataset, raw_symbol);
+
+      CREATE TABLE IF NOT EXISTS raw_manifest (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        dataset TEXT NOT NULL,
+        schema TEXT NOT NULL,
+        symbols TEXT,
+        date TEXT NOT NULL,
+        file_path TEXT NOT NULL UNIQUE,
+        format TEXT NOT NULL,
+        bytes INTEGER NOT NULL,
+        checksum TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_raw_manifest ON raw_manifest(dataset, schema, date);
     `);
 
     // Databases created before real accounts existed need the credential columns added.
@@ -266,6 +355,18 @@ export class MarketDataStore {
     this.insertGapStmt = this.db.prepare(`
       INSERT INTO gaps (symbol, provider, from_ts, to_ts, reason, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    this.insertOptionDefStmt = this.db.prepare(`
+      INSERT OR REPLACE INTO option_definitions (
+        symbol, underlying, expiration, expiration_ts, type, strike, multiplier, dte, instrument_id, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    this.insertOptionStatStmt = this.db.prepare(`
+      INSERT OR REPLACE INTO option_statistics (
+        symbol, time, open_interest, settlement_price, cleared_volume
+      ) VALUES (?, ?, ?, ?, ?)
     `);
   }
 
@@ -332,6 +433,104 @@ export class MarketDataStore {
     }
   }
 
+  public saveTrade(trade: MarketTrade, symbol: string, provider: string): void {
+    this.saveTrades([trade], symbol, provider);
+  }
+
+  public saveTradesBatch(trades: MarketTrade[], symbol: string, provider: string): void {
+    this.saveTrades(trades, symbol, provider);
+  }
+
+  public saveOptionDefinitions(definitions: OptionContractDefinition[]): void {
+    if (definitions.length === 0) return;
+    try {
+      const now = Date.now();
+      for (const d of definitions) {
+        this.insertOptionDefStmt.run(
+          d.symbol,
+          d.underlying,
+          d.expiration,
+          d.expirationTimestamp,
+          d.type,
+          d.strike,
+          d.multiplier ?? 100,
+          d.dte ?? null,
+          d.instrumentId ?? null,
+          now
+        );
+      }
+    } catch (err) {
+      this.warnWriteFailure(`saveOptionDefinitions(${definitions.length} defs)`, err);
+    }
+  }
+
+  public getOptionDefinitions(underlying: string): OptionContractDefinition[] {
+    try {
+      const rows = this.db.prepare(`
+        SELECT symbol, underlying, expiration, expiration_ts, type, strike, multiplier, dte, instrument_id
+        FROM option_definitions
+        WHERE underlying = ?
+        ORDER BY expiration_ts ASC, strike ASC
+      `).all(underlying.toUpperCase()) as any[];
+
+      return rows.map((r) => ({
+        symbol: r.symbol,
+        underlying: r.underlying,
+        expiration: r.expiration,
+        expirationTimestamp: r.expiration_ts,
+        type: r.type,
+        strike: r.strike,
+        multiplier: r.multiplier,
+        dte: r.dte,
+        instrumentId: r.instrument_id ?? undefined,
+      }));
+    } catch (err) {
+      this.warnWriteFailure(`getOptionDefinitions(${underlying})`, err);
+      return [];
+    }
+  }
+
+  public saveStatistics(stats: OptionStatisticRecord[]): void {
+    if (stats.length === 0) return;
+    try {
+      for (const s of stats) {
+        this.insertOptionStatStmt.run(
+          s.symbol,
+          s.timestamp,
+          s.openInterest ?? null,
+          s.settlementPrice ?? null,
+          s.clearedVolume ?? null
+        );
+      }
+    } catch (err) {
+      this.warnWriteFailure(`saveStatistics(${stats.length} stats)`, err);
+    }
+  }
+
+  public getLatestStatistics(symbol: string): OptionStatisticRecord | null {
+    try {
+      const row = this.db.prepare(`
+        SELECT symbol, time, open_interest, settlement_price, cleared_volume
+        FROM option_statistics
+        WHERE symbol = ?
+        ORDER BY time DESC
+        LIMIT 1
+      `).get(symbol) as any;
+
+      if (!row) return null;
+      return {
+        symbol: row.symbol,
+        timestamp: row.time,
+        openInterest: row.open_interest ?? undefined,
+        settlementPrice: row.settlement_price ?? undefined,
+        clearedVolume: row.cleared_volume ?? undefined,
+      };
+    } catch (err) {
+      this.warnWriteFailure(`getLatestStatistics(${symbol})`, err);
+      return null;
+    }
+  }
+
   /**
    * Save a single bar into the persistent store.
    */
@@ -364,15 +563,32 @@ export class MarketDataStore {
 
   /**
    * Batch insert historical bars.
+   * Supports both (bars, symbol, timeframe, provider) and (provider, symbol, timeframe, bars) signatures.
    */
+  public saveBars(bars: HistoricalBar[], symbol: string, timeframe: string, provider: string): void;
+  public saveBars(provider: string, symbol: string, timeframe: string, bars: HistoricalBar[]): void;
   public saveBars(
-    bars: HistoricalBar[],
-    symbol: string,
-    timeframe: string,
-    provider: string
+    arg1: HistoricalBar[] | string,
+    arg2: string,
+    arg3: string,
+    arg4: HistoricalBar[] | string
   ): void {
-    for (const b of bars) {
-      this.saveBar(b, symbol, timeframe, provider);
+    if (Array.isArray(arg1)) {
+      const bars = arg1;
+      const symbol = arg2;
+      const timeframe = arg3;
+      const provider = arg4 as string;
+      for (const b of bars) {
+        this.saveBar(b, symbol, timeframe, provider);
+      }
+    } else {
+      const provider = arg1;
+      const symbol = arg2;
+      const timeframe = arg3;
+      const bars = arg4 as HistoricalBar[];
+      for (const b of bars) {
+        this.saveBar(b, symbol, timeframe, provider);
+      }
     }
   }
 
@@ -857,7 +1073,69 @@ export class MarketDataStore {
     this.db.exec(statements.join('\n'));
   }
 
-  // Metered vendor spend (Databento historical pulls are billed per GB on top of the subscription).
+  /**
+   * Non-blocking retention cleanup: the same deletes as purgeOldData, but chunked and yielded
+   * so a single synchronous SQLite statement can never freeze the event loop (on large DBs a
+   * full-table DELETE blocks for minutes, killing the live feed).
+   */
+  public async purgeOldDataNonBlocking(olderThanMs: number, barsOlderThanMs: number = olderThanMs): Promise<void> {
+    if (this.dbPath === ':memory:') {
+      this.purgeOldData(olderThanMs, barsOlderThanMs);
+      return;
+    }
+    const now = Date.now();
+    const chunkSize = 20000;
+    const tables: Array<{ table: string; where: string }> = [];
+    if (olderThanMs > 0) {
+      const cutoff = now - olderThanMs;
+      tables.push({ table: 'trades', where: `ts < ${cutoff}` });
+      tables.push({ table: 'gaps', where: `to_ts < ${cutoff}` });
+    }
+    if (barsOlderThanMs > 0) {
+      tables.push({ table: 'bars', where: `time < ${now - barsOlderThanMs}` });
+    }
+    if (tables.length === 0) return;
+
+    for (const { table, where } of tables) {
+      for (;;) {
+        await new Promise((r) => setImmediate(r)); // yield: keep serving ticks between chunks
+        try {
+          const res = this.db
+            .prepare(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${where} LIMIT ${chunkSize})`)
+            .run();
+          if ((res.changes ?? 0) < chunkSize) break;
+        } catch (err) {
+          console.warn(`[MarketDataStore] chunked delete on ${table} failed: ${(err as Error).message}`);
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * Run VACUUM in a detached child process: it can take minutes on a large store and would
+   * otherwise block the event loop (DatabaseSync is synchronous). The child opens its own
+   * connection; when the server is writing continuously the VACUUM fails with SQLITE_BUSY
+   * and is simply skipped until a quieter pass.
+   */
+  public vacuumInBackground(): void {
+    if (this.dbPath === ':memory:') return;
+    const script =
+      "const {DatabaseSync}=require('node:sqlite');" +
+      `const db=new DatabaseSync(${JSON.stringify(this.dbPath)});` +
+      "db.exec('PRAGMA busy_timeout=30000');db.exec('VACUUM');db.close();";
+    try {
+      const child = spawn(process.execPath, ['-e', script], { stdio: 'ignore', detached: true });
+      child.unref();
+      child.on('exit', (code) => {
+        if (code !== 0) console.warn(`[MarketDataStore] background VACUUM exited with code ${code} (skipped if busy)`);
+      });
+    } catch (err) {
+      console.warn(`[MarketDataStore] background VACUUM failed to start: ${(err as Error).message}`);
+    }
+  }
+
+  // Metered vendor spend.
 
   /** Add an estimated vendor charge to the month ledger. Never throws: accounting must not break data flow. */
   public addVendorUsage(provider: string, month: string, usd: number, requests = 1): void {
@@ -1016,6 +1294,22 @@ export class MarketDataStore {
     } catch (err) {
       console.warn(`[MarketDataStore] instrument spec reset failed: ${(err as Error).message}`);
     }
+  }
+
+  // ---- Exposure snapshots ---------------------------------------------------
+  public saveExposureSnapshot(s: { underlying: string; spot: number; timestamp: number; totals: any; walls: any; levels: any; gammaFlip: number | null; regime: string; dataSource: string }): void {
+    try {
+      this.db.prepare(`INSERT OR REPLACE INTO exposure_snapshots (underlying, asOf, spot, totals, walls, levels, gammaFlip, regime, dataSource) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        s.underlying.toUpperCase(), s.timestamp, s.spot, JSON.stringify(s.totals), JSON.stringify(s.walls), JSON.stringify(s.levels), s.gammaFlip, s.regime, s.dataSource
+      );
+    } catch (err) { console.warn(`[MarketDataStore] saveExposureSnapshot failed: ${(err as Error).message}`); }
+  }
+  public getLatestExposure(underlying: string): any | null {
+    try {
+      const row = this.db.prepare(`SELECT * FROM exposure_snapshots WHERE underlying = ? ORDER BY asOf DESC LIMIT 1`).get(underlying.toUpperCase()) as any;
+      if (!row) return null;
+      return { underlying: row.underlying, spot: row.spot, timestamp: row.asOf, totals: JSON.parse(row.totals), walls: JSON.parse(row.walls), levels: JSON.parse(row.levels), gammaFlip: row.gammaFlip, regime: row.regime, dataSource: row.dataSource };
+    } catch { return null; }
   }
 
   /**

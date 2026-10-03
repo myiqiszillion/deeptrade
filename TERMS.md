@@ -26,7 +26,7 @@ decisions.
 4. Refunds: `<REFUND POLICY — e.g. pro-rata within 7 days of first purchase>`.
 
 ## 4. Market data and third parties
-1. Market data is provided by third-party vendors (e.g. `Databento`, `Tradovate`, `CBOE`). Their
+1. Market data is provided by third-party vendors (e.g. `Databento`, `CBOE`, `Binance`). Their
    terms and exchange rules apply to you as an end user.
 2. Data may be delayed, incomplete or unavailable; the Service never fabricates data and marks
    unavailable feeds as `UNAVAILABLE` rather than guessing.

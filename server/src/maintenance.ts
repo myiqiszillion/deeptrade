@@ -1,5 +1,4 @@
 import { marketDataStore } from './storage/marketDataStore.js';
-import { currentMonthSpend } from './marketData/databentoUsage.js';
 import { metrics } from './util/metrics.js';
 
 export interface MaintenanceHandle {
@@ -66,8 +65,7 @@ export function startMaintenance(
       metrics.set('deepchart_store_rows', stats.trades, 'Rows currently stored', { table: 'trades' });
       metrics.set('deepchart_store_rows', stats.bars, 'Rows currently stored', { table: 'bars' });
       metrics.set('deepchart_store_rows', stats.gaps, 'Rows currently stored', { table: 'gaps' });
-      // Keep the metered-vendor spend gauge warm even before the first pull of the month.
-      currentMonthSpend();
+
       metrics.inc('deepchart_maintenance_runs_total', 'Database maintenance passes completed');
       console.log(
         `[Maintenance] retention(ticks/gaps)=${retentionDays > 0 ? `${retentionDays}d` : 'off'} ` +

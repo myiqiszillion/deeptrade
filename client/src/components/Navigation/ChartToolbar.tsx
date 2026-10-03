@@ -30,8 +30,8 @@ interface ChartToolbarProps {
   onFitView: () => void;
   onZoomIn?: () => void;
   onZoomOut?: () => void;
-  activePanel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | null;
-  onSelectPanel: (panel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow') => void;
+  activePanel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Darkpool' | '13F' | null;
+  onSelectPanel: (panel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Darkpool' | '13F') => void;
 }
 
 export const ChartToolbar: React.FC<ChartToolbarProps> = ({
@@ -100,7 +100,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
             key={tf}
             aria-pressed={timeframe === tf}
             onClick={() => onTimeframeChange(tf)}
-            className={`toolbar-button ${timeframe === tf ? 'active active-cyan' : ''}`}
+            className={`toolbar-button ${timeframe === tf ? 'active active text-[#22D3EE] border-[#22D3EE]/30' : ''}`}
             title={`Set timeframe to ${tf}`}
           >
             {tf}
@@ -119,7 +119,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
                 key={String(mul)}
                 onClick={() => onClusterChange(mul)}
                 className={`toolbar-button ${
-                  clusterMultiplier === mul ? 'active active-cyan' : ''
+                  clusterMultiplier === mul ? 'active active text-[#22D3EE] border-[#22D3EE]/30' : ''
                 }`}
                 title={mul === 'auto' ? 'Dynamic tick clustering' : `Cluster by ${mul} tick(s)`}
               >
@@ -136,7 +136,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
       {/* Desktop view (>= 1536px): Full inline group */}
       <div className="toolbar-group indicators-desktop-group">
         <button
-          className={`toolbar-button ${showVWAP ? 'active-amber' : ''}`}
+          className={`toolbar-button ${showVWAP ? 'active text-[#F5B942] border-[#F5B942]/30' : ''}`}
           aria-pressed={showVWAP}
           onClick={onToggleVWAP}
           title="Anchored VWAP and ±1σ Bands"
@@ -146,7 +146,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
         </button>
 
         <button
-          className={`toolbar-button ${showImbalances ? 'active-emerald' : ''}`}
+          className={`toolbar-button ${showImbalances ? 'active text-[#089981] border-[#089981]/30' : ''}`}
           aria-pressed={showImbalances}
           onClick={onToggleImbalances}
           title="Diagonal Order Flow Imbalances"
@@ -156,7 +156,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
         </button>
 
         <button
-          className={`toolbar-button ${showDeltaNumbers ? 'active-cyan' : ''}`}
+          className={`toolbar-button ${showDeltaNumbers ? 'active text-[#22D3EE] border-[#22D3EE]/30' : ''}`}
           aria-pressed={showDeltaNumbers}
           onClick={onToggleDeltaNumbers}
           title="Bar Delta & Volume Summary"
@@ -166,7 +166,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
         </button>
 
         <button
-          className={`toolbar-button ${showCVD ? 'active-purple' : ''}`}
+          className={`toolbar-button ${showCVD ? 'active text-[#A78BFA] border-[#A78BFA]/30' : ''}`}
           aria-pressed={showCVD}
           onClick={onToggleCVD}
           title="Cumulative Volume Delta Sub-panel"
@@ -182,7 +182,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
           <button
             onClick={() => setIndicatorsMenuOpen(!indicatorsMenuOpen)}
             className={`toolbar-button ${
-              showVWAP || showImbalances || showDeltaNumbers || showCVD ? 'active-cyan' : ''
+              showVWAP || showImbalances || showDeltaNumbers || showCVD ? 'active text-[#22D3EE] border-[#22D3EE]/30' : ''
             }`}
             title="Toggle Indicators"
           >
@@ -193,10 +193,10 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
         </div>
 
         {indicatorsMenuOpen && (
-          <div className="absolute top-full left-0 mt-1 py-1 px-1 rounded-[3px] bg-[#0D1218] border border-[#25303A] shadow-[0_8px_24px_rgba(0,0,0,0.85)] z-50 flex flex-col gap-1 min-w-[130px]">
+          <div className="absolute top-full left-0 mt-1 py-1 px-1 rounded-[3px] bg-[#1E222D] border border-[#2A2E39] shadow-[0_8px_24px_rgba(0,0,0,0.85)] z-50 flex flex-col gap-1 min-w-[130px]">
             <button
               onClick={() => { onToggleVWAP(); }}
-              className={`toolbar-button justify-start w-full ${showVWAP ? 'active-amber' : ''}`}
+              className={`toolbar-button justify-start w-full ${showVWAP ? 'active text-[#F5B942] border-[#F5B942]/30' : ''}`}
             >
               <span className="w-1.5 h-1.5 rounded-full bg-[#F5B942]" />
               <span>VWAP</span>
@@ -204,7 +204,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
             </button>
             <button
               onClick={() => { onToggleImbalances(); }}
-              className={`toolbar-button justify-start w-full ${showImbalances ? 'active-emerald' : ''}`}
+              className={`toolbar-button justify-start w-full ${showImbalances ? 'active text-[#089981] border-[#089981]/30' : ''}`}
             >
               <span className="w-1.5 h-1.5 rounded-full bg-[#19C37D]" />
               <span>Imbalance</span>
@@ -212,7 +212,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
             </button>
             <button
               onClick={() => { onToggleDeltaNumbers(); }}
-              className={`toolbar-button justify-start w-full ${showDeltaNumbers ? 'active-cyan' : ''}`}
+              className={`toolbar-button justify-start w-full ${showDeltaNumbers ? 'active text-[#22D3EE] border-[#22D3EE]/30' : ''}`}
             >
               <span className="w-1.5 h-1.5 rounded-full bg-[#22D3EE]" />
               <span>Delta</span>
@@ -220,7 +220,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
             </button>
             <button
               onClick={() => { onToggleCVD(); }}
-              className={`toolbar-button justify-start w-full ${showCVD ? 'active-purple' : ''}`}
+              className={`toolbar-button justify-start w-full ${showCVD ? 'active text-[#A78BFA] border-[#A78BFA]/30' : ''}`}
             >
               <span className="w-1.5 h-1.5 rounded-full bg-[#A78BFA]" />
               <span>CVD</span>
@@ -287,7 +287,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
       <div className="toolbar-group">
         <button
           onClick={autoFollow ? undefined : onToggleAutoFollow}
-          className={`toolbar-button ${autoFollow ? 'active active-emerald' : ''}`}
+          className={`toolbar-button ${autoFollow ? 'active active text-[#089981] border-[#089981]/30' : ''}`}
           title={autoFollow ? 'Auto Fit active: tracking current price & visible range' : 'Enable Auto Fit'}
         >
           {autoFollow && <Check size={11} className="text-[#19C37D]" />}
@@ -329,15 +329,15 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
         </button>
       </div>
 
-      {/* GROUP 6: Workspace Switcher Tabs (DOM | PROFILE | TAPE | GEX | FLOW) */}
+      {/* GROUP 6: Workspace Switcher Tabs (DOM | PROFILE | TAPE | GEX | FLOW | DARKPOOL | 13F) */}
       <div className="toolbar-group ml-auto">
-        {(['DOM', 'Profile', 'Tape', 'GEX', 'Flow'] as const).map((panel) => (
+        {(['DOM', 'Profile', 'Tape', 'GEX', 'Flow', 'Darkpool', '13F'] as const).map((panel) => (
           <button
             key={panel}
             aria-pressed={activePanel === panel}
             onClick={() => onSelectPanel(panel)}
             className={`toolbar-button uppercase font-semibold text-[10px] ${
-              activePanel === panel ? 'active active-cyan' : ''
+              activePanel === panel ? 'active active text-[#22D3EE] border-[#22D3EE]/30' : ''
             }`}
             title={`Toggle ${panel} workspace panel`}
           >
@@ -348,4 +348,3 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
     </nav>
   );
 };
-

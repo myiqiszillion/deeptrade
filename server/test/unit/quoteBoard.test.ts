@@ -7,12 +7,17 @@ import {
   quoteBoardTtlMs,
 } from '../../src/marketData/quoteBoard.js';
 
-const TRADE_LINE = JSON.stringify({
-  hd: { ts_event: String(BigInt(Date.now() - 5_000) * 1_000_000n) },
-  price: '5850250000000',
-  size: '3',
-  action: 'T',
-  side: 'B',
+const TRADE_RESPONSE = JSON.stringify({
+  data: [
+    {
+      id: 'uw-12345',
+      ticker_symbol: 'ES',
+      executed_at: new Date(Date.now() - 5_000).toISOString(),
+      price: '5850.25',
+      size: '3',
+      side: 'Ask',
+    },
+  ],
 });
 
 export async function runQuoteBoardTests(): Promise<void> {
@@ -36,29 +41,26 @@ export async function runQuoteBoardTests(): Promise<void> {
   const fetchFn = (async (url: string | URL) => {
     const href = String(url);
     requests.push(href);
-    // The dataset-range call is a free metadata lookup; the paid pull returns one trade line.
-    if (href.includes('metadata.get_dataset_range')) {
-      return new Response(JSON.stringify({ start: '2020-01-01T00:00:00.000000000Z', end: new Date().toISOString() }), { status: 200 });
-    }
-    return new Response(TRADE_LINE, { status: 200 });
+    return new Response(TRADE_RESPONSE, { status: 200, headers: { 'Content-Type': 'application/json' } });
   }) as unknown as typeof fetch;
 
   const first = await fetchWatchlistQuotes({ symbols: ['ES', 'NQ'], apiKey: 'db-test-key', fetchFn });
   assert.equal(first.length, 2, 'one quote per symbol');
-  assert.equal(first[0].price, 5850.25, 'price decoded from fixed-point');
+  assert.equal(first[0].price, 5850.25, 'price parsed correctly');
   assert.equal(first[0].symbol, 'ES');
+  assert.equal(first[0].source, 'databento');
   assert.equal(first[0].stale, false);
   assert.ok(first[0].ageMs >= 0);
-  const paidCalls = requests.filter((href) => href.includes('timeseries.get_range')).length;
-  assert.equal(paidCalls, 2, 'two symbols -> two paid pulls');
+  const paidCalls = requests.filter((href) => href.includes('trades')).length;
+  assert.equal(paidCalls, 2, 'two symbols -> two pulls');
 
   // 4. Second call inside the TTL is served from cache: no extra vendor spend.
   const second = await fetchWatchlistQuotes({ symbols: ['ES', 'NQ'], apiKey: 'db-test-key', fetchFn });
   assert.equal(second.length, 2);
   assert.equal(
-    requests.filter((href) => href.includes('timeseries.get_range')).length,
+    requests.filter((href) => href.includes('trades')).length,
     2,
-    'cached quotes must not trigger new paid pulls'
+    'cached quotes must not trigger new pulls'
   );
 
   // 5. A failing refresh keeps the previous value, flagged stale (never invented). ttlMs:0 forces the
@@ -67,11 +69,8 @@ export async function runQuoteBoardTests(): Promise<void> {
   let failNext = false;
   const flakyFetch = (async (url: string | URL) => {
     const href = String(url);
-    if (href.includes('metadata.get_dataset_range')) {
-      return new Response(JSON.stringify({ start: '2020-01-01T00:00:00.000000000Z', end: new Date().toISOString() }), { status: 200 });
-    }
     if (failNext) return new Response('boom', { status: 500 });
-    return new Response(TRADE_LINE, { status: 200 });
+    return new Response(TRADE_RESPONSE, { status: 200, headers: { 'Content-Type': 'application/json' } });
   }) as unknown as typeof fetch;
 
   const fresh = await fetchWatchlistQuotes({ symbols: ['CL'], apiKey: 'db-test-key', fetchFn: flakyFetch });

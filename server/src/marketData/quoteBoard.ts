@@ -1,15 +1,15 @@
-import { fetchDatabentoTrades } from './databentoHistory.js';
-
 /**
  * Watchlist quote board.
  *
  * The terminal streams ONE symbol per session (that is what the vendor feeds cost), so a TradingView-style
  * landscape of live prices needs a second, deliberately limited source. This module fetches the last trade
- * per requested root with a hard cap, a TTL cache and the same spend guard as every other paid call — a
- * watchlist pull must never turn into a surprise bill.
+ * per requested root with a hard cap, a TTL cache.
  *
+ * Standardized on Databento market data.
  * Off by default (`ENABLE_QUOTE_BOARD=1` to enable): it is metered data, so the operator opts in.
  */
+import { resolveDatabentoConfig } from '../databento/config.js';
+
 export interface WatchlistQuote {
   symbol: string;
   price: number;
@@ -60,7 +60,6 @@ export function normaliseQuoteSymbols(input: string | string[] | undefined): str
 }
 
 function cached(symbol: string, ttlMs: number): CacheEntry | undefined {
-  // ttlMs <= 0 means "always refresh" (tests + operator override): never serve from cache.
   if (ttlMs <= 0) return undefined;
   const entry = cache.get(symbol);
   if (!entry) return undefined;
@@ -80,6 +79,10 @@ export async function fetchWatchlistQuotes(options: QuoteBoardOptions): Promise<
   if (symbols.length === 0) return [];
   const ttlMs = options.ttlMs ?? quoteBoardTtlMs();
   const quotes: WatchlistQuote[] = [];
+  const cfg = resolveDatabentoConfig();
+  const apiKey = options.apiKey || cfg.apiKey || process.env.DATABENTO_API_KEY;
+  const fetcher = options.fetchFn || fetch;
+  const baseUrl = options.baseUrl || cfg.histBaseUrl;
 
   for (const symbol of symbols) {
     const hit = cached(symbol, ttlMs);
@@ -89,27 +92,52 @@ export async function fetchWatchlistQuotes(options: QuoteBoardOptions): Promise<
     }
 
     try {
-      const trades = await fetchDatabentoTrades(
-        symbol,
-        { apiKey: options.apiKey, dataset: process.env.DATABENTO_DATASET, stypeIn: process.env.DATABENTO_STYPE_IN },
-        { limit: 1, fetchFn: options.fetchFn, baseUrl: options.baseUrl }
-      );
-      const last = trades[trades.length - 1];
-      if (last && Number.isFinite(last.price) && last.price > 0) {
-        const quote: WatchlistQuote = {
-          symbol,
-          price: last.price,
-          ts: last.timestamp,
-          ageMs: Date.now() - last.timestamp,
-          source: 'databento',
-          stale: false,
-        };
-        cache.set(symbol, { quote, fetchedAt: Date.now() });
-        quotes.push(quote);
-        continue;
+      const url = new URL('/v0/timeseries.get_range', baseUrl);
+      url.searchParams.set('dataset', cfg.equitiesDataset);
+      url.searchParams.set('symbols', symbol);
+      url.searchParams.set('schema', 'trades');
+      url.searchParams.set('limit', '1');
+
+      const headers: Record<string, string> = { Accept: 'application/json' };
+      if (apiKey) {
+        headers['Authorization'] = `Basic ${Buffer.from(`${apiKey}:`).toString('base64')}`;
+      }
+
+      const res = await fetcher(url.toString(), { headers });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      }
+
+      const json: any = await res.json();
+      // Databento JSON records or standard trade response
+      const records = Array.isArray(json) ? json : json.data || json.result || [];
+      const last = records[records.length - 1];
+
+      if (last) {
+        // Databento trades schema: price is fixed-point 1e9 or float, ts_event is nanoseconds or string
+        const price = typeof last.price === 'number'
+          ? (last.price > 1e6 ? last.price / 1e9 : last.price)
+          : parseFloat(last.price);
+        const ts = last.ts_event
+          ? Math.floor(Number(last.ts_event) / 1e6)
+          : (last.executed_at ? new Date(last.executed_at).getTime() : Date.now());
+
+        if (Number.isFinite(price) && price > 0) {
+          const quote: WatchlistQuote = {
+            symbol,
+            price,
+            ts,
+            ageMs: Date.now() - ts,
+            source: 'databento',
+            stale: false,
+          };
+          cache.set(symbol, { quote, fetchedAt: Date.now() });
+          quotes.push(quote);
+          continue;
+        }
       }
     } catch (err) {
-      console.warn(`[QuoteBoard] ${symbol}: ${(err as Error).message}`);
+      console.warn(`[QuoteBoard:databento] ${symbol}: ${(err as Error).message}`);
     }
 
     const previous = cache.get(symbol);

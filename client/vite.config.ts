@@ -4,6 +4,18 @@ import { defineConfig } from 'vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/ws': {
+        target: 'ws://localhost:8080',
+        ws: true,
+      },
+    },
+  },
   build: {
     // The terminal ships as one route, but the vendor code and the heavy analytics panels do not need to be
     // in the first paint: splitting them keeps the initial download small and silences the ">500 kB" warning.

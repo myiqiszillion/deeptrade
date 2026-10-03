@@ -1,167 +1,150 @@
-import React, { useState } from 'react';
-import { GEXProfile } from '../../types';
-import { Shield } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Shield, RefreshCcw } from 'lucide-react';
+import { resolveMarketIntelligenceTicker } from '../../services/symbolResolver';
+
+interface GexRow {
+  strike: number;
+  put_exposure: number;
+  call_exposure: number;
+  total_exposure: number;
+}
 
 interface GEXPanelProps {
-  profile?: GEXProfile;
+  symbol: string;
   currentPrice: number;
 }
 
-export const GEXPanel: React.FC<GEXPanelProps> = ({ profile }) => {
-  const [show0DteOnly, setShow0DteOnly] = useState(false);
-  if (!profile || profile.levels.length === 0) {
+export const GEXPanel: React.FC<GEXPanelProps> = ({ symbol, currentPrice }) => {
+  const [data, setData] = useState<GexRow[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const ticker = resolveMarketIntelligenceTicker(symbol);
+
+  const fetchGex = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/v1/options/chain?symbol=${ticker}`);
+      if (!res.ok) throw new Error(`Options API Error: ${res.status}`);
+      const json = await res.json();
+      if (!json.data && !json.contracts) throw new Error('No data received');
+      
+      const rows: GexRow[] = json.data || json.contracts || [];
+      rows.sort((a, b) => b.strike - a.strike); // descending
+      setData(rows);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchGex();
+  }, [symbol]);
+
+  if (loading && !data) {
     return (
-      <div className="w-80 h-full border-l border-brand-border bg-brand-surface p-4 text-slate-400 text-center flex flex-col justify-center gap-2 text-xs">
-        <span className="font-bold text-amber-400">GEX: UNAVAILABLE</span>
-        <span>No real option chain could be loaded from CBOE for this instrument.</span>
-        <span className="text-[10px] text-slate-500">
-          DeepChart does not substitute a synthetic gamma model; it retries on the next refresh.
-        </span>
+      <div className="w-80 h-full border-l border-brand-border bg-slate-950/40 p-4 text-[#7F8B97] text-center flex flex-col justify-center gap-2 text-xs">
+        Loading Databento Options GEX...
       </div>
     );
   }
 
-  const levels = profile.levels;
-  const maxGex = Math.max(1, ...levels.map((l) => show0DteOnly
-    ? Math.abs(l.zeroDteGex)
-    : Math.max(Math.abs(l.callGex), Math.abs(l.putGex))));
-  const atmStrike = Number.isFinite(profile.spotPrice) && profile.spotPrice > 0
-    ? levels.reduce((nearest, level) => Math.abs(level.strike - profile.spotPrice) < Math.abs(nearest - profile.spotPrice) ? level.strike : nearest, levels[0].strike)
-    : undefined;
+  if (error || !data || data.length === 0) {
+    return (
+      <div className="w-80 h-full border-l border-brand-border bg-slate-950/40 p-4 text-[#7F8B97] text-center flex flex-col justify-center items-center gap-3 text-xs">
+        <Shield size={32} className="text-[#3A4756] mb-1" />
+        <div className="flex flex-col gap-1">
+          <span className="font-bold text-[#E7EDF3] text-sm">GEX UNAVAILABLE</span>
+          <span className="text-[11px] leading-relaxed max-w-[220px]">
+            {error ? `Error: ${error}` : 'No gamma exposure data available for this ticker.'}
+          </span>
+        </div>
+        <button onClick={fetchGex} className="mt-2 flex items-center gap-1.5 px-3 py-1.5 bg-[#1C2630] hover:bg-[#25303A] text-[#E7EDF3] font-medium rounded border border-[#2A2E39] transition-colors">
+          <RefreshCcw size={12} /> Retry
+        </button>
+      </div>
+    );
+  }
+
+  // Calculate walls
+  let maxCall = 0;
+  let callWall = 0;
+  let minPut = 0; // put_exposure is negative in UW
+  let putWall = 0;
+  
+  data.forEach(lvl => {
+    if (lvl.call_exposure > maxCall) { maxCall = lvl.call_exposure; callWall = lvl.strike; }
+    if (lvl.put_exposure < minPut) { minPut = lvl.put_exposure; putWall = lvl.strike; }
+  });
+
+  const maxAbsoluteGex = Math.max(
+    ...data.map(l => Math.max(Math.abs(l.call_exposure || 0), Math.abs(l.put_exposure || 0)))
+  );
 
   return (
     <div className="w-full h-full flex flex-col select-none font-mono text-xs bg-slate-950/40">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-white/5 px-3 py-2 bg-slate-900/50">
         <div className="flex items-center gap-1.5 font-bold text-slate-200">
-          <Shield size={14} className="text-amber-400" />
-          <span>GAMMA EXPOSURE (GEX)</span>
-          {profile.dataSource === 'CBOE_DELAYED' ? (
-            <span
-              className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-300 font-normal"
-              title="Computed from CBOE's free delayed option chain (real gamma + open interest, ~15 min delayed)"
-            >
-              REAL · DELAYED
-            </span>
-          ) : (
-            <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-normal">
-              REAL · LIVE
-            </span>
-          )}
+          <Shield size={14} className="text-[#38BDF8]" />
+          <span>GAMMA EXPOSURE</span>
+          <span className="text-[9px] px-1 py-0.5 rounded bg-[#38BDF8]/20 text-[#38BDF8] font-normal">
+            DATABENTO
+          </span>
         </div>
-        <span className="text-[10px] px-1.5 py-0.5 bg-brand-bg text-amber-400 rounded font-bold">
-          {profile.underlying}
+        <span className="text-[10px] px-1.5 py-0.5 bg-white/5 text-[#D1D4DC] rounded font-bold">
+          {ticker}
         </span>
       </div>
 
       {/* GEX Metrics Cards */}
-      <div className="p-3 border-b border-brand-border bg-brand-bg/40 space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-slate-400 text-[11px]">All-expiry regime:</span>
-          <span
-            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-              profile.regime === 'POSITIVE_GAMMA'
-                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
-                : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
-            }`}
-          >
-            {profile.regime === 'POSITIVE_GAMMA' ? '+ GAMMA (Mean Reverting)' : '- GAMMA (High Volatility)'}
-          </span>
-        </div>
-
-        <div className="grid grid-cols-3 gap-1 text-[10px] text-center pt-1">
-          <div className="p-1.5 bg-brand-surface rounded border border-brand-border">
-            <div className="text-slate-500">Put Wall</div>
-            <div className="text-rose-400 font-bold text-[11px]">{profile.putWall}</div>
+      <div className="p-3 border-b border-white/5 bg-slate-900/80 space-y-2">
+        <div className="grid grid-cols-2 gap-1.5 text-[10px] text-center">
+          <div className="p-2 bg-[#131722] rounded border border-[#25303A]">
+            <div className="text-[#787B86] mb-0.5 font-sans">Put Wall</div>
+            <div className="text-[#F43F5E] font-bold text-xs tabular-nums">{putWall}</div>
           </div>
-          <div className="p-1.5 bg-brand-surface rounded border border-brand-border">
-            <div className="text-slate-500">Zero Gamma</div>
-            <div className="text-amber-400 font-bold text-[11px]">{profile.zeroGammaFlip}</div>
+          <div className="p-2 bg-[#131722] rounded border border-[#25303A]">
+            <div className="text-[#787B86] mb-0.5 font-sans">Call Wall</div>
+            <div className="text-[#10B981] font-bold text-xs tabular-nums">{callWall}</div>
           </div>
-          <div className="p-1.5 bg-brand-surface rounded border border-brand-border">
-            <div className="text-slate-500">Call Wall</div>
-            <div className="text-emerald-400 font-bold text-[11px]">{profile.callWall}</div>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between text-[10px] text-slate-400 pt-1">
-          <span>Net GEX: <b className="text-slate-200">{profile.totalNetGex}M</b></span>
-          <span>0DTE GEX: <b className="text-amber-300">{profile.total0DteGex}M</b></span>
-        </div>
-
-        {/* 0DTE Filter Toggle */}
-        <div className="flex items-center justify-between pt-1">
-          <span className="text-[10px] text-slate-400">View Mode:</span>
-          <button
-            onClick={() => setShow0DteOnly(!show0DteOnly)}
-            aria-pressed={show0DteOnly}
-            className={`px-2 py-0.5 rounded text-[10px] ${
-              show0DteOnly ? 'bg-amber-500 text-black font-bold' : 'bg-slate-800 text-slate-300'
-            }`}
-          >
-            {show0DteOnly ? '0DTE net GEX' : 'All-expiry call / put'}
-          </button>
         </div>
       </div>
 
-      <p className="px-3 py-2 text-xs text-slate-400">
-        {show0DteOnly ? 'Negative ← Net GEX → Positive. Zero net does not imply no contracts.' : 'Put ← GEX → Call. Walls and regime use all expiries.'}
-        {' '}ATM uses {profile.underlying} spot: {profile.spotPrice}.
+      <p className="px-3 py-2 text-[10px] text-[#7F8B97] font-sans">
+        Live spot exposures by strike from Databento OPRA options.
       </p>
-      {/* Strike by Strike GEX Distribution */}
-      <div className="flex-1 overflow-y-auto divide-y divide-brand-border/20 text-[10px]">
-        {levels.length === 0 ? (
-          <div className="p-6 text-center text-slate-500">
-            No 0DTE gamma levels are available in this option chain.
-          </div>
-        ) : levels.map((lvl) => {
-          const isCallWall = lvl.strike === profile.callWall;
-          const isPutWall = lvl.strike === profile.putWall;
-          const isZeroFlip = lvl.strike === profile.zeroGammaFlip;
-          const isAtTheMoney = lvl.strike === atmStrike;
 
-          const callValue = show0DteOnly ? Math.max(0, lvl.zeroDteGex) : Math.abs(lvl.callGex);
-          const putValue = show0DteOnly ? Math.max(0, -lvl.zeroDteGex) : Math.abs(lvl.putGex);
-          const callWidth = Math.min(100, (callValue / maxGex) * 100);
-          const putWidth = Math.min(100, (putValue / maxGex) * 100);
+      {/* Strike by Strike GEX Distribution */}
+      <div className="flex-1 overflow-y-auto divide-y divide-white/[0.03] text-[10px] custom-scrollbar">
+        {data.slice(0, 150).map((lvl) => {
+          const isCallWall = lvl.strike === callWall;
+          const isPutWall = lvl.strike === putWall;
+          const callWidth = Math.min(100, (Math.abs(lvl.call_exposure || 0) / (maxAbsoluteGex || 1)) * 100);
+          const putWidth = Math.min(100, (Math.abs(lvl.put_exposure || 0) / (maxAbsoluteGex || 1)) * 100);
 
           return (
-            <div
-              key={lvl.strike}
-              title={show0DteOnly ? `0DTE net GEX: ${lvl.zeroDteGex}M` : `Call: ${lvl.callGex}M; Put: ${lvl.putGex}M`}
-              className={`relative flex items-center justify-between px-3 py-1 hover:bg-white/5 ${
-                isAtTheMoney ? 'bg-amber-500/10' : ''
-              }`}
-            >
+            <div key={lvl.strike} className="relative flex items-center justify-between px-3 py-1.5 hover:bg-white/5">
               {/* Put GEX bar (Left) */}
-              <div className="w-16 h-3 bg-brand-bg rounded overflow-hidden flex justify-end">
-                <div className="bg-rose-500/60 h-full" style={{ width: `${putWidth}%` }} />
+              <div className="w-[35%] h-3.5 bg-black/40 rounded overflow-hidden flex justify-end">
+                <div className="bg-[#F43F5E]/60 h-full" style={{ width: `${putWidth}%` }} />
               </div>
 
               {/* Strike & Badges */}
-              <div className="flex items-center gap-1 z-10">
-                <span
-                  className={`font-bold ${
-                    isCallWall
-                      ? 'text-emerald-400'
-                      : isPutWall
-                      ? 'text-rose-400'
-                      : isZeroFlip
-                      ? 'text-amber-400'
-                      : 'text-slate-300'
-                  }`}
-                >
+              <div className="flex items-center gap-1 z-10 mx-2 flex-1 justify-center">
+                {isPutWall && <span className="text-[8px] px-1 bg-[#F43F5E]/20 text-[#F43F5E] rounded font-sans">PW</span>}
+                <span className={`font-bold ${isCallWall ? 'text-[#10B981]' : isPutWall ? 'text-[#F43F5E]' : 'text-[#D1D4DC]'}`}>
                   {lvl.strike}
                 </span>
-                {isAtTheMoney && <span className="text-amber-300">ATM</span>}
-                {isCallWall && <span className="text-[8px] px-1 bg-emerald-500/20 text-emerald-400 rounded">CW</span>}
-                {isPutWall && <span className="text-[8px] px-1 bg-rose-500/20 text-rose-400 rounded">PW</span>}
-                {isZeroFlip && <span className="text-[8px] px-1 bg-amber-500/20 text-amber-400 rounded">0-FLIP</span>}
+                {isCallWall && <span className="text-[8px] px-1 bg-[#10B981]/20 text-[#10B981] rounded font-sans">CW</span>}
               </div>
 
               {/* Call GEX bar (Right) */}
-              <div className="w-16 h-3 bg-brand-bg rounded overflow-hidden flex justify-start">
-                <div className="bg-emerald-500/60 h-full" style={{ width: `${callWidth}%` }} />
+              <div className="w-[35%] h-3.5 bg-black/40 rounded overflow-hidden flex justify-start">
+                <div className="bg-[#10B981]/60 h-full" style={{ width: `${callWidth}%` }} />
               </div>
             </div>
           );

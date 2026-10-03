@@ -72,7 +72,7 @@ export const OnboardingCard: React.FC<OnboardingCardProps> = ({ symbol, onClose,
             <div className="font-bold text-[#E7EDF3] mb-1 font-mono text-xs">3 · Data Integrity (Real Data Only)</div>
             <ul className="list-disc list-inside space-y-1 text-[11px] leading-relaxed">
               <li>
-                <strong className="text-[#E7EDF3]">CME Futures ({symbol})</strong> — real-time trades, real depth and historical backfill from CME Globex MDP 3.0 via Databento / Tradovate. DeepChart never fabricates synthetic ticks or fake footprint bars.
+                <strong className="text-[#E7EDF3]">Market Data ({symbol})</strong> — real-time trades, volume profiles, and historical backfill via Databento. DeepChart never fabricates synthetic ticks or fake footprint bars.
               </li>
               <li>
                 <strong className="text-[#E7EDF3]">GEX Profile</strong> — Gamma Exposure and open interest from CBOE delayed options chain.

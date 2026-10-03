@@ -11,7 +11,7 @@
     "lint": "pnpm --filter client lint",
     "test": "pnpm test:protocol && pnpm test:unit && pnpm test:integration && pnpm test:client",
     "test:unit": "pnpm --filter @deepchart/server exec tsx test/unit/index.ts",
-    "test:integration": "pnpm --filter @deepchart/server exec tsx test/integration/index.ts && pnpm --filter @deepchart/server exec tsx test/integration/tradovateAdapter.test.ts && pnpm --filter @deepchart/server exec tsx test/integration/databentoAdapter.test.ts",
+    "test:integration": "pnpm --filter @deepchart/server exec tsx test/integration/index.ts",
     "test:protocol": "node scripts/check-protocol-drift.mjs",
   "test:client": "node scripts/check-client-bundle.mjs",
     "test:offline": "pnpm test",
@@ -19,6 +19,7 @@
     "verify": "pnpm --filter @deepchart/server exec tsx src/verify_e2e.ts",
     "verify:p0": "pnpm --filter @deepchart/server exec tsx src/verify_p0.ts",
     "verify:types": "node scripts/check-protocol-drift.mjs",
+    "mcp": "pnpm --filter @deepchart/server exec tsx src/mcp/server.ts",
     "db:backup": "node scripts/backup_db.mjs"
   },
   "engines": {

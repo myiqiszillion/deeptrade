@@ -30,10 +30,16 @@ TRUST_PROXY=1                             # only behind a proxy you control
 METRICS_TOKEN=<random string>             # /metrics is 401 without it
 STORE_RETENTION_DAYS=30                   # 0 = keep forever (disk will fill)
 STORE_BARS_RETENTION_DAYS=365             # candles outlive ticks; re-pulling them costs money
-STORAGE_PATH=/app/data/market_data.sqlite
-# Vendor metered spend (optional but recommended): refuse history pulls that would exceed this ceiling
-DATABENTO_MONTHLY_USD_BUDGET=150
+# Vendor credentials — Databento (OPRA / Equities / CME)
+DATABENTO_API_KEY=<your Databento api key>
+DATABENTO_OPRA_DATASET=OPRA.PILLAR        # US equity options
+DATABENTO_EQUITIES_DATASET=DBEQ.BASIC     # or XNAS.ITCH
+DATABENTO_CME_DATASET=GLBX.MDP3           # CME Globex
+DATABENTO_SYMBOLS=ES,NQ,MES,MNQ,CL,GC,SPY,QQQ,AAPL,NVDA,MSFT,TSLA
+DATABENTO_COST_CAP_USD=50                 # soft cap; /api/v1/options/chain checks vendor_usage before fetching
+DATABENTO_TIMEOUT_MS=15000
 HISTORY_BARS_TARGET=1500                  # 100..5000 bars per timeframe requested on subscribe
+REDIS_URL=redis://localhost:6379          # optional — falls back to in-memory TTL cache
 ```
 
 Notes:
@@ -60,7 +66,10 @@ Verify:
 ```bash
 curl -fsS http://127.0.0.1:8080/healthz                    # {"status":"ok",...}
 curl -fsS -H "x-admin-secret: $ADMIN_SECRET" \
-     http://127.0.0.1:8080/healthz | jq .feedStatus        # LIVE / UNAVAILABLE
+     http://127.0.0.1:8080/healthz | jq .databento        # {configured,datasets,costCap,vendorUsage,specs}
+curl -fsS -H "x-admin-secret: $ADMIN_SECRET" \
+     -X POST http://127.0.0.1:8080/api/v1/admin/instruments/sync  # {synced,total,perDataset}
+curl -fsS http://127.0.0.1:8080/api/v1/options/chain?underlying=SPY | jq .contracts
 curl -fsS -H "Authorization: Bearer $METRICS_TOKEN" \
      http://127.0.0.1:8080/metrics | head
 ```
@@ -129,9 +138,7 @@ former, the database enforces the latter.
 | `deepchart_ws_rejected_total{reason="capacity"}` | sustained > 0 |
 | `deepchart_auth_events_total{event="login_failed"}` | sudden spike (credential stuffing) |
 | `deepchart_rate_limited_total{bucket="auth"}` | spike |
-| `deepchart_vendor_fetch_total{result="error"}` | growing (upstream licence/quota trouble) |
-| `deepchart_vendor_estimated_spend_usd{provider="databento"}` | month-to-date metered spend — compare with the vendor portal, alert when the slope spikes |
-| `deepchart_vendor_budget_blocked_total` | any increase = the budget guard refused a pull (raise `DATABENTO_MONTHLY_USD_BUDGET` or accept less history) |
+| `deepchart_vendor_fetch_total{result="error"}` | growing (upstream quota/licence trouble) |
 | `deepchart_store_rows{table="trades"}` | slope above your retention plan |
 | `deepchart_process_resident_memory_bytes` | sustained growth (leak triage) |
 
@@ -147,10 +154,8 @@ and alert on `level:"error"`. Public `/healthz` returns only
 2. **Single process** — market contexts and the SQLite file live in-process; 500 sessions is the
    default ceiling. Scaling out needs sticky sessions plus a shared store (Postgres/ClickHouse),
    which is not implemented.
-3. **Vendor budget** — history pagination calls a paid API; `MAX_VENDOR_FETCHES_PER_HOUR` caps the
-   damage per account and `DATABENTO_MONTHLY_USD_BUDGET` caps the month (watch
-   `deepchart_vendor_fetch_total` and `deepchart_vendor_estimated_spend_usd`). Full playbook:
-   [DATABENTO.md](DATABENTO.md).
+3. **Vendor budget** — history pagination calls an API; `MAX_VENDOR_FETCHES_PER_HOUR` caps the
+   damage per account.
 4. **Node upgrade** — `node:sqlite` is still experimental upstream: pin the version, re-run
    `pnpm test` before bumping.
 
@@ -158,8 +163,8 @@ and alert on `level:"error"`. Public `/healthz` returns only
 
 ## 8. Legal pre-flight (blocking for a paid launch)
 
-* **Exchange data redistribution**: serving CME/CBOE data to third parties needs a licence from your
-  vendor (Databento/Tradovate) *and* the exchange's redistribution terms. The code cannot grant
+* **Exchange data redistribution**: serving market data to third parties needs appropriate licences
+  from your data vendor (Databento) and exchange redistribution terms. The code cannot grant
   this — get it in writing before charging money.
 * Fill `TERMS.md` / `PRIVACY.md` with your legal entity, jurisdiction and contact address.
 * `LICENSE` (MIT) covers the source code only — **not** the market data flowing through it.

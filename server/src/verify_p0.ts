@@ -46,7 +46,6 @@ async function startServer(): Promise<ChildProcess> {
       PORT: TEST_PORT.toString(),
       DEV_HOOKS: '1',
       DEMO: '0',
-      DATABENTO_TRANSPORT_READY: '0',
       DEFAULT_SYMBOL: 'ES',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

@@ -3,7 +3,7 @@ import { ArrowRight, BarChart3, Check, Command, Layers, LineChart, LogOut, Play,
 import { InstrumentOption } from './Navigation/SymbolDropdown';
 import { loadFavoriteSymbols, loadRecentSymbols } from '../services/symbolPrefs';
 
-export type PanelId = 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow';
+export type PanelId = 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Darkpool' | '13F';
 export type OverlayKey = 'vwap' | 'imbalances' | 'delta' | 'cvd';
 
 export interface CommandPaletteActions {
@@ -157,12 +157,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       }
     );
 
-    for (const panel of ['DOM', 'Profile', 'Tape', 'GEX', 'Flow'] as PanelId[]) {
+    for (const panel of ['DOM', 'Profile', 'Tape', 'GEX', 'Flow', 'Darkpool', '13F'] as PanelId[]) {
       list.push({
         id: `panel:${panel}`,
         section: 'Panels',
         label: `${activePanel === panel ? 'Hide' : 'Show'} ${panel} panel`,
-        hint: `Shortcut: ${(['DOM', 'Profile', 'Tape', 'GEX', 'Flow'] as PanelId[]).indexOf(panel) + 1}`,
+        hint: `Shortcut: ${(['DOM', 'Profile', 'Tape', 'GEX', 'Flow', 'Darkpool', '13F'] as PanelId[]).indexOf(panel) + 1}`,
         keywords: `panel dock ${panel} workspace`.toLowerCase(),
         active: activePanel === panel,
         icon: <Layers size={13} className="text-[#4E5965]" />,
@@ -223,11 +223,33 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   }, [instruments, currentSymbol, timeframe, chartMode, autoFollow, activePanel, overlays, actions]);
 
   const normalizedQuery = query.trim().toLowerCase();
+  const trimmedUpper = query.trim().toUpperCase();
   const visible = useMemo(() => {
-    if (!normalizedQuery) return entries.slice(0, 60);
-    const terms = normalizedQuery.split(/\s+/);
-    return entries.filter((entry) => terms.every((term) => entry.keywords.includes(term))).slice(0, 60);
-  }, [entries, normalizedQuery]);
+    let result: PaletteEntry[];
+    if (!normalizedQuery) {
+      result = entries.slice(0, 60);
+    } else {
+      const terms = normalizedQuery.split(/\s+/);
+      result = entries.filter((entry) => terms.every((term) => entry.keywords.includes(term))).slice(0, 60);
+    }
+
+    if (trimmedUpper && /^[A-Z0-9.\-_]{1,12}$/.test(trimmedUpper)) {
+      const alreadyHasExact = result.some((e) => e.label.toUpperCase() === trimmedUpper);
+      if (!alreadyHasExact) {
+        result.unshift({
+          id: `sym:direct:${trimmedUpper}`,
+          section: 'Direct Symbol',
+          label: trimmedUpper,
+          hint: `Load ${trimmedUpper} directly from Databento API`,
+          badge: 'API',
+          keywords: trimmedUpper.toLowerCase(),
+          icon: <BarChart3 size={13} className="text-[#22D3EE]" />,
+          run: () => actions.selectSymbol(trimmedUpper),
+        });
+      }
+    }
+    return result;
+  }, [entries, normalizedQuery, trimmedUpper, actions]);
 
   const sections = useMemo(() => {
     const order: string[] = [];
@@ -252,7 +274,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   if (!isOpen) return null;
 
   const runEntry = (entry: PaletteEntry | undefined) => {
-    if (!entry) return;
+    if (!entry) {
+      if (query.trim()) {
+        actions.selectSymbol(query.trim().toUpperCase());
+        onClose();
+      }
+      return;
+    }
     entry.run();
     onClose();
   };
@@ -266,7 +294,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       setActiveIndex((prev) => (visible.length === 0 ? 0 : (prev - 1 + visible.length) % visible.length));
     } else if (event.key === 'Enter') {
       event.preventDefault();
-      runEntry(visible[effectiveIndex]);
+      if (visible.length > 0 && visible[effectiveIndex]) {
+        runEntry(visible[effectiveIndex]);
+      } else if (query.trim()) {
+        actions.selectSymbol(query.trim().toUpperCase());
+        onClose();
+      }
     } else if (event.key === 'Escape') {
       event.preventDefault();
       onClose();
@@ -330,8 +363,22 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
           ))}
 
           {visible.length === 0 && (
-            <div className="px-3 py-8 text-center text-[12px] text-[#7F8B97]">
-              No match for “{query}” — try a root (ES), a timeframe (1m) or a panel (DOM).
+            <div className="px-3 py-6 text-center text-[12px] text-[#7F8B97] flex flex-col items-center gap-2.5">
+              <div>No command match for “{query}”</div>
+              {query.trim() && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    actions.selectSymbol(query.trim().toUpperCase());
+                    onClose();
+                  }}
+                  className="px-3 py-1.5 rounded bg-[#1C2630] hover:bg-[#25303A] text-[#22D3EE] font-mono text-xs font-semibold border border-[#22D3EE]/30 hover:border-[#22D3EE]/60 transition-colors flex items-center gap-1.5"
+                >
+                  <span>Load</span>
+                  <span className="underline decoration-[#22D3EE]">{query.trim().toUpperCase()}</span>
+                  <span>directly from Databento API</span>
+                </button>
+              )}
             </div>
           )}
         </div>

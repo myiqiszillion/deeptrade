@@ -57,10 +57,10 @@
 | Instrument | Provider | History | Realtime | Footprint | DOM |
 |---|---|---|---|---|---|
 | **ES/MES/NQ/MNQ (Default)** | none | none | unavailable | unavailable | unavailable |
-| **CME qua Tradovate** | Tradovate | bars/quote-based | live feed | quote-derived | vendor DOM L2 |
-| **CME qua Databento** | Databento | MBO / MBP-1 / historical bars | live DBN | full tick footprint | full MBO book |
+| **Futures & Options** | Databento | historical trades & bars | live feed (WebSocket) | tick footprint | orderflow & quotes |
+| **Crypto (BTC/ETH)** | Binance | klines | live trades | tick footprint | 20-level DOM |
 
-> **Chính sách Fail-Closed:** Khi chưa có license/credential cho nhà cung cấp futures, toàn bộ feed và lịch sử CME mặc định là `UNAVAILABLE`. Hệ thống tuyệt đối không sinh dữ liệu giả hay nến giả.
+> **Chính sách Fail-Closed:** Khi chưa có license/credential cho nhà cung cấp futures (`DATABENTO_API_KEY`), toàn bộ feed và lịch sử mặc định là `UNAVAILABLE`. Hệ thống tuyệt đối không sinh dữ liệu giả hay nến giả.
 
 ---
 
@@ -84,11 +84,10 @@ pnpm install
 - `METRICS_TOKEN`: token bảo vệ `/metrics` (ở production, không có token ⇒ 401).
 - `STRIPE_*`: bật bán gói tự động (Checkout + webhook có xác thực chữ ký).
 - `STORE_RETENTION_DAYS` (mặc định 30): vòng đời dữ liệu tick/bar/gap — đặt `0` để giữ mãi (đĩa sẽ đầy).
-- `STORE_BARS_RETENTION_DAYS` (mặc định = `STORE_RETENTION_DAYS`, Docker image đặt 365): vòng đời riêng cho nến — nến rất nhỏ nhưng tốn tiền để tải lại, nên giữ lâu hơn tick.
+- `STORE_BARS_RETENTION_DAYS` (mặc định = `STORE_RETENTION_DAYS`, Docker image đặt 365): vòng đời riêng cho nến — nến rất nhỏ nhưng tốn thời gian tải lại, nên giữ lâu hơn tick.
 - `HISTORY_BARS_TARGET` (mặc định 1500, kẹp 100–5000): độ sâu lịch sử xin từ vendor mỗi khung thời gian khi client subscribe.
-- `DATABENTO_MONTHLY_USD_BUDGET` / `DATABENTO_COST_LOG`: chốt chi phí cho các lần kéo historical tính theo GB (gói $199/tháng **không** giới hạn phần này) — xem **[docs/DATABENTO.md](docs/DATABENTO.md)**.
-- `EXTRA_INSTRUMENTS`: 43 mã CME Group (CME/CBOT/NYMEX/COMEX) đã có sẵn; muốn thêm mã bất kỳ của `GLBX.MDP3` (QM, BZ, PL, SR3, ETH…) thì khai spec — không cần sửa code. Cú pháp & lưu ý tỷ giá JPY: [docs/DATABENTO.md §3.1](docs/DATABENTO.md).
-- `SYNC_INSTRUMENTS_ON_BOOT=1` / `POST /api/v1/admin/instruments/sync`: kéo **định nghĩa hợp đồng từ Databento** để phủ toàn bộ sản phẩm CME Group (tick/multiplier do vendor cung cấp, lưu SQLite, áp lại khi restart) — xem [docs/DATABENTO.md §3.2](docs/DATABENTO.md).
+- `DATABENTO_API_KEY`: API key cho Databento để lấy lịch sử nến, trades, options chain và streaming realtime.
+- `EXTRA_INSTRUMENTS`: 43 mã CME Group (CME/CBOT/NYMEX/COMEX) đã có sẵn; muốn thêm mã bất kỳ thì khai spec — không cần sửa code.
 - CORS/WebSocket chỉ echo origin được tin cậy; `ALLOWED_ORIGINS` là allowlist chính thức, mặc định chỉ same-host + localhost.
 
 ### Tài khoản, gói & thanh toán
@@ -125,8 +124,8 @@ DeepChart có hệ thống test phân tầng rõ ràng (Unit, Integration, Proto
 |---|---|
 | `pnpm typecheck` | Kiểm tra TypeScript cho cả server và client (0 lỗi) |
 | `pnpm test` | Chạy toàn bộ test suite: protocol drift, unit, integration và **client bundle smoke test** |
-| `pnpm test:unit` | Unit: auth/entitlement/store/sessionCalendar/footprint/replay/validate/**passwords**/**loginGuard (lockout, rate limit)**/**billing (plans, entitlements, chữ ký Stripe)**/**retention (purge, WAL, stats)**/**databentoUsage (cost guard)**/**instruments (43 mã CME)**/**instrumentDefinitions (definition sync)** |
-| `pnpm test:integration` | Integration: chartSmoke, historyApi, websocket, **authFlow (đăng ký → lockout → mạo danh bị chặn → admin cấp gói → webhook → WS bằng token)**, tradovateAdapter, databentoAdapter |
+| `pnpm test:unit` | Unit: auth/entitlement/store/sessionCalendar/footprint/replay/validate/**passwords**/**loginGuard (lockout, rate limit)**/**billing (plans, entitlements, chữ ký Stripe)**/**retention (purge, WAL, stats)**/**instruments (43 mã CME)** |
+| `pnpm test:integration` | Integration: chartSmoke, historyApi, websocket, **authFlow (đăng ký → lockout → mạo danh bị chặn → admin cấp gói → webhook → WS bằng token)** |
 | `pnpm test:protocol` | Chống protocol drift giữa server và client WebSocket messages (`scripts/check-protocol-drift.mjs`) |
 | `pnpm test:client` | Kiểm tra bundle đã build: có đủ surface của sản phẩm (palette, favourites, empty-state actions, phím tắt, design tokens) và **đã code-split**, entry chunk < 480 KB (`scripts/check-client-bundle.mjs`) |
 | `pnpm verify:p0` | 13 test kiểm tra tính toàn vẹn server và rate limiting (harness dev, cần DB local có tick) |
@@ -152,8 +151,8 @@ CI (`.github/workflows/ci.yml`) chạy: typecheck → lint → protocol → unit
 
 Xem runbook đầy đủ: **[docs/DEPLOY.md](docs/DEPLOY.md)** (TLS, biến môi trường bắt buộc, Stripe,
 retention/backup, monitoring, cảnh báo pháp lý về licence phân phối dữ liệu).
-Về dữ liệu CME/Databento (gói $199 dùng được gì, khi nào phải xin phép bán lại, cách chặn hoá đơn):
-**[docs/DATABENTO.md](docs/DATABENTO.md)**.
+**Còn thiếu gì / dở dang chỗ nào: [docs/STATUS.md](docs/STATUS.md)** — bảng hoàn thiện theo từng hạng mục, kèm cách tự kiểm tra.
+`scratch/*.ts` là script kiểm tra tay của dev (không thuộc test suite); cổng phát hành là `pnpm test`.
 
 ```bash
 cp .env.example .env      # điền AUTH_JWT_SECRET, ADMIN_*, provider keys
@@ -168,7 +167,6 @@ node --env-file=.env server/dist/index.js
 | Metrics | `GET /metrics` (Prometheus text) — cần `METRICS_TOKEN` hoặc admin |
 | Nhật ký | `LOG_FORMAT=json` → mỗi dòng một JSON object |
 | Dọn dữ liệu | `STORE_RETENTION_DAYS`, `STORE_BARS_RETENTION_DAYS` (bars giữ lâu hơn tick), maintenance 15 phút/lần, VACUUM mỗi ngày |
-| Chi phí vendor | `DATABENTO_MONTHLY_USD_BUDGET` + ước tính `metadata.get_cost` trước mỗi lần kéo; số dư tháng ở `GET /api/v1/admin/metrics` → `vendorUsage`, gauge `deepchart_vendor_estimated_spend_usd` |
 | Sao lưu | `node scripts/backup_db.mjs` (`VACUUM INTO` + `integrity_check`, giữ 7 bản) |
 | Cấp gói | `POST /api/v1/admin/users/:id/plan` (admin) hoặc Stripe Checkout + webhook |
 

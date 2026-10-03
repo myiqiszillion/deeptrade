@@ -32,7 +32,7 @@ export interface MarketTrade {
   aggressorProvenance?: AggressorProvenance;
   /** Sequence identifier from vendor for gap detection. */
   sequenceId?: number | string;
-  /** Data source provider identifier (e.g. 'tradovate', 'databento', 'fixture'). */
+  /** Data source provider identifier (e.g. 'databento', 'binance', 'fixture'). */
   sourceProvider?: string;
   /** Quality metadata flags. */
   qualityFlags?: TradeQualityFlags;

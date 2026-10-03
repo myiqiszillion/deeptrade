@@ -1,4 +1,4 @@
-import { FUTURES_INSTRUMENTS, parseContractSymbol } from '../futuresConfig.js';
+import { FUTURES_INSTRUMENTS, getOrRegisterInstrument, parseContractSymbol } from '../futuresConfig.js';
 import { DataType, Entitlement } from './types.js';
 import { marketDataStore } from '../storage/marketDataStore.js';
 
@@ -123,7 +123,7 @@ export class EntitlementService {
     }
 
     const parsed = parseContractSymbol(symbol);
-    const instrument = FUTURES_INSTRUMENTS[symbol] || FUTURES_INSTRUMENTS[parsed.root];
+    const instrument = getOrRegisterInstrument(symbol);
     if (!instrument) return false;
 
     const activeList = this.getUserEntitlements(userId);
@@ -142,8 +142,8 @@ export class EntitlementService {
           'cbot',
           'nymex',
           'comex',
-          'tradovate',
           'databento',
+          'binance',
           instrument.exchange.toLowerCase(),
           (process.env.FUTURES_PROVIDER || '').toLowerCase(),
         ]);

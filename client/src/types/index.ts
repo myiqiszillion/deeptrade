@@ -128,7 +128,7 @@ export interface FootprintBar {
 }
 
 /**
- * A REAL historical bar from before the live session (e.g. Tradovate `md/getchart`).
+ * A REAL historical bar from before the live session (e.g. Databento historical bars).
  *
  * Bar aggregate only — there is deliberately no `levels` field, because a bar cannot yield a
  * per-price bid/ask split. It is drawn as a plain candle behind the live footprint.
@@ -290,7 +290,7 @@ export interface OptionsFlowTrade {
 }
 
 export type WSClientMessage =
-  | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'cme' | 'databento' | 'tradovate' | string }
+  | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'databento' | 'binance' | string }
   | {
       type: 'REPLAY_CONTROL';
       action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP' | 'RETURN_TO_LIVE';
@@ -334,6 +334,7 @@ export type WSServerMessage =
   | { type: 'GEX_UPDATE'; profile: GEXProfile }
   | { type: 'OPTIONS_FLOW'; trade: OptionsFlowTrade }
   | { type: 'REPLAY_STATE'; progress: ReplayProgress }
+  | { type: 'REPLAY_FRAME'; frame: { timestamp: number; price: number; volume: number; gex?: number | null; iv?: number | null; esPrice?: number | null; nqPrice?: number | null; signal?: any } }
   | { type: 'PONG'; timestamp: number }
   | { type: 'ERROR'; code: string; message: string }
   | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; provider?: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number | { provider: string; symbol: string; timeframe?: string; beforeTime: number; beforeId?: string }; requestId?: string };

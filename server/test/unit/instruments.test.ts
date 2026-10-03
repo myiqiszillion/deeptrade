@@ -6,7 +6,6 @@ import {
   parseExtraInstruments,
   tickValueFor,
 } from '../../src/futuresConfig.js';
-import { DATABENTO_SYMBOL_MAP, resolveDatabentoSymbol } from '../../src/marketData/databentoAdapter.js';
 
 /** Roots the product promises out of the box (CME Group liquid universe served by GLBX.MDP3). */
 const REQUIRED_ROOTS = [
@@ -90,7 +89,7 @@ export async function runInstrumentCatalogTests(): Promise<void> {
     assert.equal(inst.contractType, 'CONTINUOUS', `${key}: served as a continuous contract`);
     assert.ok(inst.sessionScheduleId.length > 0, `${key}: has a session schedule`);
     // The app has no FX conversion anywhere (whale notional, P&L), so every catalogued contract must be
-    // USD-quoted. JPY-denominated roots (NIY/MJY) are deliberately absent — see docs/DATABENTO.md.
+    // USD-quoted.
     assert.equal(inst.currency, 'USD', `${key}: USD-quoted`);
     assert.ok(inst.basePrice >= 0, `${key}: basePrice is not negative`);
     // Sanity bounds catching a typo'd spec (e.g. tick 5 on an index future). Some contracts legitimately
@@ -113,16 +112,6 @@ export async function runInstrumentCatalogTests(): Promise<void> {
     assert.equal(inst.tickValue, tickValue, `${root}: tickValue`);
   }
 
-  // Databento symbology is derived for every instrument (including operator-added ones).
-  for (const root of symbols) {
-    const expected = root === 'GC' ? 'GC.v.0' : `${root}.c.0`;
-    assert.equal(DATABENTO_SYMBOL_MAP[root], expected, `${root}: continuous vendor symbol`);
-  }
-  for (const root of ['ZN', '6E', 'ZC', 'MET']) {
-    const resolved = resolveDatabentoSymbol(root);
-    assert.equal(resolved.vendorSymbol, `${root}.c.0`, `${root}: resolves to the calendar continuous`);
-    assert.equal(resolved.stypeIn, 'continuous', `${root}: uses continuous symbology`);
-  }
 
   // EXTRA_INSTRUMENTS: the long tail of GLBX.MDP3 stays reachable without a code change.
   const parsed = parseExtraInstruments(

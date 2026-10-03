@@ -43,7 +43,7 @@ asking the operator. You can also sign out at any time, which revokes your token
 ## 6. Processors
 * Payment provider: `Stripe` (if billing is enabled) — receives the checkout identifiers and email
   you provide there.
-* Market data vendors: `Databento` / `Tradovate` / `CBOE` — they receive our API credentials and the
+* Market data vendors: `Databento` / `CBOE` / `Binance` — they receive our API credentials and the
   symbology of the instruments we subscribe to, **not** your personal data.
 * Hosting provider: `<PROVIDER / REGION>`.
 

@@ -1,6 +1,6 @@
 import { CboeOptionsProvider } from '../dataFeeds/cboeOptionsFeed.js';
 import { FootprintEngine } from '../footprintEngine.js';
-import { FUTURES_INSTRUMENTS, FuturesInstrument } from '../futuresConfig.js';
+import { FUTURES_INSTRUMENTS, FuturesInstrument, getOrRegisterInstrument } from '../futuresConfig.js';
 import { GEXEngine, GEXProfile } from '../gexEngine.js';
 import { OrderbookManager } from '../orderbook.js';
 import { ProfileEngine } from '../profileEngine.js';
@@ -14,15 +14,11 @@ import {
 } from '../types.js';
 import { VWAPEngine } from '../vwapEngine.js';
 import { createMarketDataFeed } from './registry.js';
-import { DATABENTO_SYMBOL_MAP, resolveDatabentoSymbol } from './databentoAdapter.js';
-import { fetchDatabentoBars, fetchDatabentoTrades } from './databentoHistory.js';
 import { historyBarsTarget } from './historyDepth.js';
-import { resolveVendorSymbol } from './tradovateAdapter.js';
-import { readTradovateConfig } from './tradovateConfig.js';
-import { fetchTradovateHistoryBars } from './tradovateHistory.js';
 import { FeedStatusEvent, MarketDataFeed, MarketDepthEvent, MarketTrade } from './types.js';
 import { marketDataStore } from '../storage/marketDataStore.js';
 import { SessionCalendar } from '../calendar/sessionCalendar.js';
+import { microstructureEngine } from '../microstructure/engine.js';
 
 export const TIMEFRAMES: Record<string, number> = {
   '1s': 1000,
@@ -59,15 +55,15 @@ function mergeHistoryBars(previous: HistoricalBar[], incoming: HistoricalBar[]):
 export type HistorySource = 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
 
 export interface HistoryProvider {
-  fetchTradovateBars(
-    vendorSymbol: string,
+  fetchBars(
+    symbol: string,
     config: any,
     options: { barMinutes: number; elements: number; beforeTime: number; signal: AbortSignal }
   ): Promise<HistoricalBar[]>;
 }
 
 export const defaultHistoryProvider: HistoryProvider = {
-  fetchTradovateBars: fetchTradovateHistoryBars,
+  fetchBars: async () => [],
 };
 
 /**
@@ -86,6 +82,21 @@ export class MarketContext {
   public feedReason: string | undefined = 'no feed connected yet';
   public lastTradeTs = 0;
   public lastDepthTs = 0;
+
+  public getEffectiveProvider(): string {
+    if (this.provider && this.provider !== 'none') return this.provider;
+    if (this.provider === 'none') {
+      if (this.feedLifecycleState !== 'STOPPED') return 'none';
+      const feedResult = createMarketDataFeed(this.symbol, this.instrument, {
+        onTrade: () => {},
+        onDepth: () => {},
+        onStatus: () => {},
+        onError: () => {},
+      });
+      return feedResult.provider;
+    }
+    return (process.env.FUTURES_PROVIDER || 'databento').toLowerCase();
+  }
 
   private activeFeedToken = 0;
   private orderbook: OrderbookManager;
@@ -162,6 +173,14 @@ export class MarketContext {
 
     // Initialize default footprint engine (1m)
     this.ensureFootprintEngine('1m');
+
+    const initialFeed = createMarketDataFeed(this.symbol, this.instrument, {
+      onTrade: () => {},
+      onDepth: () => {},
+      onStatus: () => {},
+      onError: () => {},
+    });
+    this.provider = initialFeed.provider;
   }
 
   public computeDeepTradeThresholdUsd(): number {
@@ -412,25 +431,20 @@ export class MarketContext {
     if (this.feedStatus !== 'LIVE') this.setFeedStatus('LIVE');
 
     // 3. Trade Sequence Gap Detection
-    // Note: Databento DBN sequenceId is a channel-level packet sequence that advances across
-    // ALL order book events (adds, modifies, cancels, depth snapshots) as well as trades.
-    // Consecutive trades are therefore expected to skip sequence numbers. Only check for
-    // contiguous sequence gaps if the provider supplies dedicated trade-level sequencing.
+    // Check for contiguous sequence gaps if the provider supplies dedicated trade-level sequencing.
     if (trade.sequenceId !== undefined) {
       const seq = typeof trade.sequenceId === 'number' ? trade.sequenceId : parseInt(String(trade.sequenceId), 10);
       if (Number.isFinite(seq)) {
-        if (this.provider !== 'databento') {
-          if (this.lastTradeSeq !== undefined && seq > this.lastTradeSeq + 1) {
-            const gapCount = seq - (this.lastTradeSeq + 1);
-            console.warn(`[MarketContext] Trade sequence gap for ${this.symbol}: expected ${this.lastTradeSeq + 1}, got ${seq} (${gapCount} missing)`);
-            marketDataStore.recordGap(
-              this.symbol,
-              this.provider,
-              this.lastTradeEventTs || trade.ts,
-              trade.ts,
-              `Trade sequence gap (${gapCount} missing): ${this.lastTradeSeq} -> ${seq}`
-            );
-          }
+        if (this.lastTradeSeq !== undefined && seq > this.lastTradeSeq + 1) {
+          const gapCount = seq - (this.lastTradeSeq + 1);
+          console.warn(`[MarketContext] Trade sequence gap for ${this.symbol}: expected ${this.lastTradeSeq + 1}, got ${seq} (${gapCount} missing)`);
+          marketDataStore.recordGap(
+            this.symbol,
+            this.provider,
+            this.lastTradeEventTs || trade.ts,
+            trade.ts,
+            `Trade sequence gap (${gapCount} missing): ${this.lastTradeSeq} -> ${seq}`
+          );
         }
         this.lastTradeSeq = seq;
       }
@@ -486,6 +500,7 @@ export class MarketContext {
     if (this.onTickRecord) {
       this.onTickRecord(tick);
     }
+    microstructureEngine.recordTick(tick);
 
     if (this.isBackfillingHistory) {
       this.liveBuffer.push(tick);
@@ -669,30 +684,22 @@ export class MarketContext {
     let source: HistorySource = 'NONE';
 
     try {
-      const configuredFuturesProvider = (process.env.FUTURES_PROVIDER || '').toLowerCase();
-      const effectiveProvider = this.provider || configuredFuturesProvider;
+      const effectiveProvider = this.getEffectiveProvider();
 
-        if (effectiveProvider === 'databento' && process.env.DATABENTO_API_KEY && process.env.DATABENTO_TRANSPORT_READY !== '0') {
-          const resolved = resolveDatabentoSymbol(this.symbol, {
-            symbols: this.symbol === 'ES' ? process.env.DATABENTO_SYMBOLS : undefined,
-            stypeIn: process.env.DATABENTO_STYPE_IN,
-          });
+        if (effectiveProvider === 'databento' && process.env.DATABENTO_API_KEY) {
           try {
-            ticks = await fetchDatabentoTrades(
-              resolved.vendorSymbol,
-              {
-                apiKey: process.env.DATABENTO_API_KEY,
-                dataset: process.env.DATABENTO_DATASET,
-                stypeIn: resolved.stypeIn,
-              },
-              { limit: 3000, beforeTime, signal }
-            );
-            if (ticks.length > 0) {
+            const stored = marketDataStore.queryTrades({
+              provider: 'databento',
+              symbol: this.symbol,
+              limit: 3000,
+              beforeTime,
+            });
+            if (stored.trades.length > 0) {
+              ticks = stored.trades;
               source = 'REAL_TICKS';
-              marketDataStore.saveTrades(ticks, symbol, 'databento');
             }
           } catch (tradesErr) {
-            console.warn(`[History] fetchDatabentoTrades failed for ${symbol}: ${(tradesErr as Error).message}`);
+            console.warn(`[History] Databento trades load failed for ${symbol}: ${(tradesErr as Error).message}`);
           }
         }
 
@@ -823,10 +830,9 @@ export class MarketContext {
     const cached = this.historyBarsByTf.get(timeframe);
     if (cached && cached.length > 0 && !forceRefresh) return cached;
 
-    const configuredFuturesProvider = (process.env.FUTURES_PROVIDER || '').toLowerCase();
-    const effectiveProvider = this.provider || configuredFuturesProvider;
+    const effectiveProvider = this.getEffectiveProvider();
 
-    if (effectiveProvider !== 'tradovate' && effectiveProvider !== 'databento') {
+    if (effectiveProvider !== 'databento') {
       // Check persistent store if no live futures provider configured
       const stored = marketDataStore.queryBars({
         provider: effectiveProvider,
@@ -859,28 +865,10 @@ export class MarketContext {
         let bars: HistoricalBar[] = [];
         const providerName = effectiveProvider;
 
-        if (providerName === 'databento') {
-          if (process.env.DATABENTO_TRANSPORT_READY === '0') {
-            return [];
-          }
-          const resolved = resolveDatabentoSymbol(this.symbol, {
-            symbols: this.symbol === 'ES' ? process.env.DATABENTO_SYMBOLS : undefined,
-            stypeIn: process.env.DATABENTO_STYPE_IN,
-          });
-          bars = await fetchDatabentoBars(
-            resolved.vendorSymbol,
-            {
-              apiKey: process.env.DATABENTO_API_KEY,
-              dataset: process.env.DATABENTO_DATASET,
-              stypeIn: resolved.stypeIn,
-            },
-            { barMinutes: tfMs / 60000, elements: historyBarsTarget(), beforeTime: this.historyBoundary, signal }
-          );
-        } else {
-          const config = readTradovateConfig();
-          bars = await this.historyProvider.fetchTradovateBars(
-            resolveVendorSymbol(this.symbol, this.instrument, config),
-            config,
+        if (providerName === 'databento' && process.env.DATABENTO_API_KEY) {
+          bars = await this.historyProvider.fetchBars(
+            this.symbol,
+            { apiKey: process.env.DATABENTO_API_KEY },
             { barMinutes: tfMs / 60000, elements: historyBarsTarget(), beforeTime: this.historyBoundary, signal }
           );
         }
@@ -948,7 +936,7 @@ export class MarketContext {
     if (this.historyBarsByTf.has(timeframe)) return;
 
     const stored = marketDataStore.queryBars({
-      provider: this.provider,
+      provider: this.getEffectiveProvider(),
       symbol: this.symbol,
       timeframe,
       limit: 500,
@@ -994,12 +982,19 @@ export class MarketContext {
 
     if (this.historyTicks.length === 0) {
       const storedTrades = marketDataStore.queryTrades({
-        provider: this.provider,
+        provider: this.getEffectiveProvider(),
         symbol: this.symbol,
         limit: 1000,
         beforeTime: this.historyBoundary,
       });
-      if (storedTrades.trades.length > 0) {
+      // Only replay stored trades into the live footprint engine if they belong to the current active session
+      // (within the last 24h, or within 1h of the newest history bar) rather than stale ticks from days ago
+      const newestTradeTs = storedTrades.trades.length > 0 ? storedTrades.trades[0].timestamp : 0;
+      const cachedHistory = this.historyBarsByTf.get(timeframe) || this.historyBars;
+      const newestHistoryTs = cachedHistory.length > 0 ? cachedHistory[cachedHistory.length - 1].time : 0;
+      const isRecentEnough = newestTradeTs >= Math.max(Date.now() - 24 * 3600 * 1000, newestHistoryTs - 3600 * 1000);
+
+      if (storedTrades.trades.length > 0 && isRecentEnough) {
         this.historyTicks = storedTrades.trades.slice().reverse();
         const firstTs = this.historyTicks[0]?.timestamp || 0;
         this.profile.reset(firstTs);
@@ -1168,7 +1163,7 @@ export class MarketContextManager {
     if (!initPromise) {
       initPromise = (async () => {
         try {
-          const instrument = FUTURES_INSTRUMENTS[symbol] || FUTURES_INSTRUMENTS.ES;
+          const instrument = getOrRegisterInstrument(symbol);
           const newCtx = new MarketContext(
             symbol,
             instrument,
