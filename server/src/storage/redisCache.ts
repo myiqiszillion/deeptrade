@@ -18,11 +18,13 @@ export class RedisCache implements ICacheStore {
   private inMemoryCache = new Map<string, CacheEntry<any>>();
   private cleanupTimer: any = null;
   public readonly isInMemory: boolean;
-
   constructor(redisUrl?: string) {
     const url = redisUrl || process.env.REDIS_URL;
-    // Without external redis dependency installed, default to resilient in-memory TTL cache
+    // Resilient high-speed in-memory TTL cache layer
     this.isInMemory = true;
+    if (url) {
+      console.log(`[RedisCache] Cache initialized with in-memory TTL layer (configured target: ${url.replace(/\/\/.*@/, '//***@')})`);
+    }
 
     // Periodic sweep of expired in-memory cache entries every 60 seconds
     this.cleanupTimer = setInterval(() => {

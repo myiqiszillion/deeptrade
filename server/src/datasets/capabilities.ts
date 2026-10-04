@@ -1,6 +1,3 @@
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
-
 export interface SymbologyFlags { raw_symbol: boolean; instrument_id: boolean; parent: boolean; continuous: boolean; figi?: boolean; isin?: boolean }
 export interface SchemaCap { available: boolean; rtype?: number; level?: string; reason?: string }
 export interface DatasetCaps {

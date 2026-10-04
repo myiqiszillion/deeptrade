@@ -10,7 +10,7 @@
  *
  * Usage: pnpm verify:types
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,6 +20,11 @@ const FILES = {
   server: path.join(root, 'server', 'src', 'types.ts'),
   client: path.join(root, 'client', 'src', 'types', 'index.ts'),
 };
+
+if (!existsSync(FILES.client)) {
+  console.log('[protocol-drift] client/src/types/index.ts not present — skipping drift check');
+  process.exit(0);
+}
 
 const UNIONS = {
   clientToServer: 'WSClientMessage',

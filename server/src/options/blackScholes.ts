@@ -82,8 +82,7 @@ export function bsGreeks(inputs: BsInputs): Greeks | null {
     if (Number.isFinite(vannaRaw)) vanna = vannaRaw / 100; // per 1% vol like vega
     const denom = 2 * T * sigma * sqrtT;
     if (denom !== 0 && Number.isFinite(denom)) {
-      const charmYearCall = -pdf * (2 * r * T - d2 * sigma * sqrtT) / denom;
-      const charmYear = type === 'call' ? charmYearCall : -charmYearCall;
+      const charmYear = -pdf * (2 * r * T - d2 * sigma * sqrtT) / denom;
       if (Number.isFinite(charmYear)) charm = charmYear / 365; // per day like theta
     }
   } catch { /* charm/vanna optional — core greeks already validated */ }

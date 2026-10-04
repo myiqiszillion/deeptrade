@@ -66,7 +66,22 @@ export function buildExposure(
 
   const allStrikes = [...buckets.keys()].sort((a, b) => a - b);
   const nearStrikes = allStrikes.filter((s) => Math.abs(s - spot) / spot <= 0.05);
-  const usedStrikes = nearStrikes.length >= 10 ? nearStrikes : allStrikes.slice(0, 80);
+  let usedStrikes = nearStrikes;
+  if (usedStrikes.length < 10) {
+    let closestIdx = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < allStrikes.length; i++) {
+      const diff = Math.abs(allStrikes[i] - spot);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closestIdx = i;
+      }
+    }
+    const start = Math.max(0, closestIdx - 40);
+    const end = Math.min(allStrikes.length, start + 80);
+    const adjustedStart = Math.max(0, end - 80);
+    usedStrikes = allStrikes.slice(adjustedStart, end);
+  }
 
   const levels: ExposureLevel[] = usedStrikes.map((strike) => {
     const b = buckets.get(strike)!;

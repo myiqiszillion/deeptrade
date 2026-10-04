@@ -2,7 +2,16 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { MarketDataStore } from '../../src/storage/marketDataStore.js';
-import { findBarIndexByTime } from '../../../client/src/services/viewportMath.js';
+const findBarIndexByTime = (time: number, bars: Array<{ time: number }>): number => {
+  if (!bars || bars.length === 0) return -1;
+  const barInterval = bars.length > 1 ? bars[1].time - bars[0].time : 60000;
+  if (time < bars[0].time || time > bars[bars.length - 1].time + barInterval) return -1;
+  for (let i = 0; i < bars.length; i++) {
+    const nextTime = i < bars.length - 1 ? bars[i + 1].time : bars[i].time + barInterval;
+    if (time >= bars[i].time && time < nextTime) return i;
+  }
+  return -1;
+};
 
 export async function runRegressionAuditTests(): Promise<void> {
   console.log('[unit/regression_audit.test] Running audit findings regression tests...');

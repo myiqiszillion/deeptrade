@@ -33,22 +33,16 @@ import {
 } from './marketData/quoteBoard.js';
 import { historyBarsTarget } from './marketData/historyDepth.js';
 import { DatabentoHttpClient } from './databento/client.js';
+import { createDatabentoRouter } from './databento/routes.js';
+import { createChartRouter } from './chart/routes.js';
 import { RedisCache } from './storage/redisCache.js';
 import { createOptionsRouter } from './marketData/optionsRoutes.js';
-import { syncInstrumentSpecs } from './marketData/instrumentSync.js';
 import { createExposureRouter } from './options/exposureRoutes.js';
 import { createVolSurfaceRouter } from './options/volSurfaceRoutes.js';
 import { snapshotStore } from './quant/snapshotStore.js';
 import { microstructureEngine } from './microstructure/engine.js';
 import { buildMarketImpact } from './quant/dealerPositioning.js';
-import { findSimilarDays, summarizeObservations } from './intelligence/historicalIntelligence.js';
-import { buildCrossAssetEvidence } from './intelligence/crossAsset.js';
-import { emitEvent, listEvents } from './intelligence/eventEngine.js';
-import { evaluateSignals } from './signals/featureScores.js';
 import { createBacktestRouter } from './research/backtest.js';
-import { createLabRouter } from './research/lab.js';
-import { buildMarketState } from './ai/marketState.js';
-import { createCopilotRouter } from './ai/copilot.js';
 import { listDatasets } from './datasets/capabilities.js';
 import { listSchemas } from './datasets/schemaRegistry.js';
 import { instrumentMaster } from './instruments/master.js';
@@ -57,8 +51,7 @@ import { optionsSymbolResolver } from './symbols/optionsResolver.js';
 import { futuresSymbolResolver } from './symbols/futuresResolver.js';
 import { getTradingHours } from './sessions/tradingSessions.js';
 import { marketStatusEngine } from './sessions/marketStatus.js';
-import { historicalEngine } from './databento/historicalEngine.js';
-import { rawStore } from './storage/rawStore.js';
+import { syncInstrumentSpecs } from './marketData/instrumentSync.js';
 
 // Test runs must stay hermetic: hydrating the developer's .env would re-introduce vendor
 // credentials and STORAGE_PATH after the suites deliberately stripped them.
@@ -303,17 +296,24 @@ function rateLimitOrReject(
 
 /** Read the raw body (Stripe signatures are computed over the exact bytes). */
 function readRawBody(req: IncomingMessage, maxBytes = 262144): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let data = '';
+    let destroyed = false;
     req.on('data', (chunk) => {
+      if (destroyed) return;
       data += chunk;
       if (data.length > maxBytes) {
+        destroyed = true;
         req.destroy();
-        resolve(data);
+        reject(new Error('Payload too large'));
       }
     });
-    req.on('end', () => resolve(data));
-    req.on('error', () => resolve(data));
+    req.on('end', () => {
+      if (!destroyed) resolve(data);
+    });
+    req.on('error', (err) => {
+      if (!destroyed) reject(err);
+    });
   });
 }
 
@@ -335,7 +335,7 @@ function userIdForUsername(username: string): string {
 import { createDatabentoHistoryProvider } from './marketData/databentoHistoryProvider.js';
 const databentoClient = new DatabentoHttpClient();
 const databentoHistoryProvider = createDatabentoHistoryProvider(databentoClient);
-const contextManager = new MarketContextManager(undefined, undefined, undefined, databentoHistoryProvider);
+const contextManager = new MarketContextManager(undefined, undefined, databentoHistoryProvider);
 const redisCache = new RedisCache();
 const handleOptionsRequest = createOptionsRouter({
   dbClient: databentoClient,
@@ -345,8 +345,8 @@ const handleOptionsRequest = createOptionsRouter({
 const handleExposureRequest = createExposureRouter({ store: marketDataStore, cache: redisCache });
 const handleVolSurfaceRequest = createVolSurfaceRouter();
 const handleBacktestRequest = createBacktestRouter();
-const handleLabRequest = createLabRouter();
-const handleCopilotRequest = createCopilotRouter();
+const handleDatabentoRequest = createDatabentoRouter({ client: databentoClient });
+const handleChartRequest = createChartRouter({ client: databentoClient });
 
 function createSession(socket: WebSocket): ChartSession {
   return new ChartSession(socket);
@@ -453,8 +453,10 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse): Promise<v
       res.writeHead(200, { 'content-type': MIME_TYPES['.html'] });
       res.end(fallback);
     } catch {
-      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-      res.end('Client build not found. Run `pnpm build` first (or set CLIENT_DIST).');
+      res.setHeader('Cache-Control', 'no-store');
+      applySecurityHeaders(res, { html: true });
+      res.writeHead(200, { 'content-type': MIME_TYPES['.html'] });
+      res.end('<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>DeepChart</title></head><body><div id="root"></div></body></html>');
     }
   }
 }
@@ -634,6 +636,16 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
+    // Register any synced Databento specs into catalog
+    try {
+      const storedSpecs = marketDataStore.listInstrumentSpecs('databento');
+      for (const spec of storedSpecs) {
+        if (!FUTURES_INSTRUMENTS[spec.root]) {
+          getOrRegisterInstrument(spec.root);
+        }
+      }
+    } catch {}
+
     // List all instruments
     const list = Object.values(FUTURES_INSTRUMENTS).map((inst) => {
       const provider = futuresProvider;
@@ -709,13 +721,10 @@ const httpServer = createServer(async (req, res) => {
 
     let profile = contextManager.getGexEngine().getProfile(sym);
     if (!profile) {
-      try {
-        const chain = await contextManager.getCboeProvider().fetchChain(sym);
-        if (chain) {
-          profile = contextManager.getGexEngine().buildFromChain(sym, chain.spotPrice, chain.contracts);
-        }
-      } catch (err) {
-        console.warn(`[GEX API] Error fetching chain for ${sym}:`, (err as Error).message);
+      const snap = marketDataStore.getLatestExposure(sym === 'SPX' ? 'SPY' : sym);
+      if (snap) {
+        sendJson(res, 200, snap);
+        return;
       }
     }
     if (!profile) {
@@ -741,6 +750,20 @@ const httpServer = createServer(async (req, res) => {
     }
     sendJson(res, 200, { optionsFlow: flow, count: flow.length });
     return;
+  }
+
+  // 7a. Full Databento Official API Suite
+  if (req.url?.startsWith('/api/v1/databento/')) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const handled = await handleDatabentoRequest(req, res, url);
+    if (handled) return;
+  }
+
+  // 7a-1. TradingView Universal Datafeed (UDF) & Institutional Chart Order Flow API
+  if (req.url?.startsWith('/api/v1/udf/') || req.url?.startsWith('/api/v1/chart/')) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const handled = await handleChartRequest(req, res, url);
+    if (handled) return;
   }
 
   // 7b. Databento Options Intelligence API
@@ -785,56 +808,10 @@ const httpServer = createServer(async (req, res) => {
     if (!snap) { sendJson(res, 404, { error: `No snapshot for ${underlying}` }); return; }
     sendJson(res, 200, snap); return;
   }
-  // Intelligence & Research & AI (grouped for readability; each router returns false if not matched)
-  if (req.url?.startsWith('/api/v1/intelligence/')) {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    if (url.pathname === '/api/v1/intelligence/similar') {
-      const u = (url.searchParams.get('underlying') || url.searchParams.get('symbol') || 'SPY').toUpperCase();
-      const obs = findSimilarDays(u, 10);
-      const summary = summarizeObservations(obs);
-      sendJson(res, 200, { underlying: u, observations: obs, summary }); return;
-    }
-  }
-  if (req.url?.startsWith('/api/v1/cross-asset')) {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const u = url.searchParams.get('underlying') || url.searchParams.get('symbol') || 'SPY';
-    sendJson(res, 200, buildCrossAssetEvidence(u)); return;
-  }
-  if (req.url?.startsWith('/api/v1/events')) {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    if (req.method === 'POST') {
-      const raw = await readRawBody(req);
-      try {
-        const b = JSON.parse(raw);
-        const ev = emitEvent({ timestamp: Date.now(), underlying: String(b.underlying||'SPY').toUpperCase(), kind: b.kind || 'LARGE_FLOW', title: b.title || b.kind || 'Event', detail: b.detail, meta: b.meta });
-        sendJson(res, 201, ev); return;
-      } catch { sendJson(res, 400, { error: 'Invalid JSON' }); return; }
-    }
-    const u = url.searchParams.get('underlying') || url.searchParams.get('symbol') || undefined;
-    sendJson(res, 200, { events: listEvents(u, 100) }); return;
-  }
-  if (req.url?.startsWith('/api/v1/signals')) {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const u = url.searchParams.get('underlying') || url.searchParams.get('symbol') || 'SPY';
-    sendJson(res, 200, evaluateSignals(u)); return;
-  }
+  // Research Backtest
   if (req.url?.startsWith('/api/v1/research/backtest')) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const handled = await handleBacktestRequest(req, res, url);
-    if (handled) return;
-  }
-  if (req.url?.startsWith('/api/v1/research/query')) {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const handled = await handleLabRequest(req, res, url);
-    if (handled) return;
-  }
-  if (req.url?.startsWith('/api/v1/ai/')) {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    if (url.pathname.startsWith('/api/v1/ai/market-state')) {
-      const u = url.searchParams.get('underlying') || url.searchParams.get('symbol') || 'SPY';
-      sendJson(res, 200, buildMarketState(u)); return;
-    }
-    const handled = await handleCopilotRequest(req, res, url);
     if (handled) return;
   }
   // QuantDecay public API — datasets, schemas, instruments, symbols, symbology, futures, reference
@@ -842,9 +819,27 @@ const httpServer = createServer(async (req, res) => {
   if (req.url?.startsWith('/api/v1/schemas')) { sendJson(res, 200, { schemas: listSchemas() }); return; }
   if (req.url?.startsWith('/api/v1/instruments/search')) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const q = url.searchParams.get('q') || url.searchParams.get('asset') || '';
+    const q = (url.searchParams.get('q') || url.searchParams.get('asset') || '').trim().toUpperCase();
     const dataset = url.searchParams.get('dataset') || undefined;
-    const results = instrumentMaster.search({ asset: q || undefined, dataset });
+    let results = instrumentMaster.search({ asset: q || undefined, dataset });
+    if (results.length === 0) {
+      const specs = marketDataStore.listInstrumentSpecs('databento');
+      const filtered = q ? specs.filter(s => s.root.includes(q) || s.rawSymbol.includes(q)) : specs;
+      results = filtered.slice(0, 50).map((s, idx) => ({
+        instrumentId: idx + 1,
+        dataset: dataset || 'GLBX.MDP3',
+        publisherId: 1,
+        rawSymbol: s.rawSymbol,
+        securityType: s.instrumentClass,
+        asset: s.root,
+        underlying: s.underlying,
+        exchange: s.exchange,
+        currency: s.currency,
+        tickSize: s.tickSize,
+        multiplier: s.pointValue,
+        isContinuous: true,
+      }));
+    }
     sendJson(res, 200, { instruments: results }); return;
   }
   if (req.url?.startsWith('/api/v1/symbols/options/chain')) {
@@ -861,13 +856,85 @@ const httpServer = createServer(async (req, res) => {
   }
   if (req.url?.startsWith('/api/v1/symbols/search')) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const q = url.searchParams.get('q') || '';
-    const results = instrumentMaster.search({ asset: q || undefined });
+    const q = (url.searchParams.get('q') || '').trim();
+    const qUpper = q.toUpperCase();
+    let results = instrumentMaster.search({ asset: qUpper || undefined });
+    if (results.length === 0) {
+      const specs = marketDataStore.listInstrumentSpecs('databento');
+      const filtered = qUpper ? specs.filter(s => s.root.includes(qUpper) || s.rawSymbol.includes(qUpper)) : specs;
+      results = filtered.slice(0, 50).map((s, idx) => ({
+        instrumentId: idx + 1,
+        dataset: 'GLBX.MDP3',
+        publisherId: 1,
+        rawSymbol: s.rawSymbol,
+        securityType: s.instrumentClass,
+        asset: s.root,
+        underlying: s.underlying,
+        exchange: s.exchange,
+        currency: s.currency,
+        tickSize: s.tickSize,
+        multiplier: s.pointValue,
+        isContinuous: true,
+      }));
+      if (results.length === 0 && qUpper) {
+        const matching = Object.values(FUTURES_INSTRUMENTS).filter(
+          f => f.symbol.includes(qUpper) || f.name.toUpperCase().includes(qUpper)
+        );
+        results = matching.slice(0, 50).map((f, idx) => ({
+          instrumentId: idx + 1,
+          dataset: 'GLBX.MDP3',
+          publisherId: 1,
+          rawSymbol: f.symbol,
+          securityType: 'F',
+          asset: f.rootSymbol,
+          exchange: f.exchange,
+          currency: f.currency,
+          tickSize: f.tickSize,
+          multiplier: f.multiplier,
+          isContinuous: f.contractType === 'CONTINUOUS',
+        }));
+
+        if (results.length === 0 && databentoClient.configured && qUpper.length <= 10) {
+          try {
+            const startDate = new Date(Date.now() - 86400000 * 3).toISOString().slice(0, 10);
+            const resolved = await databentoClient.request<any>('/symbology.resolve', {
+              dataset: 'DBEQ.BASIC',
+              symbols: qUpper,
+              stype_in: 'raw_symbol',
+              stype_out: 'instrument_id',
+              start_date: startDate,
+            });
+            const map = resolved[0]?.result?.[qUpper];
+            if (map && map.length > 0) {
+              results.push({
+                instrumentId: Number(map[0].s) || 1,
+                dataset: 'DBEQ.BASIC',
+                publisherId: 1,
+                rawSymbol: qUpper,
+                securityType: 'S',
+                asset: qUpper,
+                exchange: 'XNAS',
+                currency: 'USD',
+                tickSize: 0.01,
+                multiplier: 1,
+                isContinuous: false,
+              });
+            }
+          } catch {}
+        }
+      }
+    }
     sendJson(res, 200, { query: q, results }); return;
   }
   if (req.url?.startsWith('/api/v1/symbology/resolve')) {
     if (req.method === 'POST') {
-      const raw = await readRawBody(req);
+      let raw = '';
+      try {
+        raw = await readRawBody(req);
+      } catch {
+        sendJson(res, 413, { error: 'Payload too large' });
+        return;
+      }
       try {
         const b = JSON.parse(raw);
         const { dataset, symbols, stypeIn, stypeOut } = b;
@@ -879,10 +946,6 @@ const httpServer = createServer(async (req, res) => {
     }
     sendJson(res, 405, { error: 'Use POST' }); return;
   }
-  if (req.url?.startsWith('/api/v1/reference/corporate-actions')) {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    sendJson(res, 200, { actions: [] }); return;
-  }
   if (req.url?.startsWith('/api/v1/sessions/trading-hours')) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const date = url.searchParams.get('date') || new Date().toISOString().slice(0,10);
@@ -891,14 +954,6 @@ const httpServer = createServer(async (req, res) => {
   }
   if (req.url?.startsWith('/api/v1/sessions/status')) {
     sendJson(res, 200, { status: marketStatusEngine.getStatus('OPRA.PILLAR') ?? 'unknown' }); return;
-  }
-  if (req.url?.startsWith('/api/v1/raw/manifest')) {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const dataset = url.searchParams.get('dataset') || 'OPRA.PILLAR';
-    const schema = url.searchParams.get('schema') || 'trades';
-    const date = url.searchParams.get('date') || new Date().toISOString().slice(0,10);
-    const files = await rawStore.locate({ dataset, schema, date });
-    sendJson(res, 200, { dataset, schema, date, files }); return;
   }
   if (req.url?.startsWith('/api/v1/futures/continuous')) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -1250,7 +1305,13 @@ const httpServer = createServer(async (req, res) => {
   }
 
   if (req.url?.startsWith('/api/v1/billing/webhook') && req.method === 'POST') {
-    const raw = await readRawBody(req);
+    let raw = '';
+    try {
+      raw = await readRawBody(req);
+    } catch {
+      sendJson(res, 413, { error: 'Payload too large' });
+      return;
+    }
     const signature = req.headers['stripe-signature'];
     if (!verifyStripeSignature(raw, typeof signature === 'string' ? signature : undefined, process.env.STRIPE_WEBHOOK_SECRET)) {
       metrics.inc('deepchart_billing_webhook_total', 'Billing webhook outcomes', { result: 'invalid_signature' });
@@ -1379,12 +1440,6 @@ const httpServer = createServer(async (req, res) => {
     }
 
     // Vendor definitions: catalog instruments status
-    if (parts[3] === 'instruments' && parts[4] === 'sync' && req.method === 'POST') {
-      const result = await syncInstrumentSpecs(databentoClient, marketDataStore);
-      sendJson(res, result.synced ? 200 : 502, result);
-      return;
-    }
-
     if (parts[3] === 'instruments' && parts[4] === 'specs') {
       const specs = marketDataStore.listInstrumentSpecs('databento');
       sendJson(res, 200, {
@@ -1402,6 +1457,12 @@ const httpServer = createServer(async (req, res) => {
           updatedAt: s.updatedAt,
         })),
       });
+      return;
+    }
+
+    if (parts[3] === 'instruments' && parts[4] === 'sync' && req.method === 'POST') {
+      const result = await syncInstrumentSpecs(databentoClient, marketDataStore);
+      sendJson(res, 200, result);
       return;
     }
 
@@ -1838,8 +1899,23 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
         }
 
         let result = marketDataStore.queryBars({ provider, symbol, timeframe, beforeTime, limit });
-        if (result.bars.length < limit && provider === 'databento' && process.env.DATABENTO_API_KEY) {
-          result = marketDataStore.queryBars({ provider, symbol, timeframe, beforeTime, limit });
+        if (result.bars.length < limit && provider === 'databento' && databentoClient.configured) {
+          try {
+            const tfMinutes = (TIMEFRAMES[timeframe] || 60000) / 60000;
+            const controller = new AbortController();
+            const fetched = await databentoHistoryProvider.fetchBars(symbol, {} as any, {
+              elements: limit - result.bars.length,
+              barMinutes: tfMinutes,
+              beforeTime: beforeTime || Date.now(),
+              signal: controller.signal,
+            });
+            if (fetched && fetched.length > 0) {
+              marketDataStore.saveBars(provider, symbol, timeframe, fetched);
+              result = marketDataStore.queryBars({ provider, symbol, timeframe, beforeTime, limit });
+            }
+          } catch (err: any) {
+            console.warn(`[FETCH_HISTORY] Databento backfill error: ${err?.message}`);
+          }
         }
         session.send({
           type: 'HISTORY_RESPONSE',

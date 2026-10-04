@@ -3,17 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev:server": "pnpm --filter @deepchart/server dev",
-    "dev:client": "pnpm --filter client dev",
-    "dev": "concurrently -n \"SERVER,CLIENT\" -c \"blue,green\" \"pnpm run dev:server\" \"pnpm run dev:client\"",
-    "build": "pnpm --filter @deepchart/server build && pnpm --filter client build",
-    "typecheck": "pnpm --filter @deepchart/server exec tsc -p tsconfig.test.json --noEmit && pnpm --filter client exec tsc -p tsconfig.app.json --noEmit && pnpm --filter client exec tsc -p tsconfig.node.json --noEmit",
-    "lint": "pnpm --filter client lint",
-    "test": "pnpm test:protocol && pnpm test:unit && pnpm test:integration && pnpm test:client",
+    "dev": "pnpm --filter @deepchart/server dev",
+    "build": "pnpm --filter @deepchart/server build",
+    "typecheck": "pnpm --filter @deepchart/server exec tsc -p tsconfig.test.json --noEmit",
+    "test": "pnpm test:protocol && pnpm test:unit && pnpm test:integration",
     "test:unit": "pnpm --filter @deepchart/server exec tsx test/unit/index.ts",
     "test:integration": "pnpm --filter @deepchart/server exec tsx test/integration/index.ts",
     "test:protocol": "node scripts/check-protocol-drift.mjs",
-  "test:client": "node scripts/check-client-bundle.mjs",
     "test:offline": "pnpm test",
     "test:live": "pnpm verify",
     "verify": "pnpm --filter @deepchart/server exec tsx src/verify_e2e.ts",
@@ -25,9 +21,7 @@
   "engines": {
     "node": ">=22.13"
   },
-  "devDependencies": {
-    "concurrently": "^9.1.0"
-  },
+
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"

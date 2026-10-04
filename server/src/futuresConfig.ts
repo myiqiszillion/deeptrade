@@ -9,6 +9,8 @@ export type AssetClass =
   | 'RATES'
   | 'CRYPTO';
 
+import { marketDataStore } from './storage/marketDataStore.js';
+
 /** UI grouping for the instrument picker. */
 export type InstrumentCategory =
   | 'INDEX'
@@ -542,6 +544,37 @@ export function getOrRegisterInstrument(symbol: string): FuturesInstrument {
     DYNAMIC_INSTRUMENTS[norm] = contract;
     return contract;
   }
+
+  // Check if Databento synchronized real specs for this symbol
+  try {
+    const spec = marketDataStore.getInstrumentSpec('databento', norm);
+    if (spec) {
+      const isFut = spec.instrumentClass === 'F';
+      const inst: FuturesInstrument = {
+        symbol: norm,
+        rootSymbol: spec.root,
+        name: spec.rawSymbol || norm,
+        category: isFut ? 'INDEX' : 'OTHER',
+        assetClass: isFut ? 'EQUITY_INDEX' : 'EQUITY_INDEX',
+        exchange: (spec.exchange as ExchangeName) || 'CME',
+        tickSize: spec.tickSize,
+        pointValue: spec.pointValue,
+        tickValue: spec.tickValue,
+        initialMargin: 0,
+        dayTradingMargin: 0,
+        underlyingIndex: spec.underlying || norm,
+        basePrice: 0,
+        timezone: 'America/New_York',
+        currency: spec.currency || 'USD',
+        multiplier: spec.pointValue,
+        isMicro: Boolean(spec.rawSymbol.includes('M') && !['MSFT','META','MSTR'].includes(spec.root)),
+        contractType: 'CONTINUOUS',
+        sessionScheduleId: isFut ? 'CME_EQUITY_INDEX' : 'CME_EQUITY',
+      };
+      DYNAMIC_INSTRUMENTS[norm] = inst;
+      return inst;
+    }
+  } catch {}
 
   // Dynamic registration for any valid alphanumeric ticker (e.g., AAPL, NVDA, or new futures/etfs)
   const isFutures = [

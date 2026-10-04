@@ -33,19 +33,21 @@ export function runBacktest(cond: BacktestCondition): BacktestMetrics & { condit
   const horizon = cond.horizonBars ?? 390;
   // Occurrences: scan snapshot ring; if empty, 0 occurrences (graceful, not error)
   const current = snapshotStore.getLatest(u);
-  const moves: number[] = [];
+  const pathReturns: number[] = [];
   let mfe: number | null = null, mae: number | null = null;
+  let finalReturn: number | null = null;
 
-  // For now, measure from last close forward using bars (best-effort)
+  // Measure forward moves across the horizon
   try {
     const bars = marketDataStore.queryBars({ provider: 'databento', symbol: u, timeframe: '1m', limit: horizon + 1 } as any);
     if (bars.bars.length >= 2) {
       const base = bars.bars[0].close;
       const closes = bars.bars.slice(1).map(b => b.close);
-      for (let i = 0; i < closes.length; i++) moves.push((closes[i] - base) / base);
-      if (moves.length) {
-        mfe = Math.max(...moves);
-        mae = Math.min(...moves);
+      for (let i = 0; i < closes.length; i++) pathReturns.push((closes[i] - base) / base);
+      if (pathReturns.length) {
+        mfe = Math.max(...pathReturns);
+        mae = Math.min(...pathReturns);
+        finalReturn = pathReturns[pathReturns.length - 1];
       }
     }
   } catch {}
@@ -53,9 +55,8 @@ export function runBacktest(cond: BacktestCondition): BacktestMetrics & { condit
   // Filter occurrences by condition against ring; count only
   let occurrences = 0;
   if (cond.gexBelow != null || cond.gexAbove != null || cond.regime || cond.nearGammaFlip) {
-    // Use ring scan: for brevity count 1 if current matches condition, else 0 — full history scan deferred to Lab DSL
     const s: any = current ?? marketDataStore.getLatestExposure(u);
-    const gex = s?.totals?.gex ?? s?.totals?.gex;
+    const gex = s?.totals?.gex ?? 0;
     const regime = s?.regime;
     let match = true;
     if (cond.gexBelow != null && !(gex < cond.gexBelow)) match = false;
@@ -66,14 +67,16 @@ export function runBacktest(cond: BacktestCondition): BacktestMetrics & { condit
     }
     occurrences = match ? 1 : 0;
   } else {
-    occurrences = moves.length > 0 ? 1 : 0;
+    occurrences = pathReturns.length > 0 ? 1 : 0;
   }
+
+  const occurrenceMoves = occurrences > 0 && finalReturn !== null ? [finalReturn] : [];
 
   return {
     condition: cond,
     occurrences,
-    avgMove: moves.length ? moves.reduce((a, b) => a + b, 0) / moves.length : null,
-    medianMove: median(moves),
+    avgMove: occurrenceMoves.length ? occurrenceMoves.reduce((a, b) => a + b, 0) / occurrenceMoves.length : null,
+    medianMove: median(occurrenceMoves),
     mfe, mae,
     timeToEvent: null,
   };

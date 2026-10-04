@@ -1,4 +1,3 @@
-import { CboeOptionsProvider } from '../dataFeeds/cboeOptionsFeed.js';
 import { FootprintEngine } from '../footprintEngine.js';
 import { FUTURES_INSTRUMENTS, FuturesInstrument, getOrRegisterInstrument } from '../futuresConfig.js';
 import { GEXEngine, GEXProfile } from '../gexEngine.js';
@@ -146,7 +145,6 @@ export class MarketContext {
   private lastVwapUpdate = 0;
 
   private gexEngine: GEXEngine;
-  private cboeProvider: CboeOptionsProvider;
   private cachedGexProfile?: GEXProfile;
   private gexTimer: NodeJS.Timeout | null = null;
 
@@ -157,14 +155,12 @@ export class MarketContext {
     symbol: string,
     instrument: FuturesInstrument,
     gexEngine = new GEXEngine(),
-    cboeProvider = new CboeOptionsProvider(),
     private onTickRecord?: (tick: Tick) => void,
     private historyProvider: HistoryProvider = defaultHistoryProvider
   ) {
     this.symbol = symbol;
     this.instrument = instrument;
     this.gexEngine = gexEngine;
-    this.cboeProvider = cboeProvider;
 
     this.orderbook = new OrderbookManager(50);
     this.profile = new ProfileEngine(this.instrument.tickSize);
@@ -191,14 +187,16 @@ export class MarketContext {
     return this.subscribers.size;
   }
 
-  public getHistoryTicks(): Tick[] {
+  public getHistoryTicks(timeframe?: string): Tick[] {
     if (this.historyTicks.length > 0) {
       return [...this.historyTicks];
     }
     if (this.historyBars.length > 0) {
+      const tf = timeframe || '1m';
+      const tfMs = TIMEFRAMES[tf] || 60000;
+      const quarterMs = Math.max(1, Math.floor(tfMs / 4));
       const synTicks: Tick[] = [];
       for (const bar of this.historyBars) {
-        const quarterMs = 15000;
         const volEach = Math.max(1, Math.round(bar.volume / 4));
         const isUp = bar.close >= bar.open;
         synTicks.push({
@@ -656,14 +654,37 @@ export class MarketContext {
     }
   }
 
-  public async refreshGex(force = false): Promise<void> {
+  public async refreshGex(_force = false): Promise<void> {
     const underlying = this.instrument.underlyingIndex;
     if (!underlying) return;
 
-    const chain = await this.cboeProvider.fetchChain(underlying, force);
-    if (!chain) return;
+    const snap = marketDataStore.getLatestExposure(underlying === 'SPX' ? 'SPY' : underlying);
+    if (!snap) return;
 
-    const profile = this.gexEngine.buildFromChain(underlying, chain.spotPrice, chain.contracts);
+    const profile: GEXProfile = {
+      underlying,
+      spotPrice: snap.spot,
+      callWall: snap.walls?.callWall ?? 0,
+      putWall: snap.walls?.putWall ?? 0,
+      zeroGammaFlip: snap.gammaFlip || 0,
+      totalNetGex: snap.totals?.gex ?? 0,
+      total0DteGex: 0,
+      regime: snap.regime,
+      levels: (snap.levels || []).map((l: any) => ({
+        strike: l.strike,
+        callGex: l.callGex || 0,
+        putGex: l.putGex || 0,
+        netGex: (l.callGex || 0) - (l.putGex || 0),
+        zeroDteGex: 0,
+        callOI: l.callOi || 0,
+        putOI: l.putOi || 0,
+        callVol: 0,
+        putVol: 0,
+      })),
+      timestamp: snap.timestamp,
+      dataSource: 'LIVE',
+    };
+
     this.cachedGexProfile = profile;
     const recentFlow = this.gexEngine.getRecentFlow();
     for (const session of this.subscribers) {
@@ -1086,7 +1107,7 @@ export class MarketContext {
       timeframe,
       historySource: this.historySource,
       historyBars: this.historyBarsByTf.get(timeframe) || [],
-      recentTicks: this.getHistoryTicks().slice(-50).reverse(),
+      recentTicks: this.getHistoryTicks(timeframe).slice(-50).reverse(),
       feedStatus: this.feedStatus,
       mode: session.isReplay() ? session.mode : 'LIVE',
     };
@@ -1130,16 +1151,13 @@ export class MarketContextManager {
   private contexts = new Map<string, MarketContext>();
   private pendingInits = new Map<string, Promise<MarketContext>>();
   private gexEngine: GEXEngine;
-  private cboeProvider: CboeOptionsProvider;
 
   constructor(
     private onTickRecord?: (tick: Tick) => void,
     gexEngine?: GEXEngine,
-    cboeProvider?: CboeOptionsProvider,
     private historyProvider: HistoryProvider = defaultHistoryProvider
   ) {
     this.gexEngine = gexEngine || new GEXEngine();
-    this.cboeProvider = cboeProvider || new CboeOptionsProvider();
   }
 
   public getContext(symbol: string): MarketContext | undefined {
@@ -1168,7 +1186,6 @@ export class MarketContextManager {
             symbol,
             instrument,
             this.gexEngine,
-            this.cboeProvider,
             this.onTickRecord,
             this.historyProvider
           );
@@ -1249,9 +1266,5 @@ export class MarketContextManager {
 
   public getGexEngine(): GEXEngine {
     return this.gexEngine;
-  }
-
-  public getCboeProvider(): CboeOptionsProvider {
-    return this.cboeProvider;
   }
 }

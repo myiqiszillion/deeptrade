@@ -152,3 +152,116 @@ export interface NormalizedOptionQuote extends NormalizedQuote {
   theta?: number;
   vega?: number;
 }
+
+export interface DatasetRecord {
+  dataset: string;
+  description?: string;
+  start?: string;
+  end?: string;
+  schemas?: string[];
+}
+
+export interface DatasetRange {
+  start: string;
+  end: string;
+}
+
+export interface SymbologyResolveResult {
+  result: Record<string, Array<{ d0: string; d1: string; s: string }>>;
+  symbols: string[];
+  stype_in: string;
+  stype_out: string;
+  start_date: string;
+  end_date: string;
+  not_found?: string[];
+  partial?: string[];
+  message?: string;
+  status?: number;
+}
+
+export interface TradingStatusRecord {
+  symbol: string;
+  timestamp: number;
+  status: string;
+  reason?: string;
+  tradingEvent?: string;
+}
+
+export interface DbPublisherRecord {
+  publisher_id: number;
+  dataset: string;
+  venue: string;
+  description?: string;
+}
+
+export interface DbUnitPriceRecord {
+  dataset: string;
+  mode: string;
+  schema: string;
+  unit_price: number;
+}
+
+export interface DatasetConditionRecord {
+  date: string;
+  condition: 'available' | 'missing' | 'bad' | 'pending' | string;
+  details?: string;
+}
+
+export interface RecordCountResult {
+  record_count: number;
+}
+
+export interface BillableSizeResult {
+  billable_size: number;
+}
+
+
+/** Databento MBO (Market-by-Order L3) record */
+export interface DbMboRecord {
+  hd?: DbRecordHeader;
+  instrument_id?: number;
+  ts_event?: string | number;
+  order_id: string | number;
+  price: number | string;
+  size: number;
+  flags?: number;
+  channel_id?: number;
+  action: string; // 'A' (Add), 'C' (Cancel), 'M' (Modify), 'F' (Fill), 'T' (Trade), 'R' (Reset)
+  side: string;   // 'B' (Bid), 'A' (Ask), 'N' (None)
+  symbol?: string;
+}
+
+/** Databento TBBO (Top of Book on Trade) record */
+export interface DbTbboRecord {
+  hd?: DbRecordHeader;
+  instrument_id?: number;
+  ts_event?: string | number;
+  action?: string;
+  side?: string;
+  price: number | string;
+  size: number;
+  bid_px_00?: number | string;
+  ask_px_00?: number | string;
+  bid_sz_00?: number;
+  ask_sz_00?: number;
+  symbol?: string;
+}
+
+/** Databento Imbalance (auction crosses NOII) record */
+export interface DbImbalanceRecord {
+  hd?: DbRecordHeader;
+  instrument_id?: number;
+  ts_event?: string | number;
+  paired_qty?: number;
+  total_imbalance_qty?: number;
+  market_imbalance_qty?: number;
+  unpaired_qty?: number;
+  auction_type?: string;
+  side?: string; // 'B' (Buy), 'A' (Ask), 'N' (None)
+  ref_price?: number | string;
+  canc_order_book_qty?: number;
+  ask_collar_qty?: number;
+  bid_collar_qty?: number;
+  symbol?: string;
+}
+

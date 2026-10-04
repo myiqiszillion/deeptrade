@@ -33,6 +33,8 @@ const { runOptionsRoutesTests } = await import('./optionsRoutes.test.js');
 const { runDatabentoConfigTests } = await import('./databentoConfig.test.js');
 const { runInstrumentSyncTests } = await import('./instrumentSync.test.js');
 const { runOptionsMathTests } = await import('./optionsMath.test.js');
+const { runDatabentoRoutesTests } = await import('./databentoRoutes.test.js');
+const { runChartRoutesTests } = await import('./chartRoutes.test.js');
 
 async function main() {
   console.log('======================================================');
@@ -60,6 +62,8 @@ async function main() {
   await runBatchIngestionTests();
   await runDatabentoStorageTests();
   await runOptionsRoutesTests();
+  await runDatabentoRoutesTests();
+  await runChartRoutesTests();
   await runDatabentoConfigTests();
   await runInstrumentSyncTests();
   await runOptionsMathTests();

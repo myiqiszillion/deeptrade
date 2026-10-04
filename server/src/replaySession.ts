@@ -8,7 +8,6 @@ import { VWAPEngine } from './vwapEngine.js';
 import { marketDataStore } from './storage/marketDataStore.js';
 import { snapshotStore } from './quant/snapshotStore.js';
 import { TIMEFRAMES } from './marketData/marketContext.js';
-import { evaluateSignals } from './signals/featureScores.js';
 
 export interface ReplayDataSource {
   loadTicks(options: {
@@ -90,8 +89,6 @@ export class ReplaySession {
           const nqBars = marketDataStore.queryBars({ provider: 'databento', symbol: 'NQ', timeframe: this.timeframe, limit: 1, beforeTime: tick.timestamp + 1 } as any);
           nqPrice = nqBars.bars[0]?.close ?? null;
         } catch {}
-        let signal: any = null;
-        try { signal = evaluateSignals(this.symbol); } catch {}
         this.session.send({
           type: 'REPLAY_FRAME',
           frame: {
@@ -99,7 +96,7 @@ export class ReplaySession {
             price: tick.price,
             volume: lastBar?.volume ?? tick.size,
             gex, iv, esPrice, nqPrice,
-            signal: signal ? { scores: signal.scores, confidence: signal.confidence } : null,
+            signal: null,
           },
         });
       } catch {}

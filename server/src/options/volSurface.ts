@@ -51,11 +51,45 @@ export function buildVolSurface(
   });
 
   const skewByExpiry: SkewPoint[] = expiries.map(dte => {
-    const pts = points.filter(p => p.dte === dte && p.iv != null);
-    const puts = pts.filter(p => p.strike < spot).sort((a, b) => b.strike - a.strike);
-    const calls = pts.filter(p => p.strike > spot).sort((a, b) => a.strike - b.strike);
-    const putIv = puts[0]?.iv ?? null;
-    const callIv = calls[0]?.iv ?? null;
+    const dteContracts = contracts.filter(c => c.dte === dte && c.iv != null);
+    const dtePoints = points.filter(p => p.dte === dte && p.iv != null);
+
+    // Pick ~25-delta OTM put (delta near -0.25, or moneyness near 0.95)
+    let putIv: number | null = null;
+    let minPutDeltaDiff = Infinity;
+    for (const c of dteContracts) {
+      if (c.type === 'put' && c.iv != null && c.strike <= spot) {
+        const delta = c.greeks?.delta ?? (c.strike / spot - 1);
+        const diff = Math.abs(delta - (-0.25));
+        if (diff < minPutDeltaDiff) {
+          minPutDeltaDiff = diff;
+          putIv = c.iv;
+        }
+      }
+    }
+    if (putIv == null) {
+      const puts = dtePoints.filter(p => p.strike < spot).sort((a, b) => Math.abs(a.moneyness - 0.95) - Math.abs(b.moneyness - 0.95));
+      putIv = puts[0]?.iv ?? null;
+    }
+
+    // Pick ~25-delta OTM call (delta near 0.25, or moneyness near 1.05)
+    let callIv: number | null = null;
+    let minCallDeltaDiff = Infinity;
+    for (const c of dteContracts) {
+      if (c.type === 'call' && c.iv != null && c.strike >= spot) {
+        const delta = c.greeks?.delta ?? (1 - spot / c.strike);
+        const diff = Math.abs(delta - 0.25);
+        if (diff < minCallDeltaDiff) {
+          minCallDeltaDiff = diff;
+          callIv = c.iv;
+        }
+      }
+    }
+    if (callIv == null) {
+      const calls = dtePoints.filter(p => p.strike > spot).sort((a, b) => Math.abs(a.moneyness - 1.05) - Math.abs(b.moneyness - 1.05));
+      callIv = calls[0]?.iv ?? null;
+    }
+
     const skew = putIv != null && callIv != null && callIv > 0 ? (putIv - callIv) / callIv : null;
     return { dte, skew };
   });
@@ -81,6 +115,12 @@ export function buildVolSurface(
   }
   // Skew shift heuristic
   for (const s of skewByExpiry) if (s.skew != null && Math.abs(s.skew) > 0.3) { skewShift = true; notes.push(`Skew shift at ${s.dte}D: ${s.skew.toFixed(2)}`); break; }
+
+  // Dislocation: simultaneous term inversion and extreme skew, or inverted smile
+  if (termStructureInverted && skewShift) {
+    volDislocation = true;
+    notes.push('Volatility dislocation: simultaneous term inversion and extreme skew shift');
+  }
 
   return { underlying, spot, timestamp: Date.now(), points, termStructure, skewByExpiry, diagnostics: { ivSpike, skewShift, termStructureInverted, volDislocation, notes } };
 }

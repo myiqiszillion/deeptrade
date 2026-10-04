@@ -20,6 +20,15 @@ import {
   NormalizedQuote,
   OptionContractDefinition,
   OptionStatisticRecord,
+  DatasetRange,
+  SymbologyResolveResult,
+  TradingStatusRecord,
+  DbPublisherRecord,
+  DbUnitPriceRecord,
+  DatasetConditionRecord,
+  DbMboRecord,
+  DbTbboRecord,
+  DbImbalanceRecord,
 } from './types.js';
 import {
   normalizeTrade,
@@ -124,7 +133,7 @@ export class DatabentoHttpClient {
       if (res.status === 422 && errText.includes('data_end_after_available_end')) {
         const match = errText.match(/available up to '([^']+)'/);
         if (match && !(opts as any)?.retried) {
-          const availableEnd = match[1];
+          const availableEnd = new Date(match[1]).toISOString();
           const updatedParams: Record<string, any> = { ...params, end: availableEnd };
           if (params.start && new Date(params.start).getTime() >= new Date(availableEnd).getTime()) {
             const spanMs = (params.limit ? Number(params.limit) * 60_000 : 3600_000) * 2;
@@ -273,6 +282,9 @@ export class DatabentoHttpClient {
       // Parent symbology for OPRA: try parent first, fallback to underlying alone if rejected
       const u = underlying.toUpperCase().trim();
       params.symbols = u.includes('.') ? u : `${u}.OPT`;
+      if (params.symbols.endsWith('.OPT') || dataset.startsWith('OPRA')) {
+        params.stype_in = 'parent';
+      }
     }
 
     const rawRecords = await this.request<DbDefinitionRecord>('/timeseries.get_range', params);
@@ -299,5 +311,300 @@ export class DatabentoHttpClient {
     });
 
     return rawRecords.map((r) => normalizeStatistic(r));
+  }
+
+  /**
+   * Lists all publisher ID mappings, venues, and associated datasets.
+   */
+  public async listPublishers(): Promise<DbPublisherRecord[]> {
+    return this.request<DbPublisherRecord>('/metadata.list_publishers');
+  }
+
+  /**
+   * Lists all available datasets from Databento.
+   */
+  public async listDatasets(): Promise<string[]> {
+    const res = await this.request<any>('/metadata.list_datasets');
+    if (Array.isArray(res) && typeof res[0] === 'string') return res;
+    if (Array.isArray(res) && res[0]?.dataset) return res.map((r: any) => r.dataset);
+    return res as any;
+  }
+
+  /**
+   * Lists available schemas for a given dataset.
+   */
+  public async listSchemas(dataset: string): Promise<string[]> {
+    const res = await this.request<string>('/metadata.list_schemas', { dataset });
+    return res;
+  }
+
+  /**
+   * Lists fields for a dataset and schema.
+   */
+  public async listFields(dataset: string, schema: string, encoding?: string): Promise<any[]> {
+    return this.request('/metadata.list_fields', { dataset, schema, encoding });
+  }
+
+  /**
+   * Lists unit prices ($/GB) for a dataset across feed modes.
+   */
+  public async listUnitPrices(dataset: string, mode?: string): Promise<DbUnitPriceRecord[]> {
+    return this.request<DbUnitPriceRecord>('/metadata.list_unit_prices', { dataset, mode });
+  }
+
+  /**
+   * Gets operational data availability and condition per date.
+   */
+  public async getDatasetCondition(
+    dataset: string,
+    startDate?: number | string | Date,
+    endDate?: number | string | Date
+  ): Promise<DatasetConditionRecord[]> {
+    return this.request<DatasetConditionRecord>('/metadata.get_dataset_condition', {
+      dataset,
+      start_date: this.formatTimeArg(startDate),
+      end_date: this.formatTimeArg(endDate),
+    });
+  }
+
+  /**
+   * Gets available time range (start and end) for a dataset.
+   */
+  public async getDatasetRange(dataset: string): Promise<DatasetRange> {
+    const res = await this.request<any>('/metadata.get_dataset_range', { dataset });
+    const r = res[0] || res;
+    return {
+      start: r.start || r.start_date || '',
+      end: r.end || r.end_date || '',
+    };
+  }
+
+  /**
+   * Queries expected record count for a timeseries query before execution.
+   */
+  public async getRecordCount(params: {
+    dataset: string;
+    schema: string;
+    symbols: string | string[];
+    start: number | string | Date;
+    end?: number | string | Date;
+    stypeIn?: string;
+    limit?: number;
+  }): Promise<number> {
+    const res = await this.request<any>('/metadata.get_record_count', {
+      dataset: params.dataset,
+      schema: params.schema,
+      symbols: Array.isArray(params.symbols) ? params.symbols.join(',') : params.symbols,
+      start: this.formatTimeArg(params.start),
+      end: this.formatTimeArg(params.end),
+      stype_in: params.stypeIn,
+      limit: params.limit,
+    });
+    const r = res[0] || res;
+    return typeof r === 'number' ? r : Number(r.record_count ?? r.count ?? 0);
+  }
+
+  /**
+   * Queries expected billable uncompressed byte size before execution.
+   */
+  public async getBillableSize(params: {
+    dataset: string;
+    schema: string;
+    symbols: string | string[];
+    start: number | string | Date;
+    end?: number | string | Date;
+    stypeIn?: string;
+    limit?: number;
+  }): Promise<number> {
+    const res = await this.request<any>('/metadata.get_billable_size', {
+      dataset: params.dataset,
+      schema: params.schema,
+      symbols: Array.isArray(params.symbols) ? params.symbols.join(',') : params.symbols,
+      start: this.formatTimeArg(params.start),
+      end: this.formatTimeArg(params.end),
+      stype_in: params.stypeIn,
+      limit: params.limit,
+    });
+    const r = res[0] || res;
+    return typeof r === 'number' ? r : Number(r.billable_size ?? r.size_bytes ?? r.size ?? 0);
+  }
+
+  /**
+   * Estimates cost and record count before issuing a historical query.
+   */
+  public async getCost(
+    dataset: string,
+    schema: string,
+    symbols: string | string[],
+    start: number | string | Date,
+    end?: number | string | Date
+  ): Promise<{ costUsd: number; sizeBytes: number; recordCount: number }> {
+    const res = await this.request<any>('/metadata.get_cost', {
+      dataset,
+      schema,
+      symbols: Array.isArray(symbols) ? symbols.join(',') : symbols,
+      start: this.formatTimeArg(start),
+      end: this.formatTimeArg(end),
+    });
+    const r = res[0] || res;
+    return {
+      costUsd: Number(r.cost_usd ?? r.cost ?? 0),
+      sizeBytes: Number(r.size_bytes ?? r.size ?? 0),
+      recordCount: Number(r.record_count ?? r.count ?? 0),
+    };
+  }
+
+  /**
+   * Resolves symbols between different symbology types (raw_symbol, instrument_id, parent).
+   */
+  public async resolveSymbology(
+    dataset: string,
+    symbols: string | string[],
+    stypeIn = 'raw_symbol',
+    stypeOut = 'instrument_id',
+    startDate?: number | string | Date,
+    endDate?: number | string | Date
+  ): Promise<SymbologyResolveResult> {
+    const res = await this.request<any>('/symbology.resolve', {
+      dataset,
+      symbols: Array.isArray(symbols) ? symbols.join(',') : symbols,
+      stype_in: stypeIn,
+      stype_out: stypeOut,
+      start_date: this.formatTimeArg(startDate) || new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10),
+      end_date: this.formatTimeArg(endDate),
+    });
+    return res[0] || res;
+  }
+
+  /**
+   * Fetches 10-level Market By Price (MBP-10) historical depth records.
+   */
+  public async getHistoricalDepth(
+    dataset: string,
+    symbols: string | string[],
+    start: number | string | Date,
+    end?: number | string | Date,
+    limit?: number
+  ): Promise<any[]> {
+    return this.request('/timeseries.get_range', {
+      dataset,
+      symbols: Array.isArray(symbols) ? symbols.join(',') : symbols,
+      schema: 'mbp-10',
+      start: this.formatTimeArg(start),
+      end: this.formatTimeArg(end),
+      limit,
+    });
+  }
+
+  /**
+   * Fetches trading status events (trading, halted, paused, closed).
+   */
+  public async getTradingStatus(
+    dataset: string,
+    symbols: string | string[],
+    start?: number | string | Date,
+    end?: number | string | Date
+  ): Promise<TradingStatusRecord[]> {
+    const res = await this.request<any>('/timeseries.get_range', {
+      dataset,
+      symbols: Array.isArray(symbols) ? symbols.join(',') : symbols,
+      schema: 'status',
+      start: this.formatTimeArg(start) || new Date(Date.now() - 24 * 3600 * 1000).toISOString(),
+      end: this.formatTimeArg(end),
+    });
+    return res.map((r) => ({
+      symbol: r.symbol || r.raw_symbol || '',
+      timestamp: parseTimestampMs(r.ts_event ?? r.hd?.ts_event),
+      status: r.status || r.action || 'unknown',
+      reason: r.reason,
+      tradingEvent: r.trading_event,
+    }));
+  }
+
+  /**
+   * Fetches Top of Book on Trade (TBBO) records.
+   */
+  public async getHistoricalTbbo(
+    dataset: string,
+    symbols: string | string[],
+    start: number | string | Date,
+    end?: number | string | Date,
+    limit?: number
+  ): Promise<DbTbboRecord[]> {
+    return this.request<DbTbboRecord>('/timeseries.get_range', {
+      dataset,
+      symbols: Array.isArray(symbols) ? symbols.join(',') : symbols,
+      schema: 'tbbo',
+      start: this.formatTimeArg(start),
+      end: this.formatTimeArg(end),
+      limit,
+    });
+  }
+
+  /**
+   * Fetches Market By Order (MBO Level 3) full order book event records.
+   */
+  public async getHistoricalMbo(
+    dataset: string,
+    symbols: string | string[],
+    start: number | string | Date,
+    end?: number | string | Date,
+    limit?: number
+  ): Promise<DbMboRecord[]> {
+    return this.request<DbMboRecord>('/timeseries.get_range', {
+      dataset,
+      symbols: Array.isArray(symbols) ? symbols.join(',') : symbols,
+      schema: 'mbo',
+      start: this.formatTimeArg(start),
+      end: this.formatTimeArg(end),
+      limit,
+    });
+  }
+
+  /**
+   * Fetches auction order imbalance events (NOII crosses: opening, closing, halt).
+   */
+  public async getHistoricalImbalances(
+    dataset: string,
+    symbols: string | string[],
+    start: number | string | Date,
+    end?: number | string | Date,
+    limit?: number
+  ): Promise<DbImbalanceRecord[]> {
+    return this.request<DbImbalanceRecord>('/timeseries.get_range', {
+      dataset,
+      symbols: Array.isArray(symbols) ? symbols.join(',') : symbols,
+      schema: 'imbalance',
+      start: this.formatTimeArg(start),
+      end: this.formatTimeArg(end),
+      limit,
+    });
+  }
+
+  /**
+   * Generic timeseries query for any schema and parameter combination.
+   */
+  public async getTimeseriesRange<T = any>(params: {
+    dataset: string;
+    schema: string;
+    symbols: string | string[];
+    start: number | string | Date;
+    end?: number | string | Date;
+    limit?: number;
+    stypeIn?: string;
+    stypeOut?: string;
+    encoding?: string;
+  }): Promise<T[]> {
+    return this.request<T>('/timeseries.get_range', {
+      dataset: params.dataset,
+      schema: params.schema,
+      symbols: Array.isArray(params.symbols) ? params.symbols.join(',') : params.symbols,
+      start: this.formatTimeArg(params.start),
+      end: this.formatTimeArg(params.end),
+      limit: params.limit,
+      stype_in: params.stypeIn,
+      stype_out: params.stypeOut,
+      encoding: params.encoding,
+    });
   }
 }

@@ -65,11 +65,11 @@ export function impliedVol(
 
 export function midQuotePrice(bid: number | null | undefined, ask: number | null | undefined, last?: number | null): number | null {
   if (Number.isFinite(bid as number) && Number.isFinite(ask as number) && (bid as number) > 0 && (ask as number) > 0) {
-    if ((bid as number) > (ask as number)) return null; // crossed
-    const mid = ((bid as number) + (ask as number)) / 2;
-    const spread = (ask as number) - (bid as number);
-    if (spread / mid > 0.5) return null; // too wide
-    return mid;
+    if ((bid as number) <= (ask as number)) {
+      const mid = ((bid as number) + (ask as number)) / 2;
+      const spread = (ask as number) - (bid as number);
+      if (spread / mid <= 0.5) return mid;
+    }
   }
   if (Number.isFinite(last as number) && (last as number) > 0) return last as number;
   return null;

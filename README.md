@@ -122,28 +122,19 @@ DeepChart có hệ thống test phân tầng rõ ràng (Unit, Integration, Proto
 
 | Lệnh kiểm thử | Mục đích |
 |---|---|
-| `pnpm typecheck` | Kiểm tra TypeScript cho cả server và client (0 lỗi) |
-| `pnpm test` | Chạy toàn bộ test suite: protocol drift, unit, integration và **client bundle smoke test** |
-| `pnpm test:unit` | Unit: auth/entitlement/store/sessionCalendar/footprint/replay/validate/**passwords**/**loginGuard (lockout, rate limit)**/**billing (plans, entitlements, chữ ký Stripe)**/**retention (purge, WAL, stats)**/**instruments (43 mã CME)** |
-| `pnpm test:integration` | Integration: chartSmoke, historyApi, websocket, **authFlow (đăng ký → lockout → mạo danh bị chặn → admin cấp gói → webhook → WS bằng token)** |
-| `pnpm test:protocol` | Chống protocol drift giữa server và client WebSocket messages (`scripts/check-protocol-drift.mjs`) |
-| `pnpm test:client` | Kiểm tra bundle đã build: có đủ surface của sản phẩm (palette, favourites, empty-state actions, phím tắt, design tokens) và **đã code-split**, entry chunk < 480 KB (`scripts/check-client-bundle.mjs`) |
-| `pnpm verify:p0` | 13 test kiểm tra tính toàn vẹn server và rate limiting (harness dev, cần DB local có tick) |
+| `pnpm typecheck` | Kiểm tra TypeScript toàn dự án (0 lỗi) |
+| `pnpm test` | Chạy toàn bộ test suite: protocol drift, 25 unit test suites và 4 integration test suites |
+| `pnpm test:unit` | Unit test: auth, billing, retention, Databento client/live/normalizer/routes, TradingView UDF & chart routes, options math, CME instruments |
+| `pnpm test:integration` | Integration: chart smoke, historyApi, websocket, authFlow & billing |
+| `pnpm test:protocol` | Chống protocol drift giữa server và client message types |
+| `pnpm verify:p0` | Kiểm tra tính toàn vẹn server và rate limiting |
 
-### Giao diện & thao tác (UI/UX — phong cách TradingView)
-- **Thanh công cụ dọc bên trái (tool rail)**: tìm mã, auto-fit/manual, zoom ±, reset view, watchlist, chuyển dock trái/phải, replay, diagnostics, **lưu ảnh chart (PNG)** và **fullscreen** — chỉ hiện hành động app thật sự làm được.
-- **Legend nổi trên chart (góc trên-trái)**: `SYMBOL · timeframe · Footprint · sàn`, **O/H/L/C + Volume + %thay đổi** của nến cuối, cùng các **chip bật/tắt nhanh** VWAP · CVD · Imbalance · Delta (bấm là đổi ngay, không phải mở menu).
-- **Watchlist bên phải**: lọc mã, gắn sao, bấm để chuyển mã, hiển thị thật trạng thái feed (`live / connecting / idle / no data / no vendor`). Giá: mã đang xem luôn realtime; các mã khác lấy từ **quote board** (opt-in, có cache + hiện *tuổi dữ liệu* `12s`/`stale`) — bật bằng `ENABLE_QUOTE_BOARD=1`, tạm dừng bằng nút ⏸ trong panel. Không bao giờ hiển thị giá giả.
-- **Skin tối kiểu TradingView**: nền `#131722`, panel `#1E222D`, vạch `#2A2E39`, chữ `#D1D4DC`, giá lên `#089981` / xuống `#F23645`, bo góc 5–12px (giữ accent cyan làm bản sắc chart).
-- **Phím tắt**: **`/` hoặc `Ctrl+K`** mở palette (kiểu tìm mã của TradingView) · `F` footprint↔candles · `V/I/D/C` overlay · `1–5` panel · `P` dock · `R` replay · `S` diagnostics · `?` hướng dẫn.
-- **Khung thời gian** đúng bằng tập server phục vụ được: `1s 5s 15s 30s 1m 5m 15m 1h` (palette trước đây có `30m` không được hỗ trợ — đã bỏ).
-- **Kéo-thả mượt thật**: vạch chia dùng *pointer capture + requestAnimationFrame* nên panel bám con trỏ (không giật/nhảy), có grip 3 chấm hiện khi hover, khóa chọn chữ toàn trang khi đang kéo; kéo ra ngoài cửa sổ vẫn không mất trạng thái. Dock đổi được trái/phải, CVD kéo được chiều cao.
-- **Trạng thái trống có hành động**: khi feed không có dữ liệu, màn hình nói rõ nguyên nhân và cho bấm *Open diagnostics · How to read this chart · Switch instrument*.
-- **Hiệu năng**: bundle đã **code-split** (entry ~184 KB, các panel nặng tải lazy) + `prefers-reduced-motion`, focus ring đầy đủ cho bàn phím.
+### API Suite & TradingView Chart Features
+- **Official Databento API Suite**: 100% On-Demand & Streaming (10 Metadata APIs, Symbology Resolve, 13 Timeseries Schemas). Không tải batch download disk thừa.
+- **TradingView UDF Compatible**: Triển khai đầy đủ Universal Datafeed (`/api/v1/udf/config`, `/time`, `/symbols`, `/search`, `/history`, `/marks`).
+- **Institutional Order Flow Chart Suite**: Footprint Bar (Bid/Ask volume per tick, Imbalances, POC, Delta), CVD, Volume Profile (POC, VAH/VAL), VWAP $\pm 1\sigma/2\sigma/3\sigma$, Depth Heatmap MBP-10, Large Trade Prints, Key Levels (Call Wall, Put Wall, Gamma Flip, Max Pain).
 
-
-
-CI (`.github/workflows/ci.yml`) chạy: typecheck → lint → protocol → unit → build → **client bundle check** → integration.
+CI (`.github/workflows/ci.yml`) chạy: typecheck → protocol drift check → unit tests → build → integration tests.
 
 ---
 

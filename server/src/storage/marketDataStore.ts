@@ -411,6 +411,9 @@ export class MarketDataStore implements IMarketDataStore {
         const srcProvider = t.sourceProvider || provider;
         const isCoalesced = t.qualityFlags?.isCoalesced ? 1 : 0;
 
+        const rawSide = typeof t.side === 'string' ? t.side.toLowerCase() : 'unknown';
+        const side = rawSide === 'buy' || rawSide === 'b' ? 'buy' : rawSide === 'sell' || rawSide === 'a' ? 'sell' : 'unknown';
+
         this.insertTradeStmt.run(
           provider,
           symbol,
@@ -418,7 +421,7 @@ export class MarketDataStore implements IMarketDataStore {
           ts,
           t.price,
           t.size,
-          t.side,
+          side,
           t.aggressorProvenance || 'UNKNOWN',
           receiveTs,
           seqId,
@@ -696,7 +699,7 @@ export class MarketDataStore implements IMarketDataStore {
       timestamp: Number(r.ts),
       price: Number(r.price),
       size: Number(r.size),
-      side: (r.side as 'buy' | 'sell' | 'unknown'),
+      side: (r.side?.toLowerCase() === 'buy' ? 'buy' : r.side?.toLowerCase() === 'sell' ? 'sell' : 'unknown') as 'buy' | 'sell' | 'unknown',
       receiveTs: r.receive_ts ? Number(r.receive_ts) : undefined,
       aggressorProvenance: r.aggressor_provenance as any,
       sequenceId: r.sequence_id ?? undefined,
@@ -1287,12 +1290,90 @@ export class MarketDataStore implements IMarketDataStore {
     }
   }
 
+  public getInstrumentSpec(provider: string, root: string): InstrumentSpecRow | null {
+    try {
+      const row = this.db
+        .prepare(`SELECT * FROM instrument_specs WHERE provider = ? AND (root = ? OR raw_symbol = ?) LIMIT 1`)
+        .get(provider, root.toUpperCase(), root.toUpperCase()) as any;
+      if (!row) return null;
+      return {
+        root: row.root,
+        rawSymbol: row.raw_symbol,
+        exchange: row.exchange,
+        currency: row.currency,
+        instrumentClass: row.instrument_class,
+        pointValue: Number(row.point_value),
+        tickSize: Number(row.tick_size),
+        tickValue: Number(row.tick_value),
+        unitOfMeasure: row.unit_of_measure ?? undefined,
+        unitOfMeasureQty: row.unit_of_measure_qty === null ? undefined : Number(row.unit_of_measure_qty),
+        underlying: row.underlying ?? undefined,
+        activation: row.activation ?? undefined,
+        expiration: row.expiration ?? undefined,
+        updatedAt: Number(row.updated_at),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public saveRawManifest(manifest: {
+    dataset: string;
+    schema: string;
+    symbols: string;
+    date: string;
+    filePath: string;
+    format: string;
+    bytes: number;
+    checksum: string;
+  }): void {
+    try {
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO raw_manifest (dataset, schema, symbols, date, file_path, format, bytes, checksum, fetched_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          manifest.dataset,
+          manifest.schema,
+          manifest.symbols,
+          manifest.date,
+          manifest.filePath,
+          manifest.format,
+          manifest.bytes,
+          manifest.checksum,
+          Date.now()
+        );
+    } catch (err) {
+      this.warnWriteFailure('saveRawManifest', err);
+    }
+  }
+
+  public getRawManifestFiles(dataset: string, schema: string, date: string): string[] {
+    try {
+      const rows = this.db
+        .prepare('SELECT file_path FROM raw_manifest WHERE dataset = ? AND schema = ? AND date = ?')
+        .all(dataset, schema, date) as any[] ?? [];
+      return rows.map((r) => r.file_path);
+    } catch {
+      return [];
+    }
+  }
+
   public clearInstrumentSpecs(provider?: string): void {
     try {
       if (provider) this.db.prepare(`DELETE FROM instrument_specs WHERE provider = ?`).run(provider);
       else this.db.exec('DELETE FROM instrument_specs');
     } catch (err) {
       console.warn(`[MarketDataStore] instrument spec reset failed: ${(err as Error).message}`);
+    }
+  }
+
+  public purgeInvalidInstrumentSpecs(): void {
+    try {
+      this.db.prepare('DELETE FROM instrument_specs WHERE tick_size > 1000 OR tick_value > 1000000 OR point_value > 10000000').run();
+    } catch (err) {
+      console.warn(`[MarketDataStore] purge invalid specs failed: ${(err as Error).message}`);
     }
   }
 

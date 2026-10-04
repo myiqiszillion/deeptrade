@@ -9,6 +9,8 @@ import { instrumentMaster } from '../instruments/master.js';
 import { supportsSymbology } from '../datasets/capabilities.js';
 import { marketDataStore } from '../storage/marketDataStore.js';
 
+import { parseOsiSymbol } from '../databento/normalizer.js';
+
 export class SymbolEngine {
   async resolve(q: { rawSymbol?: string; instrumentId?: number; parent?: string; continuous?: string; figi?: string; isin?: string; dataset?: string }): Promise<SymbolRecord | null> {
     if (q.instrumentId != null) {
@@ -20,21 +22,88 @@ export class SymbolEngine {
       if (r) return toRecord(r);
     }
     if (q.rawSymbol) {
-      // Fallback: option_definitions or instrument_specs
-      try {
-        const def = (marketDataStore as any).getOptionDefinitions ? null : null;
-      } catch {}
+      const norm = q.rawSymbol.toUpperCase();
+      const spec = marketDataStore.getInstrumentSpec(q.dataset || 'databento', norm);
+      if (spec) {
+        return {
+          instrumentId: 0,
+          dataset: q.dataset || 'GLBX.MDP3',
+          rawSymbol: spec.rawSymbol,
+          displaySymbol: spec.rawSymbol,
+          asset: spec.root,
+          underlying: spec.underlying,
+          securityType: spec.instrumentClass,
+          exchange: spec.exchange,
+          isContinuous: true,
+          expiration: spec.expiration,
+        };
+      }
+      const osi = parseOsiSymbol(norm);
+      if (osi) {
+        return {
+          instrumentId: 0,
+          dataset: 'OPRA.PILLAR',
+          rawSymbol: norm,
+          displaySymbol: norm,
+          asset: osi.underlying,
+          underlying: osi.underlying,
+          securityType: 'O',
+          exchange: 'OPRA',
+          isContinuous: false,
+          expiration: osi.expiration,
+          strike: osi.strike,
+          optionType: osi.type,
+        };
+      }
     }
     return null;
   }
   toDisplay(rec: SymbolRecord): string { return rec.displaySymbol; }
   toRawSymbol(display: string, dataset: string): string { return display; }
   async childrenOf(parentRaw: string, dataset: string): Promise<SymbolRecord[]> {
-    const rows = instrumentMaster.search({ underlying: parentRaw.replace('.OPT','').toUpperCase() });
-    return rows.filter(r => r.dataset === dataset).map(toRecord);
+    const underlying = parentRaw.replace('.OPT','').toUpperCase();
+    const rows = instrumentMaster.search({ underlying });
+    const matched = rows.filter(r => r.dataset === dataset).map(toRecord);
+    if (matched.length > 0) return matched;
+
+    const defs = marketDataStore.getOptionDefinitions(underlying);
+    if (defs.length > 0) {
+      return defs.map((d, idx) => ({
+        instrumentId: d.instrumentId || idx + 1,
+        dataset,
+        rawSymbol: d.symbol,
+        displaySymbol: d.symbol,
+        asset: d.underlying,
+        underlying: d.underlying,
+        securityType: 'O',
+        exchange: 'OPRA',
+        isContinuous: false,
+        expiration: d.expiration,
+        strike: d.strike,
+        optionType: d.type,
+      }));
+    }
+    return [];
   }
   async continuousChain(root: string, dataset: string): Promise<SymbolRecord[]> {
-    return instrumentMaster.search({ asset: root.toUpperCase(), dataset }).map(toRecord);
+    const rows = instrumentMaster.search({ asset: root.toUpperCase(), dataset });
+    if (rows.length > 0) return rows.map(toRecord);
+    const specs = marketDataStore.listInstrumentSpecs('databento').filter(s => s.root === root.toUpperCase());
+    if (specs.length > 0) {
+      return specs.map((s, idx) => ({
+        instrumentId: idx + 1,
+        dataset,
+        rawSymbol: s.rawSymbol,
+        displaySymbol: s.rawSymbol,
+        asset: s.root,
+        underlying: s.underlying,
+        securityType: s.instrumentClass,
+        exchange: s.exchange,
+        isContinuous: true,
+        expiration: s.expiration,
+      }));
+    }
+    return [];
   }
 }
 function toRecord(r: any): SymbolRecord {

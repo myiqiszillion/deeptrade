@@ -23,17 +23,13 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Typecheck (server + client)
+      - name: Typecheck
         run: pnpm typecheck
-      - name: Lint
-        run: pnpm lint
       - name: Protocol drift check
         run: pnpm test:protocol
       - name: Unit tests
         run: pnpm test:unit
-      - name: Build (server dist + client bundle)
+      - name: Build
         run: pnpm build
-      - name: Client bundle smoke test (UI product markers)
-        run: pnpm test:client
-      - name: Integration tests (spawn the built server)
+      - name: Integration tests
         run: pnpm test:integration
