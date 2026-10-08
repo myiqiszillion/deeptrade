@@ -35,12 +35,6 @@ export class DatabentoDatasetNotFoundError extends DatabentoError {
   }
 }
 
-export class DatabentoCostCapError extends DatabentoError {
-  constructor(capUsd: number) {
-    super(`Databento cost cap exceeded ($${capUsd})`, 'DATABENTO_COST_CAP', 429);
-  }
-}
-
 export class DatabentoDecodeError extends DatabentoError {
   constructor(message = 'Failed to decode Databento response') {
     super(message, 'DATABENTO_DECODE_ERROR');
@@ -51,10 +45,6 @@ export class DatabentoNotConfiguredError extends DatabentoError {
   constructor() {
     super('Databento API key is not configured. Set DATABENTO_API_KEY.', 'VENDOR_NOT_CONFIGURED', 503);
   }
-}
-
-export function isDatabentoError(err: unknown): err is DatabentoError {
-  return err instanceof DatabentoError;
 }
 
 /** Map HTTP status to typed error. */

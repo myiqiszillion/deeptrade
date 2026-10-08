@@ -27,7 +27,6 @@ const runQuoteBoardTests = (await import('./quoteBoard.test.js')).runQuoteBoardT
 const { runDatabentoNormalizerTests } = await import('./databentoNormalizer.test.js');
 const { runDatabentoClientTests } = await import('./databentoClient.test.js');
 const { runDatabentoLiveTests } = await import('./databentoLive.test.js');
-const { runBatchIngestionTests } = await import('./batchIngestion.test.js');
 const { runDatabentoStorageTests } = await import('./databentoStorage.test.js');
 const { runOptionsRoutesTests } = await import('./optionsRoutes.test.js');
 const { runDatabentoConfigTests } = await import('./databentoConfig.test.js');
@@ -59,7 +58,6 @@ async function main() {
   await runDatabentoNormalizerTests();
   await runDatabentoClientTests();
   await runDatabentoLiveTests();
-  await runBatchIngestionTests();
   await runDatabentoStorageTests();
   await runOptionsRoutesTests();
   await runDatabentoRoutesTests();

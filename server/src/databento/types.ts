@@ -7,13 +7,11 @@
  * - CME Futures (GLBX.MDP3 - ES, NQ, CL, GC)
  */
 
-import { HistoricalBar, Tick } from '../types.js';
-
 // ==========================================
 // Raw Databento JSON / DBN Record Interfaces
 // ==========================================
 
-export interface DbRecordHeader {
+interface DbRecordHeader {
   length?: number;
   rtype?: number;
   publisher_id?: number;
@@ -140,27 +138,6 @@ export interface OptionStatisticRecord {
   clearedVolume?: number;
 }
 
-export interface NormalizedOptionQuote extends NormalizedQuote {
-  underlying: string;
-  type: 'call' | 'put';
-  strike: number;
-  expiration: string;
-  openInterest?: number;
-  impliedVol?: number;
-  delta?: number;
-  gamma?: number;
-  theta?: number;
-  vega?: number;
-}
-
-export interface DatasetRecord {
-  dataset: string;
-  description?: string;
-  start?: string;
-  end?: string;
-  schemas?: string[];
-}
-
 export interface DatasetRange {
   start: string;
   end: string;
@@ -206,15 +183,6 @@ export interface DatasetConditionRecord {
   condition: 'available' | 'missing' | 'bad' | 'pending' | string;
   details?: string;
 }
-
-export interface RecordCountResult {
-  record_count: number;
-}
-
-export interface BillableSizeResult {
-  billable_size: number;
-}
-
 
 /** Databento MBO (Market-by-Order L3) record */
 export interface DbMboRecord {

@@ -1,9 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { timingSafeEqual } from 'node:crypto';
 import { existsSync, watch } from 'fs';
-import { readFile } from 'fs/promises';
-import { extname, resolve, sep } from 'path';
-import { fileURLToPath } from 'url';
+import { resolve } from 'path';
 import { WebSocket, WebSocketServer } from 'ws';
 import { User } from './auth/types.js';
 import { entitlementService } from './auth/entitlementService.js';
@@ -24,7 +22,6 @@ import { MarketContextManager, TIMEFRAMES } from './marketData/marketContext.js'
 import { marketDataStore } from './storage/marketDataStore.js';
 import { ReplaySession } from './replaySession.js';
 import { MAX_SESSIONS, MAX_SESSIONS_PER_USER, ChartSession } from './session.js';
-import { Tick, WSClientMessage, WSServerMessage } from './types.js';
 import {
   fetchWatchlistQuotes,
   normaliseQuoteSymbols,
@@ -46,7 +43,6 @@ import { createBacktestRouter } from './research/backtest.js';
 import { listDatasets } from './datasets/capabilities.js';
 import { listSchemas } from './datasets/schemaRegistry.js';
 import { instrumentMaster } from './instruments/master.js';
-import { symbolEngine } from './symbols/engine.js';
 import { optionsSymbolResolver } from './symbols/optionsResolver.js';
 import { futuresSymbolResolver } from './symbols/futuresResolver.js';
 import { getTradingHours } from './sessions/tradingSessions.js';
@@ -195,16 +191,6 @@ const loginGuard = new LoginGuard(
   parseInt(process.env.LOGIN_FAILURE_WINDOW_SECONDS || '900', 10) * 1000,
   parseInt(process.env.LOGIN_LOCK_SECONDS || '900', 10) * 1000
 );
-/** Bounds paid-vendor spend: history pagination can trigger billable upstream calls. */
-const vendorFetchLimiter = new SlidingWindowLimiter(
-  parseInt(process.env.MAX_VENDOR_FETCHES_PER_HOUR || '120', 10),
-  60 * 60_000
-);
-
-const CSP_POLICY =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
-  "connect-src 'self' ws: wss:; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; " +
-  "form-action 'self'; object-src 'none'";
 
 /** Echo only trusted origins (never a blanket '*'). */
 function applyCors(req: IncomingMessage, res: ServerResponse): void {
@@ -218,7 +204,7 @@ function applyCors(req: IncomingMessage, res: ServerResponse): void {
   res.setHeader('Access-Control-Max-Age', '600');
 }
 
-function applySecurityHeaders(res: ServerResponse, options: { html?: boolean } = {}): void {
+function applySecurityHeaders(res: ServerResponse): void {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
@@ -226,9 +212,6 @@ function applySecurityHeaders(res: ServerResponse, options: { html?: boolean } =
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
   if (process.env.NODE_ENV === 'production' || process.env.ENABLE_HSTS === '1') {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  }
-  if (options.html) {
-    res.setHeader('Content-Security-Policy', CSP_POLICY);
   }
 }
 
@@ -385,86 +368,16 @@ entitlementService.onRevocation((userId, revoked) => {
   }
 });
 
-// Setup HTTP + WebSocket server on ONE port so a free host only needs to expose 8080:
-// the built client is served as static files, /healthz reports status, and the WS upgrade
-// happens on the same listener.
-function resolveClientDist(): string {
-  const custom = process.env.CLIENT_DIST;
-  if (custom) {
-    const candidates = [
-      resolve(process.cwd(), custom),
-      resolve(process.cwd(), '..', custom),
-      resolve(fileURLToPath(new URL('../../', import.meta.url)), custom),
-    ];
-    for (const c of candidates) {
-      if (existsSync(c)) return c;
-    }
-  }
-  return fileURLToPath(new URL('../../client/dist', import.meta.url));
-}
-
-const CLIENT_DIST = resolveClientDist();
+// HTTP + WebSocket share ONE port so a free host only needs to expose 8080: /healthz reports
+// status and the WS upgrade happens on the same listener.
 const MAX_PAYLOAD_BYTES = parseInt(process.env.MAX_PAYLOAD_BYTES || '65536', 10);
 
-const MIME_TYPES: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.ico': 'image/x-icon',
-  '.woff2': 'font/woff2',
-  '.map': 'application/json; charset=utf-8',
-};
-
-async function serveStatic(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const urlPath = (req.url || '/').split('?')[0];
-  const requested = urlPath === '/' ? '/index.html' : urlPath;
-  // Resolve inside the dist folder only — blocks ../ traversal.
-  const target = resolve(CLIENT_DIST, `.${requested}`);
-  if (!target.startsWith(CLIENT_DIST + sep) && target !== resolve(CLIENT_DIST, 'index.html')) {
-    res.writeHead(403).end('Forbidden');
-    return;
-  }
-
-  try {
-    const body = await readFile(target);
-    const ext = extname(target);
-    const isHtml = ext === '.html';
-    // Vite fingerprints /assets/* so they can be cached forever; the shell must never be cached.
-    if (target.includes(`${sep}assets${sep}`)) {
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-    } else if (isHtml) {
-      res.setHeader('Cache-Control', 'no-store');
-    } else {
-      res.setHeader('Cache-Control', 'public, max-age=3600');
-    }
-    applySecurityHeaders(res, { html: isHtml });
-    res.writeHead(200, { 'content-type': MIME_TYPES[ext] || 'application/octet-stream' });
-    res.end(body);
-  } catch {
-    // SPA fallback: unknown paths return index.html so client routing keeps working.
-    try {
-      const fallback = await readFile(resolve(CLIENT_DIST, 'index.html'));
-      res.setHeader('Cache-Control', 'no-store');
-      applySecurityHeaders(res, { html: true });
-      res.writeHead(200, { 'content-type': MIME_TYPES['.html'] });
-      res.end(fallback);
-    } catch {
-      res.setHeader('Cache-Control', 'no-store');
-      applySecurityHeaders(res, { html: true });
-      res.writeHead(200, { 'content-type': MIME_TYPES['.html'] });
-      res.end('<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>DeepChart</title></head><body><div id="root"></div></body></html>');
-    }
-  }
-}
+const JSON_CONTENT_TYPE = 'application/json; charset=utf-8';
 
 function sendJson(res: ServerResponse, statusCode: number, data: unknown): void {
   applySecurityHeaders(res);
   res.setHeader('Cache-Control', 'no-store');
-  res.writeHead(statusCode, { 'content-type': MIME_TYPES['.json'] });
+  res.writeHead(statusCode, { 'content-type': JSON_CONTENT_TYPE });
   res.end(JSON.stringify(data));
 }
 
@@ -518,7 +431,7 @@ const httpServer = createServer(async (req, res) => {
     const detailed = isAdminRequest(req);
 
     if (!detailed) {
-      res.writeHead(200, { 'content-type': MIME_TYPES['.json'] });
+      res.writeHead(200, { 'content-type': JSON_CONTENT_TYPE });
       res.end(
         JSON.stringify({
           status: 'ok',
@@ -530,7 +443,7 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
-    res.writeHead(200, { 'content-type': MIME_TYPES['.json'] });
+    res.writeHead(200, { 'content-type': JSON_CONTENT_TYPE });
     res.end(
       JSON.stringify({
         status: 'ok',
@@ -602,6 +515,35 @@ const httpServer = createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' });
     res.end(body);
     return;
+  }
+
+  // 3b. Instrument search must be dispatched BEFORE the /api/v1/instruments/:symbol detail route:
+  // both are prefix matches, so the wildcard branch below would otherwise swallow /search and
+  // answer with a fabricated "SEARCH" instrument (getOrRegisterInstrument auto-registers any root).
+  if (req.url?.startsWith('/api/v1/instruments/search')) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const q = (url.searchParams.get('q') || url.searchParams.get('asset') || '').trim().toUpperCase();
+    const dataset = url.searchParams.get('dataset') || undefined;
+    let results = instrumentMaster.search({ asset: q || undefined, dataset });
+    if (results.length === 0) {
+      const specs = marketDataStore.listInstrumentSpecs('databento');
+      const filtered = q ? specs.filter(s => s.root.includes(q) || s.rawSymbol.includes(q)) : specs;
+      results = filtered.slice(0, 50).map((s, idx) => ({
+        instrumentId: idx + 1,
+        dataset: dataset || 'GLBX.MDP3',
+        publisherId: 1,
+        rawSymbol: s.rawSymbol,
+        securityType: s.instrumentClass,
+        asset: s.root,
+        underlying: s.underlying,
+        exchange: s.exchange,
+        currency: s.currency,
+        tickSize: s.tickSize,
+        multiplier: s.pointValue,
+        isContinuous: true,
+      }));
+    }
+    sendJson(res, 200, { instruments: results }); return;
   }
 
   // 4. Instruments API: list and detail
@@ -817,31 +759,6 @@ const httpServer = createServer(async (req, res) => {
   // QuantDecay public API — datasets, schemas, instruments, symbols, symbology, futures, reference
   if (req.url?.startsWith('/api/v1/datasets')) { sendJson(res, 200, { datasets: listDatasets() }); return; }
   if (req.url?.startsWith('/api/v1/schemas')) { sendJson(res, 200, { schemas: listSchemas() }); return; }
-  if (req.url?.startsWith('/api/v1/instruments/search')) {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const q = (url.searchParams.get('q') || url.searchParams.get('asset') || '').trim().toUpperCase();
-    const dataset = url.searchParams.get('dataset') || undefined;
-    let results = instrumentMaster.search({ asset: q || undefined, dataset });
-    if (results.length === 0) {
-      const specs = marketDataStore.listInstrumentSpecs('databento');
-      const filtered = q ? specs.filter(s => s.root.includes(q) || s.rawSymbol.includes(q)) : specs;
-      results = filtered.slice(0, 50).map((s, idx) => ({
-        instrumentId: idx + 1,
-        dataset: dataset || 'GLBX.MDP3',
-        publisherId: 1,
-        rawSymbol: s.rawSymbol,
-        securityType: s.instrumentClass,
-        asset: s.root,
-        underlying: s.underlying,
-        exchange: s.exchange,
-        currency: s.currency,
-        tickSize: s.tickSize,
-        multiplier: s.pointValue,
-        isContinuous: true,
-      }));
-    }
-    sendJson(res, 200, { instruments: results }); return;
-  }
   if (req.url?.startsWith('/api/v1/symbols/options/chain')) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const u = (url.searchParams.get('underlying') || 'SPY').toUpperCase();
@@ -960,17 +877,6 @@ const httpServer = createServer(async (req, res) => {
     const root = url.pathname.split('/').pop() || 'ES';
     const c = await futuresSymbolResolver.continuousToContract(root);
     sendJson(res, 200, { root, contract: c }); return;
-  }
-  if (req.url?.startsWith('/api/v1/futures/roll')) {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const root = url.searchParams.get('root') || 'ES';
-    sendJson(res, 200, { root, rolls: [] }); return;
-  }
-  if (req.url?.startsWith('/api/v1/monitoring/live')) {
-    sendJson(res, 200, { sessions: [] }); return;
-  }
-  if (req.url?.startsWith('/api/v1/monitoring/quality')) {
-    sendJson(res, 200, { alerts: [] }); return;
   }
   if (req.url?.startsWith('/api/v1/monitoring/vendor')) {
     sendJson(res, 200, { usage: marketDataStore.listVendorUsage('databento', 12) }); return;
@@ -1507,7 +1413,7 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  await serveStatic(req, res);
+  sendJson(res, 404, { error: 'Not found', path: req.url });
 });
 
 interface ExtWebSocket extends WebSocket {
@@ -1832,11 +1738,8 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
             const sym = session.subscribedSymbol;
             const inst = getOrRegisterInstrument(sym);
             let ticks = marketDataStore.queryTrades({ provider, symbol: sym, limit: 5000 }).trades;
-            if (ticks.length === 0) {
-              for (const p of ['databento', 'binance']) {
-                ticks = marketDataStore.queryTrades({ provider: p, symbol: sym, limit: 5000 }).trades;
-                if (ticks.length > 0) break;
-              }
+            if (ticks.length === 0 && provider !== 'databento') {
+              ticks = marketDataStore.queryTrades({ provider: 'databento', symbol: sym, limit: 5000 }).trades;
             }
             if (ticks.length === 0) {
               ticks = contextManager.getTicksForReplay(sym);
@@ -1935,9 +1838,8 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
 });
 
 httpServer.listen(PORT, HOST, () => {
-  console.log(`[DeepChart Free — Order Flow Charts] Ready at ws://localhost:${PORT} (bound to ${HOST})`);
-  console.log(`[DeepChart Server] Web terminal: http://localhost:${PORT} | health: http://localhost:${PORT}/healthz`);
-  console.log(`[DeepChart Server] Serving client build from ${CLIENT_DIST}`);
+  console.log(`[DeepChart Free - Order Flow Charts] Ready at ws://localhost:${PORT} (bound to ${HOST})`);
+  console.log(`[DeepChart Server] health: http://localhost:${PORT}/healthz | metrics: http://localhost:${PORT}/metrics`);
 });
 
 async function gracefulShutdown(signal: string) {

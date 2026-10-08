@@ -8,7 +8,7 @@
  */
 
 /** Decimal places implied by a tick size (1 -> 0, 0.25 -> 2, 0.01 -> 2, 0.001 -> 3). */
-export function tickDecimals(tickSize: number): number {
+function tickDecimals(tickSize: number): number {
   if (!Number.isFinite(tickSize) || tickSize <= 0) return 0;
   const text = tickSize.toString();
   if (text.includes('e-')) {

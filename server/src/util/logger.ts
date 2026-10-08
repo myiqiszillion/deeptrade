@@ -50,15 +50,3 @@ export function installConsoleBridge(): void {
   console.warn = (...args: unknown[]) => emit('warn', args, process.stderr);
   console.error = (...args: unknown[]) => emit('error', args, process.stderr);
 }
-
-export function logInfo(message: string, fields?: Record<string, unknown>): void {
-  console.log(fields ? `${message} ${JSON.stringify(fields)}` : message);
-}
-
-export function logWarn(message: string, fields?: Record<string, unknown>): void {
-  console.warn(fields ? `${message} ${JSON.stringify(fields)}` : message);
-}
-
-export function logError(message: string, fields?: Record<string, unknown>): void {
-  console.error(fields ? `${message} ${JSON.stringify(fields)}` : message);
-}

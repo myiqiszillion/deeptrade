@@ -10,7 +10,7 @@
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { DatabentoHttpClient } from './client.js';
 
-export interface DatabentoRouteContext {
+interface DatabentoRouteContext {
   client: DatabentoHttpClient;
 }
 

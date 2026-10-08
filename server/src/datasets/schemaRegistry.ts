@@ -1,4 +1,4 @@
-export interface SchemaMeta { schema: string; rtype?: number; level?: string; description?: string; datasets: string[] }
+interface SchemaMeta { schema: string; rtype?: number; level?: string; description?: string; datasets: string[] }
 
 const SCHEMAS: SchemaMeta[] = [
   { schema: 'trades', rtype: 22, level: 'L1', description: 'Trades', datasets: ['OPRA.PILLAR','DBEQ.BASIC','GLBX.MDP3'] },
@@ -18,4 +18,3 @@ const SCHEMAS: SchemaMeta[] = [
 ];
 
 export function listSchemas(): SchemaMeta[] { return SCHEMAS; }
-export function getSchema(name: string): SchemaMeta | undefined { return SCHEMAS.find(s => s.schema === name); }

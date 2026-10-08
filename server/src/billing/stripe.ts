@@ -39,7 +39,7 @@ export function verifyStripeSignature(
   });
 }
 
-export interface CheckoutRequest {
+interface CheckoutRequest {
   user: User;
   planId: PlanId;
   successUrl: string;

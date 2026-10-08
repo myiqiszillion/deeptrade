@@ -1,4 +1,4 @@
-export type TradeSide = 'BUY' | 'SELL' | 'UNKNOWN';
+type TradeSide = 'BUY' | 'SELL' | 'UNKNOWN';
 
 export type AggressorProvenance =
   | 'EXCHANGE_NATIVE' // From exchange native flag (e.g. CME MBO action/side flag)
@@ -6,9 +6,9 @@ export type AggressorProvenance =
   | 'INFERRED_TICK'   // Derived via tick rule (uptick/downtick vs previous price)
   | 'UNKNOWN';        // Undecidable or not provided
 
-export type DataDepthLevel = 'TOP_OF_BOOK' | 'L2_20' | 'L2_50' | 'FULL_MBO';
+type DataDepthLevel = 'TOP_OF_BOOK' | 'L2_20' | 'L2_50' | 'FULL_MBO';
 
-export interface TradeQualityFlags {
+interface TradeQualityFlags {
   isCoalesced?: boolean; // Vendor coalesced multiple trades into this quote/update
   isSuspect?: boolean;
   isGapBoundary?: boolean;
@@ -32,19 +32,19 @@ export interface MarketTrade {
   aggressorProvenance?: AggressorProvenance;
   /** Sequence identifier from vendor for gap detection. */
   sequenceId?: number | string;
-  /** Data source provider identifier (e.g. 'databento', 'binance', 'fixture'). */
+  /** Data source provider identifier (e.g. 'databento', 'fixture'). */
   sourceProvider?: string;
   /** Quality metadata flags. */
   qualityFlags?: TradeQualityFlags;
 }
 
-export interface DepthLevel {
+interface DepthLevel {
   price: number;
   size: number;
 }
 
 /** A full L2 replacement for one symbol. */
-export interface MarketDepthSnapshot {
+interface MarketDepthSnapshot {
   kind: 'snapshot';
   ts: number;
   bids: DepthLevel[];
@@ -56,7 +56,7 @@ export interface MarketDepthSnapshot {
 }
 
 /** A single-level L2 change (size 0 = remove that price). */
-export interface MarketDepthDelta {
+interface MarketDepthDelta {
   kind: 'delta';
   ts: number;
   side: 'bid' | 'ask';
@@ -70,7 +70,7 @@ export interface MarketDepthDelta {
 export type MarketDepthEvent = MarketDepthSnapshot | MarketDepthDelta;
 
 /** Vendor-agnostic connection state. Public protocol maps this to LIVE | UNAVAILABLE. */
-export type FeedConnectionState = 'UNAVAILABLE' | 'CONNECTING' | 'LIVE' | 'ERROR';
+type FeedConnectionState = 'UNAVAILABLE' | 'CONNECTING' | 'LIVE' | 'ERROR';
 
 export interface FeedStatusEvent {
   state: FeedConnectionState;

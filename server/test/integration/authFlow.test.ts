@@ -38,7 +38,6 @@ export async function runAuthFlowTests(): Promise<void> {
     FUTURES_PROVIDER: 'none',
     STORAGE_PATH: ':memory:',
     DEFAULT_SYMBOL: 'ES',
-    MAX_VENDOR_FETCHES_PER_HOUR: '5',
     MAX_API_REQUESTS_PER_MIN: '1000',
     MAX_AUTH_REQUESTS_PER_MIN: '1000',
     LOGIN_MAX_FAILURES: '3',

@@ -4,11 +4,11 @@
  * Pulls are cached in SQLite, so the extra depth is fetched once and then served from disk.
  *
  * Raise HISTORY_BARS_TARGET when the chart should pan further back; lower it when the metered vendor
- * bill matters more than depth. The client never renders more than 5000 bars at once, so that is the cap.
+ * bill matters more than depth. No view renders more than 5000 bars at once, so that is the cap.
  */
-export const HISTORY_BARS_MIN = 100;
-export const HISTORY_BARS_MAX = 5000;
-export const HISTORY_BARS_DEFAULT = 1500;
+const HISTORY_BARS_MIN = 100;
+const HISTORY_BARS_MAX = 5000;
+const HISTORY_BARS_DEFAULT = 1500;
 
 export function historyBarsTarget(env: NodeJS.ProcessEnv = process.env): number {
   const raw = parseInt(env.HISTORY_BARS_TARGET || '', 10);

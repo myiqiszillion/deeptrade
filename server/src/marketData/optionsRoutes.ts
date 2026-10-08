@@ -14,9 +14,8 @@ import { MarketDataStore } from '../storage/marketDataStore.js';
 import { RedisCache } from '../storage/redisCache.js';
 import { OptionContractDefinition } from '../databento/types.js';
 import { resolveDatabentoConfig } from '../databento/config.js';
-import { DatabentoNotConfiguredError } from '../databento/errors.js';
 
-export interface OptionsRouteContext {
+interface OptionsRouteContext {
   dbClient: DatabentoHttpClient;
   store: MarketDataStore;
   cache: RedisCache;

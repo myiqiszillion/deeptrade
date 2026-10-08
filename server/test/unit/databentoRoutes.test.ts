@@ -1,5 +1,4 @@
 import assert from 'node:assert';
-import { IncomingMessage, ServerResponse } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { createDatabentoRouter } from '../../src/databento/routes.js';

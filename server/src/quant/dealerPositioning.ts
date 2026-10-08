@@ -4,7 +4,7 @@
  */
 import type { ExposureSnapshot } from '../options/exposure.js';
 
-export interface MarketImpactModel {
+interface MarketImpactModel {
   underlying: string;
   spot: number;
   timestamp: number;

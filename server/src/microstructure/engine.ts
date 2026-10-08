@@ -1,7 +1,7 @@
 /** Intraday microstructure metrics — pure computation over orderbook + tape. */
 import type { OrderbookSnapshot, Tick } from '../types.js';
 
-export interface MicrostructureSnapshot {
+interface MicrostructureSnapshot {
   symbol: string;
   timestamp: number;
   spread: number | null;

@@ -69,7 +69,7 @@ export interface UdfTimescaleMarksResponse {
   tooltip: string[];
 }
 
-export interface FootprintLevel {
+interface FootprintLevel {
   price: number;
   buyVolume: number;
   sellVolume: number;

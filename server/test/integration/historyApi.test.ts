@@ -98,6 +98,15 @@ export async function runHistoryApiTests(): Promise<void> {
     assert.ok(es, 'ES instrument must be present in dynamic list');
     assert.equal(es.symbol, 'ES');
 
+    // 4a. Search is its own route, not /api/v1/instruments/:symbol: it must return a result list.
+    // Hermetic run: instrument_master/instrument_specs are empty, so the list may legitimately be
+    // []. What must never come back is the detail-route payload with a fabricated "SEARCH" symbol.
+    const searchRes = await fetch(`${base}/api/v1/instruments/search?q=ES`);
+    assert.equal(searchRes.status, 200, 'instrument search answers 200');
+    const searchData = (await searchRes.json()) as any;
+    assert.ok(Array.isArray(searchData.instruments), 'search returns an instruments array');
+    assert.equal(searchData.instrument, undefined, 'search must not be handled by /api/v1/instruments/:symbol');
+
     // 4b. Feed state must be honest: CONNECTING/LIVE may only appear for symbols the server actually tracks.
     // ES is the default symbol, so the server warms a context for it at boot (here with no vendor configured,
     // which is UNAVAILABLE — not "connecting", and definitely not live).

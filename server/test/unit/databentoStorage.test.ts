@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { MarketDataStore } from '../../src/storage/marketDataStore.js';
-import { TimescaleStore } from '../../src/storage/timescaleStore.js';
 import { RedisCache } from '../../src/storage/redisCache.js';
 import { OptionContractDefinition, OptionStatisticRecord, NormalizedQuote } from '../../src/databento/types.js';
 
@@ -59,12 +58,6 @@ export async function runDatabentoStorageTests(): Promise<void> {
     assert.equal(latestStat.openInterest, 15400);
     assert.equal(latestStat.settlementPrice, 25.4);
     assert.equal(latestStat.clearedVolume, 4200);
-
-    // TimescaleStore proxying
-    const timescale = new TimescaleStore({ fallbackStore: store });
-    assert.equal(timescale.isFallback, true);
-    const tsDefs = await timescale.getOptionDefinitions('SPY');
-    assert.equal(tsDefs.length, 2);
 
     console.log('  PASS  IMarketDataStore options definitions and statistics');
   }

@@ -25,8 +25,6 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Typecheck
         run: pnpm typecheck
-      - name: Protocol drift check
-        run: pnpm test:protocol
       - name: Unit tests
         run: pnpm test:unit
       - name: Build

@@ -154,8 +154,9 @@ and alert on `level:"error"`. Public `/healthz` returns only
 2. **Single process** — market contexts and the SQLite file live in-process; 500 sessions is the
    default ceiling. Scaling out needs sticky sessions plus a shared store (Postgres/ClickHouse),
    which is not implemented.
-3. **Vendor budget** — history pagination calls an API; `MAX_VENDOR_FETCHES_PER_HOUR` caps the
-   damage per account.
+3. **Vendor budget** — history pagination calls a billable API. Spend is capped **per calendar
+   month** by `DATABENTO_COST_CAP_USD` (the options routes stop calling upstream once the ledger in
+   `GET /api/v1/monitoring/vendor` crosses it).
 4. **Node upgrade** — `node:sqlite` is still experimental upstream: pin the version, re-run
    `pnpm test` before bumping.
 

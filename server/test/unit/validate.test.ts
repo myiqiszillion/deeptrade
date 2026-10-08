@@ -7,10 +7,9 @@ import {
   isMicroContract,
   parseContractSymbol,
 } from '../../src/futuresConfig.js';
-import { validateDepth, validateTrade } from '../../src/marketData/validate.js';
 
 export async function runValidateTests(): Promise<void> {
-  console.log('[unit/validate.test] Running validation and instrument specs unit tests...');
+  console.log('[unit/validate.test] Running instrument specs unit tests...');
 
   // 1. Instrument Independence (ES vs MES)
   const es = FUTURES_INSTRUMENTS.ES;
@@ -51,77 +50,8 @@ export async function runValidateTests(): Promise<void> {
 
   // Vendor symbol formatting
   assert.equal(formatVendorSymbol('databento', 'ES'), 'ES');
-  assert.equal(formatVendorSymbol('binance', 'BTCUSDT'), 'BTCUSDT');
 
-  // 4. Trade Validation
-  const validRes = validateTrade(
-    {
-      price: 5000.25,
-      size: 10,
-      side: 'buy',
-      ts: 1700000000000,
-      receiveTs: 1700000000005,
-      sequenceId: 'seq_1',
-      aggressorProvenance: 'EXCHANGE_NATIVE',
-    },
-    es.tickSize,
-    es.symbol
-  );
-  assert.ok(validRes.trade);
-  assert.equal(validRes.trade.price, 5000.25);
-  assert.equal(validRes.trade.size, 10);
-  assert.equal(validRes.trade.receiveTs, 1700000000005);
-  assert.equal(validRes.trade.sequenceId, 'seq_1');
-
-  // Invalid trades rejected
-  const negPriceRes = validateTrade(
-    { price: -1, size: 10, side: 'buy', ts: 1700000000000 },
-    es.tickSize,
-    es.symbol
-  );
-  assert.equal(negPriceRes.trade, null, 'Negative price rejected');
-
-  const zeroSizeRes = validateTrade(
-    { price: 5000, size: 0, side: 'buy', ts: 1700000000000 },
-    es.tickSize,
-    es.symbol
-  );
-  assert.equal(zeroSizeRes.trade, null, 'Zero size rejected');
-
-  // 5. Depth Validation
-  const validDepthRes = validateDepth(
-    {
-      kind: 'snapshot',
-      symbol: 'ES',
-      bids: [[5000.0, 20]],
-      asks: [[5000.25, 25]],
-      ts: 1700000000000,
-    },
-    es.tickSize,
-    es.symbol
-  );
-  assert.ok(validDepthRes.event);
-  assert.equal(validDepthRes.event.kind, 'snapshot');
-  if (validDepthRes.event.kind === 'snapshot') {
-    assert.equal(validDepthRes.event.bids.length, 1);
-    assert.equal(validDepthRes.event.asks.length, 1);
-  }
-
-  // Empty book rejected
-  const emptyRes = validateDepth(
-    {
-      kind: 'snapshot',
-      symbol: 'ES',
-      bids: [],
-      asks: [],
-      ts: 1700000000000,
-    },
-    es.tickSize,
-    es.symbol
-  );
-  assert.equal(emptyRes.event, null, 'Empty snapshot rejected');
-
-  console.log('  [PASS] All validation unit tests passed.');
+  console.log('  [PASS] All instrument spec unit tests passed.');
 }
 
 if (process.argv[1]?.endsWith('validate.test.ts') || process.argv[1]?.endsWith('validate.test.js')) {

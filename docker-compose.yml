@@ -3,7 +3,7 @@
 #   cp .env.example .env      # then set AUTH_JWT_SECRET, ADMIN_*, DOMAIN and provider keys
 #   docker compose up -d --build
 #
-# The app also serves the built client, so Caddy is only a TLS terminator + reverse proxy.
+# Caddy is only a TLS terminator + reverse proxy in front of the API/WebSocket app.
 services:
   app:
     build: .

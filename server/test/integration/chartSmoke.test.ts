@@ -66,9 +66,10 @@ export async function runChartSmokeTests(): Promise<void> {
     });
     await until(() => ready, 'server startup');
 
-    const page = await fetch(base);
-    assert.equal(page.status, 200);
-    assert.match(await page.text(), /<div id="root">/);
+    // The server is API + WebSocket only: no web client ships in this repo, so the root must 404
+    // instead of serving an app shell, and a real API route must answer.
+    assert.equal((await fetch(base)).status, 404);
+    assert.equal((await fetch(`${base}/api/v1/datasets`)).status, 200);
 
     socket = new WebSocket(`ws://127.0.0.1:${port}`);
     socket.on('message', (data) => messages.push(JSON.parse(data.toString())));

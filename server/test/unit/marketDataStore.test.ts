@@ -43,7 +43,7 @@ export async function runMarketDataStoreTests(): Promise<void> {
     assert.equal(page2.trades[0].id, 't_1');
 
     // 3. Provider Scoping (no cross-provider leakage)
-    const otherProviderTrades = store.queryTrades({ provider: 'binance', symbol: 'ES', limit: 10 });
+    const otherProviderTrades = store.queryTrades({ provider: 'fixture', symbol: 'ES', limit: 10 });
     assert.equal(otherProviderTrades.trades.length, 0, 'Querying different provider must return 0 trades');
 
     // 4. Bar Persistence & Pagination

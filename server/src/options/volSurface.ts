@@ -4,10 +4,10 @@
  */
 import type { PricedContract } from './exposure.js';
 
-export interface VolSurfacePoint { expiration: string; dte: number; strike: number; iv: number | null; moneyness: number }
-export interface TermStructurePoint { dte: number; atmIv: number | null }
-export interface SkewPoint { dte: number; skew: number | null } // put IV - call IV at ~25d
-export interface VolSurface {
+interface VolSurfacePoint { expiration: string; dte: number; strike: number; iv: number | null; moneyness: number }
+interface TermStructurePoint { dte: number; atmIv: number | null }
+interface SkewPoint { dte: number; skew: number | null } // put IV - call IV at ~25d
+interface VolSurface {
   underlying: string; spot: number; timestamp: number;
   points: VolSurfacePoint[];
   termStructure: TermStructurePoint[];
@@ -30,10 +30,8 @@ export function buildVolSurface(
   opts: { r?: number; medianIvByDte?: Map<number, number> } = {}
 ): VolSurface | null {
   if (!Number.isFinite(spot) || spot <= 0 || contracts.length === 0) return null;
-  const r = opts.r ?? 0.045;
   const points: VolSurfacePoint[] = [];
   for (const c of contracts) {
-    const T = Math.max(c.dte, 1) / 365;
     // Use settled or cached iv if already solved; else attempt from a synthetic mid if available
     let iv = c.iv;
     if (iv == null && c.greeks) {

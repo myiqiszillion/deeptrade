@@ -3,7 +3,7 @@
 {$DOMAIN:localhost} {
 	encode zstd gzip
 
-	# Security headers are also sent by the app; keeping them here protects /assets as well.
+	# Security headers are also sent by the app; keeping them here covers proxied responses too.
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"

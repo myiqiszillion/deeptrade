@@ -1,7 +1,7 @@
 import { FuturesInstrument } from './futuresConfig.js';
 import { GEXProfile, OptionsFlowTrade } from './gexEngine.js';
 
-export type OrderSide = 'buy' | 'sell' | 'unknown';
+type OrderSide = 'buy' | 'sell' | 'unknown';
 
 export type AggressorProvenance =
   | 'EXCHANGE_NATIVE' // Native flag from exchange (e.g. CME MBO)
@@ -41,7 +41,7 @@ export interface OrderbookSnapshot {
   lastUpdateId: number;
 }
 
-export interface FootprintPriceLevel {
+interface FootprintPriceLevel {
   price: number;
   bidVol: number; // Volume sold at bid (market sell)
   askVol: number; // Volume bought at ask (market buy)
@@ -177,21 +177,6 @@ export interface AbsorptionAlert {
   side: 'buy_absorption' | 'sell_absorption';
   description: string;
 }
-
-export interface DataCoverage {
-  provider: string;
-  realtime: 'LIVE' | 'UNAVAILABLE' | 'DEGRADED';
-  history: 'NONE' | 'BARS' | 'TICKS';
-  footprint: 'AVAILABLE' | 'UNAVAILABLE' | 'PARTIAL';
-  orderbook: 'NONE' | 'L2' | 'MBO' | 'PARTIAL';
-  gapStatus: 'NONE' | 'DETECTED' | 'RECOVERED' | 'UNRECOVERED';
-}
-
-export type WSClientMessage =
-  | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'databento' | 'binance' | string }
-  | { type: 'REPLAY_CONTROL'; action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP' | 'RETURN_TO_LIVE'; speed?: number; timestamp?: number }
-  | { type: 'FETCH_HISTORY'; symbol: string; timeframe: string; provider?: string; beforeTime?: number; limit?: number; requestId?: string }
-  | { type: 'PING'; timestamp?: number };
 
 export type WSServerMessage =
   | {

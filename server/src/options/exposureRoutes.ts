@@ -3,16 +3,15 @@ import { MarketDataStore } from '../storage/marketDataStore.js';
 import { RedisCache } from '../storage/redisCache.js';
 import { buildPricedChain } from './chain.js';
 import { buildExposure } from './exposure.js';
-import { resolveDatabentoConfig } from '../databento/config.js';
 import { snapshotStore } from '../quant/snapshotStore.js';
 
-export interface ExposureRouteContext {
+interface ExposureRouteContext {
   store: MarketDataStore;
   cache: RedisCache;
 }
 
 export function createExposureRouter(ctx: ExposureRouteContext) {
-  const { store, cache } = ctx;
+  const { store } = ctx;
 
   // reuse RedisCache in-memory map for exposure snapshot cache via a simple TTL map
   const memCache = new Map<string, { value: any; exp: number }>();
@@ -29,7 +28,6 @@ export function createExposureRouter(ctx: ExposureRouteContext) {
     const underlying = (url.searchParams.get('underlying') || url.searchParams.get('symbol') || url.pathname.split('/').pop() || 'SPY').toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (!/^[A-Z0-9]{1,6}$/.test(underlying)) return send(400, { error: 'Invalid underlying', code: 'INVALID_UNDERLYING' });
 
-    const cfg = resolveDatabentoConfig();
     const r = parseFloat(process.env.RISK_FREE_RATE || '0.04');
 
     // Try mem cache (30s)

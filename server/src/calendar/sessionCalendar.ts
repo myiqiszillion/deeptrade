@@ -3,7 +3,7 @@
  * and session rollover detection for CME, CBOT, NYMEX, and COMEX.
  */
 
-export interface SessionInfo {
+interface SessionInfo {
   scheduleId: string;
   sessionDate: string; // YYYY-MM-DD representing the trading session date
   isOpen: boolean;

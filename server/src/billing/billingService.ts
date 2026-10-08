@@ -12,7 +12,7 @@ function entitlementId(userId: string, planId: PlanId, index: number): string {
   return `${ENTITLEMENT_PREFIX}:${userId}:${planId}:${index}`;
 }
 
-export interface ApplyPlanOptions {
+interface ApplyPlanOptions {
   validUntil?: number;
   provider?: Subscription['provider'];
   providerRef?: string;

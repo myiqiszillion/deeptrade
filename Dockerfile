@@ -3,7 +3,6 @@ FROM node:24-alpine AS build
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY client/package.json client/
 COPY server/package.json server/
 RUN pnpm install --frozen-lockfile
 COPY . .
@@ -19,7 +18,6 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY server/package.json server/
 RUN pnpm install --prod --frozen-lockfile --filter @deepchart/server...
 COPY --from=build /app/server/dist server/dist
-COPY --from=build /app/client/dist client/dist
 
 # Prepare persistent data directory with proper permissions
 RUN mkdir -p /app/data && chown -R node:node /app/data

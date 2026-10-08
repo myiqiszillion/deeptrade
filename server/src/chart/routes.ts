@@ -11,10 +11,6 @@ import { IncomingMessage, ServerResponse } from 'node:http';
 import { ChartService } from './chartService.js';
 import { DatabentoHttpClient } from '../databento/client.js';
 
-export interface ChartRouterContext {
-  chartService: ChartService;
-}
-
 export function createChartRouter(ctx: { client: DatabentoHttpClient; chartService?: ChartService }) {
   const chartService = ctx.chartService || new ChartService(ctx.client);
 

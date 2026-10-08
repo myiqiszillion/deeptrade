@@ -5,7 +5,7 @@
  * supporting TimescaleDB hypertables, Redis caching, and hermetic SQLite memory fallbacks.
  */
 
-import { HistoricalBar, Tick } from '../types.js';
+import { HistoricalBar } from '../types.js';
 import { MarketTrade } from '../marketData/types.js';
 import { OptionContractDefinition, OptionStatisticRecord, NormalizedQuote } from '../databento/types.js';
 import { BarQueryOptions, BarQueryResult, TradeQueryOptions, TradeQueryResult } from './marketDataStore.js';

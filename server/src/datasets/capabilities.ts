@@ -1,6 +1,6 @@
-export interface SymbologyFlags { raw_symbol: boolean; instrument_id: boolean; parent: boolean; continuous: boolean; figi?: boolean; isin?: boolean }
-export interface SchemaCap { available: boolean; rtype?: number; level?: string; reason?: string }
-export interface DatasetCaps {
+interface SymbologyFlags { raw_symbol: boolean; instrument_id: boolean; parent: boolean; continuous: boolean; figi?: boolean; isin?: boolean }
+interface SchemaCap { available: boolean; rtype?: number; level?: string; reason?: string }
+interface DatasetCaps {
   dataset: string; publisher: string; asset_class: string;
   historical: boolean; live: boolean;
   symbology: SymbologyFlags;
@@ -38,27 +38,8 @@ const CAPS: Record<string, DatasetCaps> = {
   },
 };
 
-export function loadCapabilities(): Map<string, DatasetCaps> {
-  return new Map(Object.entries(CAPS));
-}
-
-export class CapabilityError extends Error {
-  constructor(public dataset: string, public schemaOrSymbology: string, public reason: string) {
-    super(`${schemaOrSymbology} not available for ${dataset}: ${reason}`);
-    this.name = 'CapabilityError';
-  }
-}
-
-export function assertCapable(dataset: string, schema: string): void {
-  const d = CAPS[dataset];
-  if (!d) throw new CapabilityError(dataset, schema, 'unknown dataset');
-  const s = d.schemas[schema];
-  if (!s || !s.available) throw new CapabilityError(dataset, schema, s?.reason ?? 'not available for this dataset');
-}
-
 export function supportsSymbology(dataset: string, kind: keyof SymbologyFlags): boolean {
   return Boolean(CAPS[dataset]?.symbology[kind]);
 }
 
 export function listDatasets(): DatasetCaps[] { return Object.values(CAPS); }
-export function getDataset(name: string): DatasetCaps | undefined { return CAPS[name]; }

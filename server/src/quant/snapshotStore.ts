@@ -5,7 +5,7 @@
 import { marketDataStore } from '../storage/marketDataStore.js';
 import type { ExposureSnapshot } from '../options/exposure.js';
 
-export interface MarketSnapshot {
+interface MarketSnapshot {
   underlying: string;
   timestamp: number;
   spot: number;

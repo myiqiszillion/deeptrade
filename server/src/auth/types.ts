@@ -1,5 +1,5 @@
-export type UserRole = 'user' | 'admin';
-export type UserStatus = 'active' | 'suspended';
+type UserRole = 'user' | 'admin';
+type UserStatus = 'active' | 'suspended';
 
 export interface User {
   id: string;
@@ -22,7 +22,7 @@ export type DataType = 'BARS' | 'TICKS' | 'FOOTPRINT' | 'L2_BOOK' | 'MBO' | 'REP
 export interface Entitlement {
   id: string;
   userId: string;
-  provider: string; // 'databento' | 'binance' | '*'
+  provider: string; // 'databento' | 'cme' | '*'
   exchange?: string; // 'CME' | 'NYMEX' | 'COMEX' | 'CBOT' | '*'
   symbolPattern?: string; // e.g. 'ES*', 'NQ*', '*'
   dataTypes: DataType[];

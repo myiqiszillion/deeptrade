@@ -15,7 +15,7 @@ const SALT_LEN = 16;
 const MAX_MEM = 64 * 1024 * 1024;
 
 export const MIN_PASSWORD_LENGTH = 10;
-export const MAX_PASSWORD_LENGTH = 200;
+const MAX_PASSWORD_LENGTH = 200;
 
 export function assertPasswordPolicy(password: unknown): asserts password is string {
   if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {

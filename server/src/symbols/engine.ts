@@ -1,5 +1,5 @@
-export type SymbologyKind = 'raw_symbol'|'instrument_id'|'parent'|'continuous'|'figi'|'isin'|'cusip';
-export interface SymbolRecord {
+type SymbologyKind = 'raw_symbol'|'instrument_id'|'parent'|'continuous'|'figi'|'isin'|'cusip';
+interface SymbolRecord {
   instrumentId: number; dataset: string; rawSymbol: string; displaySymbol: string;
   asset: string; underlying?: string; securityType: string; exchange: string;
   figi?: string; isin?: string; cusip?: string;

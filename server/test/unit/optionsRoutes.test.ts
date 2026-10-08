@@ -1,5 +1,5 @@
 import assert from 'node:assert';
-import { IncomingMessage, ServerResponse } from 'node:http';
+import { IncomingMessage } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { createOptionsRouter } from '../../src/marketData/optionsRoutes.js';
 import { DatabentoHttpClient } from '../../src/databento/client.js';

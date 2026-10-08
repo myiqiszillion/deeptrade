@@ -11,7 +11,7 @@ import { FUTURES_INSTRUMENTS } from '../futuresConfig.js';
 import { FootprintEngine } from '../footprintEngine.js';
 import { ProfileEngine } from '../profileEngine.js';
 import { VWAPEngine } from '../vwapEngine.js';
-import { HistoricalBar, Tick } from '../types.js';
+import { Tick } from '../types.js';
 import {
   parseTradingViewResolution,
   aggregateBars,

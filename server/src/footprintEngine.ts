@@ -1,4 +1,4 @@
-import { FootprintBar, FootprintPriceLevel, Tick, classifyAggressorSide } from './types.js';
+import { FootprintBar, Tick, classifyAggressorSide } from './types.js';
 import { normalizeToTick } from './priceMath.js';
 
 export class FootprintEngine {

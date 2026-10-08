@@ -58,7 +58,6 @@
 |---|---|---|---|---|---|
 | **ES/MES/NQ/MNQ (Default)** | none | none | unavailable | unavailable | unavailable |
 | **Futures & Options** | Databento | historical trades & bars | live feed (WebSocket) | tick footprint | orderflow & quotes |
-| **Crypto (BTC/ETH)** | Binance | klines | live trades | tick footprint | 20-level DOM |
 
 > **Chính sách Fail-Closed:** Khi chưa có license/credential cho nhà cung cấp futures (`DATABENTO_API_KEY`), toàn bộ feed và lịch sử mặc định là `UNAVAILABLE`. Hệ thống tuyệt đối không sinh dữ liệu giả hay nến giả.
 
@@ -67,7 +66,7 @@
 ## 🚀 Hướng Dẫn Cài Đặt & Khởi Chạy
 
 ### Yêu cầu môi trường
-- **Node.js >= 22.5** (bắt buộc cho `node:sqlite` DatabaseSync built-in)
+- **Node.js >= 22.13** (bắt buộc cho `node:sqlite` DatabaseSync built-in; `.nvmrc` pin 24)
 - **pnpm >= 9**
 
 ### Cài đặt dependencies
@@ -101,16 +100,14 @@ pnpm install
 ```bash
 pnpm dev
 ```
-- **Web Terminal**: http://localhost:5173
 - **WebSocket Server**: `ws://localhost:8080`
 
 ### Đóng gói & Chạy bản Production (1 Port duy nhất)
-Server Node.js được thiết kế để phục vụ cả WebSocket, REST API và client build tĩnh trên cùng một cổng (`8080`):
+Server Node.js được thiết kế để phục vụ cả WebSocket và REST API trên cùng một cổng (`8080`):
 ```bash
 pnpm build
 node server/dist/index.js
 ```
-- **Truy cập Terminal**: http://localhost:8080
 - **Health check API**: http://localhost:8080/healthz
 - **Metrics API**: http://localhost:8080/metrics
 
@@ -118,15 +115,14 @@ node server/dist/index.js
 
 ## 🧪 Bộ Kiểm Thử (Unified Test Suites)
 
-DeepChart có hệ thống test phân tầng rõ ràng (Unit, Integration, Protocol) để bảo vệ tính toàn vẹn:
+DeepChart có hệ thống test phân tầng rõ ràng (Unit, Integration) để bảo vệ tính toàn vẹn:
 
 | Lệnh kiểm thử | Mục đích |
 |---|---|
 | `pnpm typecheck` | Kiểm tra TypeScript toàn dự án (0 lỗi) |
-| `pnpm test` | Chạy toàn bộ test suite: protocol drift, 25 unit test suites và 4 integration test suites |
+| `pnpm test` | Chạy toàn bộ test suite: 24 unit test suites và 4 integration test suites |
 | `pnpm test:unit` | Unit test: auth, billing, retention, Databento client/live/normalizer/routes, TradingView UDF & chart routes, options math, CME instruments |
 | `pnpm test:integration` | Integration: chart smoke, historyApi, websocket, authFlow & billing |
-| `pnpm test:protocol` | Chống protocol drift giữa server và client message types |
 | `pnpm verify:p0` | Kiểm tra tính toàn vẹn server và rate limiting |
 
 ### API Suite & TradingView Chart Features
@@ -134,7 +130,7 @@ DeepChart có hệ thống test phân tầng rõ ràng (Unit, Integration, Proto
 - **TradingView UDF Compatible**: Triển khai đầy đủ Universal Datafeed (`/api/v1/udf/config`, `/time`, `/symbols`, `/search`, `/history`, `/marks`).
 - **Institutional Order Flow Chart Suite**: Footprint Bar (Bid/Ask volume per tick, Imbalances, POC, Delta), CVD, Volume Profile (POC, VAH/VAL), VWAP $\pm 1\sigma/2\sigma/3\sigma$, Depth Heatmap MBP-10, Large Trade Prints, Key Levels (Call Wall, Put Wall, Gamma Flip, Max Pain).
 
-CI (`.github/workflows/ci.yml`) chạy: typecheck → protocol drift check → unit tests → build → integration tests.
+CI (`.github/workflows/ci.yml`) chạy: typecheck → unit tests → build → integration tests.
 
 ---
 
@@ -143,7 +139,6 @@ CI (`.github/workflows/ci.yml`) chạy: typecheck → protocol drift check → u
 Xem runbook đầy đủ: **[docs/DEPLOY.md](docs/DEPLOY.md)** (TLS, biến môi trường bắt buộc, Stripe,
 retention/backup, monitoring, cảnh báo pháp lý về licence phân phối dữ liệu).
 **Còn thiếu gì / dở dang chỗ nào: [docs/STATUS.md](docs/STATUS.md)** — bảng hoàn thiện theo từng hạng mục, kèm cách tự kiểm tra.
-`scratch/*.ts` là script kiểm tra tay của dev (không thuộc test suite); cổng phát hành là `pnpm test`.
 
 ```bash
 cp .env.example .env      # điền AUTH_JWT_SECRET, ADMIN_*, provider keys

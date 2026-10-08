@@ -1,7 +1,7 @@
 import { marketDataStore } from './storage/marketDataStore.js';
 import { metrics } from './util/metrics.js';
 
-export interface MaintenanceHandle {
+interface MaintenanceHandle {
   stop(): void;
   /** Exposed for tests and runbooks: run one maintenance pass now. */
   runOnce(now?: number): void;

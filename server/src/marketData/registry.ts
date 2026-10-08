@@ -3,17 +3,17 @@ import { FeedHandlers, MarketDataFeed } from './types.js';
 import { DatabentoLiveClient } from '../databento/liveClient.js';
 import { resolveDatabentoConfig } from '../databento/config.js';
 
-export type FuturesProviderName = 'none' | 'databento' | 'binance';
+type FuturesProviderName = 'none' | 'databento';
 
-export interface FeedFactoryResult {
+interface FeedFactoryResult {
   feed: MarketDataFeed;
   provider: FuturesProviderName;
 }
 
-export function providerForSymbol(symbol: string, env: NodeJS.ProcessEnv = process.env): FuturesProviderName {
+function providerForSymbol(symbol: string, env: NodeJS.ProcessEnv = process.env): FuturesProviderName {
   const cfg = resolveDatabentoConfig(env);
   const raw = (env.FUTURES_PROVIDER || (cfg.apiKey ? 'databento' : 'none')).toLowerCase();
-  if (raw === 'databento' || raw === 'binance' || raw === 'none') return raw as FuturesProviderName;
+  if (raw === 'databento' || raw === 'none') return raw as FuturesProviderName;
   return 'databento';
 }
 

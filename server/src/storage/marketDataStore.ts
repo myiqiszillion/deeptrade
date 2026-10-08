@@ -46,7 +46,7 @@ export interface TradeQueryResult {
   };
 }
 
-export interface GapRecord {
+interface GapRecord {
   id: number;
   symbol: string;
   provider: string;

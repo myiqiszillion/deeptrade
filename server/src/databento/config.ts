@@ -5,7 +5,7 @@
  * Never throws at import time — missing keys yield UNAVAILABLE state.
  */
 
-export interface DatabentoConfig {
+interface DatabentoConfig {
   apiKey: string;
   histBaseUrl: string;
   liveBaseUrl: string;

@@ -1,7 +1,7 @@
 import { HistoricalBar } from '../types.js';
 import { resolveDatabentoConfig } from '../databento/config.js';
 
-export interface ResolutionConfig {
+interface ResolutionConfig {
   resolution: string;
   unit: 'second' | 'minute' | 'hour' | 'day' | 'week' | 'month';
   multiplier: number;

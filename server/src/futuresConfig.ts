@@ -1,4 +1,4 @@
-export type AssetClass =
+type AssetClass =
   | 'EQUITY_INDEX'
   | 'COMMODITY'
   | 'ENERGY'
@@ -12,7 +12,7 @@ export type AssetClass =
 import { marketDataStore } from './storage/marketDataStore.js';
 
 /** UI grouping for the instrument picker. */
-export type InstrumentCategory =
+type InstrumentCategory =
   | 'INDEX'
   | 'COMMODITY'
   | 'ENERGY'
@@ -25,9 +25,9 @@ export type InstrumentCategory =
   /** Vendor-discovered instrument whose unit of measure we cannot categorise confidently. */
   | 'OTHER';
 
-export type ExchangeName = 'CME' | 'NYMEX' | 'COMEX' | 'CBOT' | 'BINANCE';
+type ExchangeName = 'CME' | 'NYMEX' | 'COMEX' | 'CBOT';
 
-export type ContractType = 'CONTINUOUS' | 'SPECIFIC';
+type ContractType = 'CONTINUOUS' | 'SPECIFIC';
 
 export interface FuturesInstrument {
   symbol: string;
@@ -452,11 +452,6 @@ const SPEC_TABLE: SpecRow[] = [
   { symbol: 'AMD', name: 'Advanced Micro Devices', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 150.0, sessionScheduleId: 'CME_EQUITY' },
   { symbol: 'SMCI', name: 'Super Micro Computer', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 50.0, sessionScheduleId: 'CME_EQUITY' },
   { symbol: 'PLTR', name: 'Palantir Technologies', category: 'OTHER', assetClass: 'EQUITY_INDEX', exchange: 'CME', pointValue: 100, tickSize: 0.01, basePrice: 50.0, sessionScheduleId: 'CME_EQUITY' },
-
-  // --- Crypto Spot/Alts ---
-  { symbol: 'SOL', name: 'Solana', category: 'CRYPTO', assetClass: 'CRYPTO', exchange: 'BINANCE', pointValue: 1, tickSize: 0.01, basePrice: 200.0, sessionScheduleId: 'CME_CRYPTO' },
-  { symbol: 'XRP', name: 'XRP', category: 'CRYPTO', assetClass: 'CRYPTO', exchange: 'BINANCE', pointValue: 1, tickSize: 0.0001, basePrice: 3.0, sessionScheduleId: 'CME_CRYPTO' },
-  { symbol: 'DOGE', name: 'Dogecoin', category: 'CRYPTO', assetClass: 'CRYPTO', exchange: 'BINANCE', pointValue: 1, tickSize: 0.0001, basePrice: 0.3, sessionScheduleId: 'CME_CRYPTO' },
 ];
 
 export const INSTRUMENT_CATEGORIES: InstrumentCategory[] = [
@@ -472,7 +467,7 @@ export const INSTRUMENT_CATEGORIES: InstrumentCategory[] = [
   'OTHER',
 ];
 
-export const EXCHANGE_NAMES: ExchangeName[] = ['CME', 'NYMEX', 'COMEX', 'CBOT', 'BINANCE'];
+export const EXCHANGE_NAMES: ExchangeName[] = ['CME', 'NYMEX', 'COMEX', 'CBOT'];
 
 /** Derive tick value from the contract's point value so the two can never disagree. */
 export function tickValueFor(pointValue: number, tickSize: number): number {
@@ -511,7 +506,7 @@ for (const row of SPEC_TABLE) {
   if (!FUTURES_INSTRUMENTS[row.symbol]) FUTURES_INSTRUMENTS[row.symbol] = specRowToInstrument(row);
 }
 
-export const DYNAMIC_INSTRUMENTS: Record<string, FuturesInstrument> = {};
+const DYNAMIC_INSTRUMENTS: Record<string, FuturesInstrument> = {};
 
 /**
  * Resolves an instrument from the catalog, parses contract expiration months,
@@ -687,7 +682,7 @@ export function getParentSymbol(symbol: string): string | undefined {
 
 /** Format a symbol for vendor-specific requests according to official specifications. */
 export function formatVendorSymbol(
-  vendor: 'databento' | 'binance' | string,
+  vendor: string,
   symbol: string,
   _contractMonth?: string
 ): string {
@@ -703,7 +698,7 @@ export function formatVendorSymbol(
  * Format: `SYMBOL:POINT_VALUE:TICK_SIZE[:NAME[:CATEGORY[:EXCHANGE[:UNDERLYING_INDEX]]]]`, `;`-separated.
  * Invalid rows are rejected with a reason (fail-closed) and surfaced through EXTRA_INSTRUMENT_ERRORS.
  */
-export const EXTRA_INSTRUMENT_ERRORS: string[] = [];
+const EXTRA_INSTRUMENT_ERRORS: string[] = [];
 
 export function parseExtraInstruments(
   raw: string | undefined | null

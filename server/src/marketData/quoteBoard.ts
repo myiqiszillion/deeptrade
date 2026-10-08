@@ -10,7 +10,7 @@
  */
 import { resolveDatabentoConfig } from '../databento/config.js';
 
-export interface WatchlistQuote {
+interface WatchlistQuote {
   symbol: string;
   price: number;
   ts: number;
@@ -20,7 +20,7 @@ export interface WatchlistQuote {
   stale: boolean;
 }
 
-export interface QuoteBoardOptions {
+interface QuoteBoardOptions {
   symbols: string[];
   apiKey?: string;
   fetchFn?: typeof fetch;

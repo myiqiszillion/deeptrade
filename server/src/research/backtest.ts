@@ -6,7 +6,7 @@ import { IncomingMessage, ServerResponse } from 'http';
 import { marketDataStore } from '../storage/marketDataStore.js';
 import { snapshotStore } from '../quant/snapshotStore.js';
 
-export interface BacktestCondition {
+interface BacktestCondition {
   underlying?: string;
   gexBelow?: number; gexAbove?: number;
   ivAbove?: number; ivBelow?: number;
@@ -15,7 +15,7 @@ export interface BacktestCondition {
   horizonBars?: number; // forward bars to measure (default 390 ~ 1 session of 1m)
 }
 
-export interface BacktestMetrics {
+interface BacktestMetrics {
   occurrences: number;
   avgMove: number | null; medianMove: number | null;
   mfe: number | null; mae: number | null;
@@ -28,7 +28,7 @@ function median(arr: number[]): number | null {
   return s.length % 2 ? s[Math.floor(s.length / 2)] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
 }
 
-export function runBacktest(cond: BacktestCondition): BacktestMetrics & { condition: BacktestCondition } {
+function runBacktest(cond: BacktestCondition): BacktestMetrics & { condition: BacktestCondition } {
   const u = (cond.underlying || 'SPY').toUpperCase();
   const horizon = cond.horizonBars ?? 390;
   // Occurrences: scan snapshot ring; if empty, 0 occurrences (graceful, not error)

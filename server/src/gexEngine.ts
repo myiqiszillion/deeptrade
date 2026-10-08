@@ -1,4 +1,4 @@
-export interface GEXStrikeLevel {
+interface GEXStrikeLevel {
   strike: number;
   callGex: number; // Millions USD per 1% move
   putGex: number;

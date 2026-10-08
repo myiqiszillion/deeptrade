@@ -2,7 +2,6 @@
  * Exposure aggregation: GEX/DEX/VEX/TEX + Gamma Map (walls/flip/regime).
  * Reuses GEXEngine wall/flip conventions; pure functions where possible.
  */
-import { GEXEngine } from '../gexEngine.js';
 import type { Greeks } from './blackScholes.js';
 
 export interface PricedContract {
@@ -13,7 +12,7 @@ export interface PricedContract {
   greeks: Greeks | null;
 }
 
-export interface ExposureLevel {
+interface ExposureLevel {
   strike: number;
   gex: number; dex: number; vex: number; tex: number; notional: number;
   callGex: number; putGex: number;

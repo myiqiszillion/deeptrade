@@ -4,7 +4,7 @@
  */
 import { bsPrice, bsGreeks } from './blackScholes.js';
 
-export interface IvResult { iv: number | null; priceUsed: number; iterations: number; converged: boolean }
+interface IvResult { iv: number | null; priceUsed: number; iterations: number; converged: boolean }
 
 function intrinsic(S: number, K: number, type: 'call' | 'put'): number {
   return type === 'call' ? Math.max(0, S - K) : Math.max(0, K - S);

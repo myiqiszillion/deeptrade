@@ -7,7 +7,7 @@ import type { PricedContract } from './exposure.js';
 import { bsGreeks } from './blackScholes.js';
 import { impliedVol, midQuotePrice } from './iv.js';
 
-export interface ChainBuildInputs {
+interface ChainBuildInputs {
   underlying: string;
   spot: number | null;
   definitions: OptionContractDefinition[];

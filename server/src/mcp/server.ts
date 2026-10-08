@@ -166,7 +166,6 @@ async function handleToolCall(name: string, args: any): Promise<any> {
       return {
         status: 'online',
         provider: 'databento',
-        cryptoProvider: 'binance',
         capabilities: [
           'Order Flow Footprint',
           'TPO Market Profile',

@@ -77,7 +77,6 @@ export async function runEntitlementTests(): Promise<void> {
   assert.equal(entitlementService.hasEntitlement('u_exp', 'ES', 'FOOTPRINT'), false, 'Expired entitlement must be denied');
 
   // 6. AccessPolicy Tests
-  const activeUser: User = { id: 'u_active', username: 'active1', role: 'user', status: 'active' };
   const suspendedUser: User = { id: 'u_susp', username: 'suspended1', role: 'user', status: 'suspended' };
 
   // Grant entitlement to both

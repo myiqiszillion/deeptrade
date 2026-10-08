@@ -67,8 +67,7 @@ export async function runQuoteBoardTests(): Promise<void> {
   //    refresh path, which is what an expired TTL does in production.
   clearQuoteBoardCache();
   let failNext = false;
-  const flakyFetch = (async (url: string | URL) => {
-    const href = String(url);
+  const flakyFetch = (async () => {
     if (failNext) return new Response('boom', { status: 500 });
     return new Response(TRADE_RESPONSE, { status: 200, headers: { 'Content-Type': 'application/json' } });
   }) as unknown as typeof fetch;

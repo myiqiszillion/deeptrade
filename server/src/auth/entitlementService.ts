@@ -1,4 +1,4 @@
-import { FUTURES_INSTRUMENTS, getOrRegisterInstrument, parseContractSymbol } from '../futuresConfig.js';
+import { getOrRegisterInstrument, parseContractSymbol } from '../futuresConfig.js';
 import { DataType, Entitlement } from './types.js';
 import { marketDataStore } from '../storage/marketDataStore.js';
 
@@ -143,7 +143,6 @@ export class EntitlementService {
           'nymex',
           'comex',
           'databento',
-          'binance',
           instrument.exchange.toLowerCase(),
           (process.env.FUTURES_PROVIDER || '').toLowerCase(),
         ]);

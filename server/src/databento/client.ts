@@ -41,7 +41,7 @@ import {
 import { resolveDatabentoConfig } from './config.js';
 import { DatabentoDecodeError, DatabentoNotConfiguredError, errorForStatus } from './errors.js';
 
-export interface DatabentoClientOptions {
+interface DatabentoClientOptions {
   apiKey?: string;
   baseUrl?: string;
   fetchFn?: typeof fetch;
@@ -146,7 +146,6 @@ export class DatabentoHttpClient {
       throw errorForStatus(res.status, errText.slice(0, 500), opts?.dataset || String(params.dataset || ''));
     }
 
-    const contentType = res.headers.get('content-type') || '';
     const bodyText = await res.text();
 
     if (!bodyText || !bodyText.trim()) {

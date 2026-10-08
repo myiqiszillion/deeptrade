@@ -22,7 +22,7 @@ function normCdf(x: number): number {
   return 0.5 * (1 + sign * y);
 }
 
-export interface BsInputs {
+interface BsInputs {
   S: number; K: number; T: number; r: number; sigma: number; type: 'call' | 'put';
 }
 export interface Greeks {

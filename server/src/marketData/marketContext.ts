@@ -1,5 +1,5 @@
 import { FootprintEngine } from '../footprintEngine.js';
-import { FUTURES_INSTRUMENTS, FuturesInstrument, getOrRegisterInstrument } from '../futuresConfig.js';
+import { FuturesInstrument, getOrRegisterInstrument } from '../futuresConfig.js';
 import { GEXEngine, GEXProfile } from '../gexEngine.js';
 import { OrderbookManager } from '../orderbook.js';
 import { ProfileEngine } from '../profileEngine.js';
@@ -51,7 +51,7 @@ function mergeHistoryBars(previous: HistoricalBar[], incoming: HistoricalBar[]):
   return merged.length > MAX_HISTORY_BARS_PER_TF ? merged.slice(-MAX_HISTORY_BARS_PER_TF) : merged;
 }
 
-export type HistorySource = 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
+type HistorySource = 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
 
 export interface HistoryProvider {
   fetchBars(

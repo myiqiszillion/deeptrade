@@ -4,7 +4,7 @@
  * Failures are counted per key (username and client IP independently), so an attacker who rotates
  * usernames from one IP is throttled, and an attacker who rotates IPs against one account is too.
  */
-export interface LoginGuardDecision {
+interface LoginGuardDecision {
   locked: boolean;
   retryAfterSec: number;
 }

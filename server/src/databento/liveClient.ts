@@ -8,7 +8,6 @@
 
 import net from 'net';
 import { createHash } from 'crypto';
-import WebSocket from 'ws';
 import {
   FeedHandlers,
   MarketDataFeed,
@@ -22,7 +21,7 @@ import {
 import { DbTradeRecord, DbMbp1Record } from './types.js';
 import { resolveDatabentoConfig } from './config.js';
 
-export const DBN_CONSTANTS = {
+const DBN_CONSTANTS = {
   MAGIC: 'DBN',
   UNDEF_PRICE: 9223372036854775807n,
   UNDEF_ORDER_SIZE: 4294967295,
@@ -38,7 +37,7 @@ export const DBN_CONSTANTS = {
   RTYPE_SYSTEM: 0x1b,
 } as const;
 
-export interface ParsedDbnRecord {
+interface ParsedDbnRecord {
   rtype: number;
   publisherId: number;
   instrumentId: number;
@@ -48,7 +47,7 @@ export interface ParsedDbnRecord {
   error?: string;
 }
 
-export function buildCramAuthResponse(challenge: string, apiKey: string, dataset: string): string {
+function buildCramAuthResponse(challenge: string, apiKey: string, dataset: string): string {
   const bucketId = apiKey.slice(-5);
   const sha = createHash('sha256')
     .update(`${challenge}|${apiKey}`)
@@ -57,7 +56,7 @@ export function buildCramAuthResponse(challenge: string, apiKey: string, dataset
   return `auth=${auth}|dataset=${dataset}|encoding=dbn|ts_out=0|compression=none|client=DeepChart/1.0.0\n`;
 }
 
-export function parseDbnRecord(
+function parseDbnRecord(
   buffer: Buffer,
   activeSymbol: string,
   sourceProvider = 'databento'
@@ -164,7 +163,7 @@ export function parseDbnRecord(
   return { parsed: result, recLen };
 }
 
-export interface DatabentoLiveOptions {
+interface DatabentoLiveOptions {
   symbol: string;
   dataset?: string;
   schema?: 'trades' | 'mbp-1';
@@ -191,7 +190,6 @@ export class DatabentoLiveClient implements MarketDataFeed {
   private reconnectAttempts = 0;
   private reconnectTimer: any = null;
   private liveResolver?: () => void;
-  private liveRejecter?: (err: Error) => void;
   private generation = 0;
 
   constructor(options: DatabentoLiveOptions) {
@@ -265,7 +263,6 @@ export class DatabentoLiveClient implements MarketDataFeed {
         if (this.liveResolver) {
           this.liveResolver();
           this.liveResolver = undefined;
-          this.liveRejecter = undefined;
         }
       });
 
@@ -403,7 +400,6 @@ export class DatabentoLiveClient implements MarketDataFeed {
           if (this.liveResolver) {
             this.liveResolver();
             this.liveResolver = undefined;
-            this.liveRejecter = undefined;
           }
 
           const liveSymbol = this.symbol.includes('.') ? this.symbol : `${this.symbol}.c.0`;
@@ -542,16 +538,11 @@ export class DatabentoLiveClient implements MarketDataFeed {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.liveResolver = undefined;
-        this.liveRejecter = undefined;
         reject(new Error(`Timed out waiting for Databento live stream for ${this.symbol} (${timeoutMs}ms)`));
       }, timeoutMs);
       this.liveResolver = () => {
         clearTimeout(timer);
         resolve();
-      };
-      this.liveRejecter = (err) => {
-        clearTimeout(timer);
-        reject(err);
       };
     });
   }

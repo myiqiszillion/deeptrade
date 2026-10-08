@@ -12,7 +12,7 @@ import { DbDefinitionRecord } from '../databento/types.js';
 import { parsePrice } from '../databento/normalizer.js';
 import { InstrumentSpecRow, marketDataStore } from '../storage/marketDataStore.js';
 
-export interface SyncResult {
+interface SyncResult {
   provider: string;
   synced: boolean;
   total: number;
