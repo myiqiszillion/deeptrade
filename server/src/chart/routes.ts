@@ -11,7 +11,11 @@ import { IncomingMessage, ServerResponse } from 'node:http';
 import { ChartService } from './chartService.js';
 import { DatabentoHttpClient } from '../databento/client.js';
 
-export function createChartRouter(ctx: { client: DatabentoHttpClient; chartService?: ChartService }) {
+export function createChartRouter(ctx: {
+  client: DatabentoHttpClient;
+  chartService?: ChartService;
+  getDepthHistory?: (symbol: string, from?: number, to?: number) => any[];
+}) {
   const chartService = ctx.chartService || new ChartService(ctx.client);
 
   const sendJson = (res: ServerResponse, status: number, data: any): boolean => {
@@ -22,6 +26,26 @@ export function createChartRouter(ctx: { client: DatabentoHttpClient; chartServi
     });
     res.end(JSON.stringify(data));
     return true;
+  };
+
+  const readJsonBody = async (req: IncomingMessage): Promise<any> => {
+    let raw = '';
+    return new Promise((resolve, reject) => {
+      req.on('data', (chunk) => {
+        raw += chunk;
+        if (raw.length > 256 * 1024) {
+          reject(new Error('Payload too large'));
+        }
+      });
+      req.on('end', () => {
+        try {
+          resolve(raw ? JSON.parse(raw) : {});
+        } catch (err) {
+          reject(err);
+        }
+      });
+      req.on('error', reject);
+    });
   };
 
   return async function handleChartRequest(
@@ -166,6 +190,32 @@ export function createChartRouter(ctx: { client: DatabentoHttpClient; chartServi
         return sendJson(res, 200, vp);
       }
 
+      // /volume-profile-range
+      if (subpath === 'volume-profile-range') {
+        if (req.method !== 'POST') {
+          return sendJson(res, 405, { error: 'Method not allowed. Use POST', code: 'METHOD_NOT_ALLOWED' });
+        }
+        let body: any;
+        try {
+          body = await readJsonBody(req);
+        } catch (err: any) {
+          return sendJson(res, 400, { error: `Invalid JSON body: ${err?.message}`, code: 'INVALID_BODY' });
+        }
+
+        const symbol = typeof body.symbol === 'string' ? body.symbol : 'ES';
+        const startTime = Number(body.startTime);
+        const endTime = Number(body.endTime);
+
+        try {
+          const result = await chartService.getVolumeProfileRange(symbol, startTime, endTime);
+          return sendJson(res, 200, result);
+        } catch (err: any) {
+          const message = err?.message || 'Failed to compute volume profile for range';
+          const status = message.includes('Invalid or unsupported') ? 404 : 400;
+          return sendJson(res, status, { error: message, code: 'VOLUME_PROFILE_RANGE_ERROR' });
+        }
+      }
+
       // /vwap
       if (subpath === 'vwap') {
         const symbol = url.searchParams.get('symbol') || 'ES';
@@ -181,9 +231,13 @@ export function createChartRouter(ctx: { client: DatabentoHttpClient; chartServi
         const symbol = url.searchParams.get('symbol') || 'ES';
         const from = url.searchParams.get('from') ? Number(url.searchParams.get('from')) : undefined;
         const to = url.searchParams.get('to') ? Number(url.searchParams.get('to')) : undefined;
+        const resolution = url.searchParams.get('resolution') ? Number(url.searchParams.get('resolution')) : undefined;
+        const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
+        const offset = url.searchParams.get('offset') ? Number(url.searchParams.get('offset')) : undefined;
 
-        const heatmap = await chartService.getDepthHeatmap(symbol, from, to);
-        return sendJson(res, 200, { symbol, count: heatmap.length, snapshots: heatmap });
+        const liveSnapshots = ctx.getDepthHistory ? ctx.getDepthHistory(symbol, from, to) : undefined;
+        const result = await chartService.getDepthHeatmapExtended(symbol, from, to, resolution, limit, offset, liveSnapshots);
+        return sendJson(res, 200, result);
       }
 
       // /large-trades

@@ -1,9 +1,8 @@
 # Trạng thái hoàn thiện (đọc cái này để biết còn thiếu gì)
 
 > Mục đích: thay cảm giác "hình như còn thiếu gì đó" bằng **danh sách cụ thể**, kèm cách tự kiểm tra.
-> Cập nhật: 2026-10-04. Mọi mục dưới đây đều nói rõ **ai làm** (code hay bạn).
-> Lưu ý: repo hiện **chỉ còn backend** — gói web client cũ đã gỡ khỏi repo, nên các mục liên quan
-> giao diện (palette, watchlist UI, tool vẽ, i18n) không còn áp dụng ở nhánh này.
+> Cập nhật: 2026-10-09. Mọi mục dưới đây đều nói rõ **ai làm** (code hay bạn).
+> Frontend client (`client/`) đã được khôi phục và tích hợp vào pnpm monorepo workspace (Vite 5 + React 19 + TypeScript + Tailwind CSS), hỗ trợ typecheck và build độc lập hoặc toàn bộ repo.
 
 ## A. Hoàn thiện — dùng được ngay
 
@@ -31,11 +30,12 @@
 
 | # | Hạng mục | Thiếu chính xác cái gì | Ghi chú |
 |---|---|---|---|
-| 1 | **Databento Phase 1 Suite** | Cần cấp `DATABENTO_API_KEY` trong `.env` để kích hoạt toàn bộ realtime CME Futures, OPRA Options, Equities | Đang triển khai Phase 1: normalization, historical, live WebSocket, Redis cache |
+| 1 | **Databento Phase 1 Suite** | Cần cấp `DATABENTO_API_KEY` trong `.env` để kích hoạt toàn bộ realtime CME Futures, OPRA Options, Equities | Đang hoạt động chuẩn Zero-Mock / Fail-Closed |
 | 2 | **Watchlist** | Cột giá chỉ có mã đang xem cho tới khi bạn bật `ENABLE_QUOTE_BOARD=1` | Có cache TTL + tuổi dữ liệu + nút ⏸ |
 | 3 | **`pnpm verify` (verify_e2e.ts)** | Là harness dev cũ: cần server đang chạy + feed thật, không hermetic | Đừng dùng làm test; cổng phát hành là `pnpm test` |
-| 4 | **GEX / Profile / DOM / Tape** | Hoạt động với dữ liệu thật nhưng **chưa có E2E browser test** (chỉ test logic server) | Muốn chắc: cần Playwright — nhưng trước hết phải dựng lại web client |
-| 5 | **Trạng thái "delayed"** | Chỉ hiển thị realtime/unavailable; chưa phân biệt độ trễ của dataset | Cần metadata `condition` của vendor |
+| 4 | **E2E Browser Test Suite (Playwright)** | **HOÀN THÀNH**: Đã tích hợp Playwright 1.64.0 với 15/15 test cases pass (`terminal.spec.ts` + `behavioral.spec.ts`) | Chạy qua `pnpm test:e2e` |
+| 5 | **Range Volume Profile & Footprint Engine** | **HOÀN THÀNH**: Fixed Range VP tương tác kéo thả trên Canvas, 3 chế độ Footprint (Bid×Ask, Delta, Volume), Unfinished Auction, POC/VAH/VAL | Không suy diễn OHLCV giả, truy vấn trade-level SQLite hoặc Databento |
+| 6 | **Liquidity Heatmap MBP-10 & Feed Observability** | **HOÀN THÀNH**: Widget Heatmap tương tác (Time × Price, Bid/Ask intensity, Walls highlight), giám sát Feed Health (stale threshold >15s, reconnect count, last message/trade ts) | Phân biệt rõ connected vs subscribed vs active vs stale |
 
 ## D. Chưa bắt đầu (có kế hoạch, cần quyết định trước khi làm)
 

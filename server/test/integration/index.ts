@@ -2,6 +2,7 @@ import { runChartSmokeTests } from './chartSmoke.test.js';
 import { runHistoryApiTests } from './historyApi.test.js';
 import { runWebSocketIntegrationTests } from './websocket.test.js';
 import { runAuthFlowTests } from './authFlow.test.js';
+import { runBehavioralContractTests } from './behavioral_contracts.test.js';
 
 async function main() {
   console.log('======================================================');
@@ -13,6 +14,7 @@ async function main() {
   await runHistoryApiTests();
   await runWebSocketIntegrationTests();
   await runAuthFlowTests();
+  await runBehavioralContractTests();
 
   const elapsed = Date.now() - start;
   console.log('\n======================================================');

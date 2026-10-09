@@ -26,8 +26,10 @@ import {
   FootprintBarResponse,
   CvdPoint,
   VolumeProfileResponse,
+  VolumeProfileRangeResponse,
   VwapPointResponse,
   DepthHeatmapSnapshot,
+  DepthHeatmapResponse,
   LargeTradePrint,
   ChartLevelsResponse,
 } from './types.js';
@@ -522,6 +524,8 @@ export class ChartService {
     return points;
   }
 
+  private readonly rangeProfileCache = new Map<string, { data: VolumeProfileRangeResponse; exp: number }>();
+
   /**
    * 10. Volume Profile (POC, VAH, VAL)
    */
@@ -538,7 +542,23 @@ export class ChartService {
     const spec = FUTURES_INSTRUMENTS[symbol] || FUTURES_INSTRUMENTS[root];
     const tickSize = spec?.tickSize || 0.25;
 
-    const bars = await this.client.getHistoricalBars(dataset, [querySymbol], 'ohlcv-1m', start, end, 1440, stypeIn);
+    let bars: any[] = [];
+    if (this.client.configured) {
+      try {
+        bars = await this.client.getHistoricalBars(dataset, [querySymbol], 'ohlcv-1m', start, end, 1440, stypeIn);
+      } catch (err: any) {
+        console.warn(`[ChartService] Vendor getVolumeProfile error: ${err?.message}`);
+      }
+    }
+    if (bars.length === 0) {
+      bars = marketDataStore.queryBarsRange({
+        symbol,
+        timeframe: '1m',
+        startTime: start,
+        endTime: end,
+        limit: 1440,
+      });
+    }
 
     const profileEngine = new ProfileEngine(tickSize, start);
     profileEngine.processHistoricalBars(bars);
@@ -552,6 +572,150 @@ export class ChartService {
       val: vp.val,
       levels: vp.levels,
     };
+  }
+
+  /**
+   * 10b. Range-Constrained Volume Profile (Visible Range / Fixed Range)
+   *
+   * Computes Volume-at-Price, POC, VAH (Value Area High), VAL (Value Area Low)
+   * within [startTime, endTime] with standard 70% Value Area.
+   * Zero-Mock: strictly uses real recorded ticks or historical bars from store / vendor.
+   */
+  public async getVolumeProfileRange(
+    rawSymbol: string,
+    startTime: number,
+    endTime: number
+  ): Promise<VolumeProfileRangeResponse> {
+    if (!rawSymbol || typeof rawSymbol !== 'string') {
+      throw new Error('Symbol must be a non-empty string');
+    }
+    const symbol = rawSymbol.toUpperCase().trim();
+    const root = symbol.split('.')[0].replace(/[0-9]+$/, '');
+    const spec = FUTURES_INSTRUMENTS[symbol] || FUTURES_INSTRUMENTS[root];
+    if (!spec) {
+      throw new Error(`Invalid or unsupported instrument symbol: ${symbol}`);
+    }
+
+    if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || startTime <= 0 || endTime <= 0) {
+      throw new Error('startTime and endTime must be positive finite timestamps in epoch milliseconds');
+    }
+
+    if (startTime >= endTime) {
+      throw new Error('startTime must be strictly less than endTime');
+    }
+
+    // Guard against excessive range queries (max 30 days) to prevent DoS / memory bloat
+    const MAX_RANGE_MS = 30 * 24 * 3600 * 1000;
+    if (endTime - startTime > MAX_RANGE_MS) {
+      throw new Error('Requested time range exceeds maximum limit of 30 days');
+    }
+
+    // Check memory cache (15 seconds TTL) to throttle repeated zoom/pan requests
+    const cacheKey = `${symbol}:${startTime}:${endTime}`;
+    const cached = this.rangeProfileCache.get(cacheKey);
+    if (cached && Date.now() < cached.exp) {
+      return cached.data;
+    }
+
+    const tickSize = spec.tickSize || 0.25;
+    const profileEngine = new ProfileEngine(tickSize, startTime);
+
+    // 1. Try real recorded ticks in range from SQLite storage
+    let ticks = marketDataStore.queryTradesRange({
+      symbol,
+      startTime,
+      endTime,
+      limit: 25000,
+    });
+
+    // 2. If storage has no trades and Databento client is configured, fetch historical trades on-demand
+    if (ticks.length === 0 && this.client.configured) {
+      try {
+        const { dataset, querySymbol } = resolveSymbolForDatabento(symbol);
+        const fetchedTrades = await this.client.getHistoricalTrades(
+          dataset,
+          [querySymbol],
+          startTime,
+          endTime,
+          25000
+        );
+        if (fetchedTrades && fetchedTrades.length > 0) {
+          marketDataStore.saveTrades(
+            fetchedTrades.map((t) => ({
+              price: t.price,
+              size: t.size,
+              timestamp: t.timestamp,
+              side: t.side,
+              id: t.tradeId || `${t.timestamp}_${t.price}_${t.size}`,
+            })),
+            symbol,
+            'databento'
+          );
+          ticks = fetchedTrades.map((t) => ({
+            id: t.tradeId || `${t.timestamp}_${t.price}_${t.size}`,
+            timestamp: t.timestamp,
+            price: t.price,
+            size: t.size,
+            side: t.side,
+          }));
+        }
+      } catch (err: any) {
+        console.warn(`[ChartService] Range volume profile vendor trade fetch failed: ${err?.message}`);
+      }
+    }
+
+    // 3. Strict Fail-Closed: Do NOT infer price volume distribution from OHLCV bars without volume-at-price data.
+    // If trade-level data is missing, return clear unavailable status.
+    if (ticks.length === 0) {
+      return {
+        symbol,
+        startTime,
+        endTime,
+        totalVolume: 0,
+        poc: 0,
+        vah: 0,
+        val: 0,
+        levels: [],
+        available: false,
+        status: 'unavailable',
+        message: 'Trade-level volume-at-price data is unavailable for the selected range',
+      };
+    }
+
+    // 4. Deduplicate and filter boundary timestamps
+    const seenTickIds = new Set<string>();
+    for (const t of ticks) {
+      if (t.timestamp < startTime || t.timestamp > endTime) continue;
+      const tickKey = t.id || `${t.timestamp}_${t.price}_${t.size}`;
+      if (seenTickIds.has(tickKey)) continue;
+      seenTickIds.add(tickKey);
+      profileEngine.processTick(t);
+    }
+
+    const vp = profileEngine.getVolumeProfile();
+    const result: VolumeProfileRangeResponse = {
+      symbol,
+      startTime,
+      endTime,
+      totalVolume: vp.totalVolume,
+      poc: vp.poc,
+      vah: vp.vah,
+      val: vp.val,
+      levels: vp.levels,
+      available: vp.totalVolume > 0,
+      status: vp.totalVolume > 0 ? 'ok' : 'no_data',
+    };
+
+    // Store in cache (clean up expired keys if cache grows large)
+    if (this.rangeProfileCache.size > 200) {
+      const now = Date.now();
+      for (const [k, v] of this.rangeProfileCache.entries()) {
+        if (v.exp <= now) this.rangeProfileCache.delete(k);
+      }
+    }
+    this.rangeProfileCache.set(cacheKey, { data: result, exp: Date.now() + 15_000 });
+
+    return result;
   }
 
   /**
@@ -585,40 +749,139 @@ export class ChartService {
   }
 
   /**
-   * 12. Depth Heatmap (MBP-10)
+   * 12. Depth Heatmap (MBP-10) with SQLite Persistence & Replay
    */
   public async getDepthHeatmap(
     symbol: string,
     fromMs?: number,
-    toMs?: number
+    toMs?: number,
+    liveSnapshots?: DepthHeatmapSnapshot[],
+    resolutionMs?: number,
+    limit?: number,
+    offset?: number
   ): Promise<DepthHeatmapSnapshot[]> {
-    const { dataset, querySymbol } = resolveSymbolForDatabento(symbol);
+    const ext = await this.getDepthHeatmapExtended(symbol, fromMs, toMs, resolutionMs, limit, offset, liveSnapshots);
+    return ext.snapshots;
+  }
+
+  public async getDepthHeatmapExtended(
+    symbol: string,
+    fromMs?: number,
+    toMs?: number,
+    resolutionMs?: number,
+    limit?: number,
+    offset?: number,
+    liveSnapshots?: DepthHeatmapSnapshot[]
+  ): Promise<DepthHeatmapResponse> {
+    const cleanSym = symbol.toUpperCase().trim();
     const start = fromMs || (Date.now() - 3600_000);
     const end = toMs || Date.now();
 
-    const depthRecords = await this.client.getHistoricalDepth(dataset, [querySymbol], start, end, 500);
-
-    return depthRecords.map((r: any) => {
-      const bids: Array<{ price: number; size: number }> = [];
-      const asks: Array<{ price: number; size: number }> = [];
-
-      for (let i = 0; i < 10; i++) {
-        const pad = String(i).padStart(2, '0');
-        const bp = r[`bid_px_${pad}`];
-        const bs = r[`bid_sz_${pad}`];
-        const ap = r[`ask_px_${pad}`];
-        const asz = r[`ask_sz_${pad}`];
-
-        if (bp && bs) bids.push({ price: Number(bp) / 1e9, size: Number(bs) });
-        if (ap && asz) asks.push({ price: Number(ap) / 1e9, size: Number(asz) });
-      }
-
-      return {
-        time: Math.floor(Number(r.ts_event ?? r.hd?.ts_event ?? 0) / 1e6),
-        bids,
-        asks,
-      };
+    // 1. Query persistent SQLite storage first
+    const stored = marketDataStore.queryDepthSnapshots({
+      symbol: cleanSym,
+      startTime: start,
+      endTime: end,
+      resolutionMs,
+      limit: limit ?? 500,
+      offset: offset ?? 0,
     });
+
+    if (stored.available && stored.snapshots.length > 0) {
+      return {
+        symbol: cleanSym,
+        count: stored.count,
+        totalAvailable: stored.totalAvailable,
+        hasMore: stored.hasMore,
+        samplingIntervalMs: stored.samplingIntervalMs,
+        dataSource: 'sqlite_mbp10',
+        available: true,
+        snapshots: stored.snapshots,
+      };
+    }
+
+    // 2. If storage has no records for range and vendor is configured, pull from Databento
+    if (this.client.configured) {
+      try {
+        const { dataset, querySymbol } = resolveSymbolForDatabento(cleanSym);
+        const depthRecords = await this.client.getHistoricalDepth(dataset, [querySymbol], start, end, limit ?? 500);
+        if (depthRecords && depthRecords.length > 0) {
+          const mapped = depthRecords.map((r: any) => {
+            const bids: Array<{ price: number; size: number }> = [];
+            const asks: Array<{ price: number; size: number }> = [];
+
+            for (let i = 0; i < 10; i++) {
+              const pad = String(i).padStart(2, '0');
+              const bp = r[`bid_px_${pad}`];
+              const bs = r[`bid_sz_${pad}`];
+              const ap = r[`ask_px_${pad}`];
+              const asz = r[`ask_sz_${pad}`];
+
+              if (bp && bs) bids.push({ price: Number(bp) / 1e9, size: Number(bs) });
+              if (ap && asz) asks.push({ price: Number(ap) / 1e9, size: Number(asz) });
+            }
+
+            return {
+              time: Math.floor(Number(r.ts_event ?? r.hd?.ts_event ?? 0) / 1e6),
+              bids,
+              asks,
+            };
+          });
+
+          // Cache vendor depth snapshots into SQLite in batch
+          marketDataStore.saveDepthSnapshotsBatch(
+            mapped.map((m: any) => ({
+              symbol: cleanSym,
+              exchangeTs: m.time,
+              receiveTs: Date.now(),
+              dataSource: 'databento',
+              bids: m.bids,
+              asks: m.asks,
+            }))
+          );
+
+          return {
+            symbol: cleanSym,
+            count: mapped.length,
+            totalAvailable: mapped.length,
+            hasMore: false,
+            samplingIntervalMs: 250,
+            dataSource: 'databento',
+            available: true,
+            snapshots: mapped,
+          };
+        }
+      } catch (err: any) {
+        console.warn(`[ChartService] Historical depth query failed for ${cleanSym}: ${err?.message}`);
+      }
+    }
+
+    // 3. Fallback to live in-memory snapshots if available
+    if (liveSnapshots && liveSnapshots.length > 0) {
+      const filtered = liveSnapshots.filter((s) => s.time >= start && s.time <= end);
+      return {
+        symbol: cleanSym,
+        count: filtered.length,
+        totalAvailable: filtered.length,
+        hasMore: false,
+        samplingIntervalMs: 100,
+        dataSource: 'live_memory',
+        available: filtered.length > 0,
+        snapshots: filtered,
+      };
+    }
+
+    // 4. Fail-closed: No depth data available
+    return {
+      symbol: cleanSym,
+      count: 0,
+      totalAvailable: 0,
+      hasMore: false,
+      samplingIntervalMs: 250,
+      dataSource: 'none',
+      available: false,
+      snapshots: [],
+    };
   }
 
   /**
@@ -631,32 +894,41 @@ export class ChartService {
     minSize = 50,
     minUsd = 100_000
   ): Promise<LargeTradePrint[]> {
+    if (!this.client.configured) {
+      return [];
+    }
+
     const { dataset, querySymbol } = resolveSymbolForDatabento(symbol);
     const start = fromMs || (Date.now() - 3600_000);
     const end = toMs || Date.now();
 
-    const trades = await this.client.getHistoricalTrades(dataset, [querySymbol], start, end, 5000);
-    const root = symbol.toUpperCase().split('.')[0];
-    const spec = FUTURES_INSTRUMENTS[symbol] || FUTURES_INSTRUMENTS[root];
-    const pointValue = spec?.pointValue || 1;
+    try {
+      const trades = await this.client.getHistoricalTrades(dataset, [querySymbol], start, end, 5000);
+      const root = symbol.toUpperCase().split('.')[0];
+      const spec = FUTURES_INSTRUMENTS[symbol] || FUTURES_INSTRUMENTS[root];
+      const pointValue = spec?.pointValue || 1;
 
-    const largeTrades: LargeTradePrint[] = [];
+      const largeTrades: LargeTradePrint[] = [];
 
-    for (const t of trades) {
-      const usdValue = t.price * t.size * pointValue;
-      if (t.size >= minSize || usdValue >= minUsd) {
-        largeTrades.push({
-          time: t.timestamp,
-          price: t.price,
-          size: t.size,
-          side: t.side,
-          usdValue,
-          isWhale: t.size >= minSize * 2 || usdValue >= minUsd * 2,
-        });
+      for (const t of trades) {
+        const usdValue = t.price * t.size * pointValue;
+        if (t.size >= minSize || usdValue >= minUsd) {
+          largeTrades.push({
+            time: t.timestamp,
+            price: t.price,
+            size: t.size,
+            side: t.side,
+            usdValue,
+            isWhale: t.size >= minSize * 2 || usdValue >= minUsd * 2,
+          });
+        }
       }
-    }
 
-    return largeTrades;
+      return largeTrades;
+    } catch (err: any) {
+      console.warn(`[ChartService] Failed to fetch large trades for ${symbol}: ${err?.message}`);
+      return [];
+    }
   }
 
   /**
@@ -670,15 +942,32 @@ export class ChartService {
     else if (s === 'RTY' || s === 'M2K') underlying = 'IWM';
 
     const latestExp = marketDataStore.getLatestExposure(underlying);
-    if (latestExp) {
+    if (latestExp && latestExp.spot > 0) {
+      const validGammaFlip =
+        typeof latestExp.gammaFlip === 'number' &&
+        Number.isFinite(latestExp.gammaFlip) &&
+        latestExp.gammaFlip > 0
+          ? latestExp.gammaFlip
+          : undefined;
+
+      const callWall =
+        typeof latestExp.walls?.callWall === 'number' && latestExp.walls.callWall > 0
+          ? latestExp.walls.callWall
+          : undefined;
+
+      const putWall =
+        typeof latestExp.walls?.putWall === 'number' && latestExp.walls.putWall > 0
+          ? latestExp.walls.putWall
+          : undefined;
+
       return {
         symbol: s,
         currentPrice: latestExp.spot,
-        gammaFlip: latestExp.gammaFlip ?? undefined,
-        callWall: latestExp.walls.callWall,
-        putWall: latestExp.walls.putWall,
-        supportLevels: [latestExp.walls.putWall].filter(Boolean),
-        resistanceLevels: [latestExp.walls.callWall].filter(Boolean),
+        gammaFlip: validGammaFlip,
+        callWall,
+        putWall,
+        supportLevels: putWall ? [putWall] : [],
+        resistanceLevels: callWall ? [callWall] : [],
         source: 'DATABENTO_OPRA',
       };
     }

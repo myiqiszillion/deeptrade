@@ -336,5 +336,158 @@ export type WSServerMessage =
   | { type: 'REPLAY_STATE'; progress: ReplayProgress }
   | { type: 'PONG'; timestamp: number }
   | { type: 'ERROR'; code: string; message: string }
-  | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; provider?: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number | { provider: string; symbol: string; timeframe?: string; beforeTime: number; beforeId?: string }; requestId?: string };
+  | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; provider?: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number | { provider: string; symbol: string; timeframe?: string; beforeTime: number; beforeId?: string }; requestId?: string }
+  | { type: 'ALERT_EVENT'; alert: AlertEvent };
+
+export type EnhancedFeedStatus =
+  | 'LIVE'
+  | 'REALTIME'
+  | 'DELAYED'
+  | 'STALE'
+  | 'RECONNECTING'
+  | 'UNAVAILABLE'
+  | 'MARKET_CLOSED';
+
+export interface OptionContract {
+  symbol: string;
+  underlying: string;
+  expiration: string;
+  expirationTimestamp?: number;
+  type: 'call' | 'put';
+  strike: number;
+  multiplier?: number;
+  dte?: number;
+  bid?: number;
+  ask?: number;
+  last?: number;
+  volume?: number;
+  openInterest?: number;
+  iv?: number;
+  delta?: number;
+  gamma?: number;
+  vega?: number;
+  theta?: number;
+}
+
+export interface OptionChainResponse {
+  symbol: string;
+  spotPrice: number;
+  gex?: number;
+  netGamma?: number;
+  zeroGamma?: number;
+  maxPain?: number;
+  totalCallOi: number;
+  totalPutOi: number;
+  putCallRatio: number;
+  contracts: OptionContract[];
+  source: string;
+  timestamp: number;
+}
+
+export interface ChartLevels {
+  symbol: string;
+  currentPrice: number;
+  gammaFlip?: number;
+  callWall?: number;
+  putWall?: number;
+  maxPain?: number;
+  supportLevels: number[];
+  resistanceLevels: number[];
+  source: string;
+}
+
+export interface VolumeProfileRangeData extends VolumeProfileData {
+  symbol: string;
+  startTime: number;
+  endTime: number;
+  available?: boolean;
+  status?: 'ok' | 'unavailable' | 'no_data';
+  message?: string;
+}
+
+export interface DepthHeatmapSnapshot {
+  time?: number;
+  timestamp?: number;
+  bids: Array<{ price: number; size: number }>;
+  asks: Array<{ price: number; size: number }>;
+}
+
+export interface DepthHeatmapResponse {
+  symbol: string;
+  count: number;
+  totalAvailable?: number;
+  hasMore?: boolean;
+  samplingIntervalMs?: number;
+  dataSource?: string;
+  available?: boolean;
+  snapshots: DepthHeatmapSnapshot[];
+}
+
+export type AlertType =
+  | 'STACKED_IMBALANCE'
+  | 'ABSORPTION'
+  | 'LARGE_TRADE'
+  | 'POC_VAH_VAL'
+  | 'LIQUIDITY_WALL';
+
+export type AlertSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
+
+export interface AlertRule {
+  id: string;
+  userId: string;
+  symbol: string;
+  type: AlertType;
+  threshold: number;
+  timeframe: string;
+  cooldownSec: number;
+  cooldownSeconds?: number;
+  enabled: boolean;
+  createdAt: number;
+  lastTriggeredAt: number | null;
+  lastTriggeredTs?: number | null;
+  note?: string;
+  metadata?: Record<string, any>;
+}
+
+export interface CreateAlertRuleInput {
+  symbol: string;
+  type: AlertType;
+  threshold: number;
+  timeframe?: string;
+  cooldownSec?: number;
+  cooldownSeconds?: number;
+  enabled?: boolean;
+  note?: string;
+  metadata?: Record<string, any>;
+}
+
+export interface AlertEvent {
+  id: string;
+  ruleId: string;
+  userId: string;
+  symbol: string;
+  type: AlertType;
+  severity: AlertSeverity;
+  message: string;
+  price?: number;
+  timestamp: number;
+  metadata?: Record<string, any>;
+}
+
+export interface AlertHistoryItem {
+  id: string;
+  ruleId: string;
+  userId: string;
+  symbol: string;
+  type: AlertType;
+  severity: AlertSeverity;
+  message: string;
+  price?: number;
+  triggerTime: number;
+  timestamp?: number;
+  acknowledged: boolean;
+  read?: boolean;
+  metadata?: Record<string, any>;
+}
+
 

@@ -1,11 +1,12 @@
 import React from 'react';
+import { EnhancedFeedStatus } from '../../types';
 
 type Tone = 'live' | 'delayed' | 'none';
 
 interface DataStatusStripProps {
   symbol: string;
   /** Server-reported feed state for this instrument ('LIVE' only after validated data). */
-  feedStatus?: 'LIVE' | 'UNAVAILABLE';
+  feedStatus?: 'LIVE' | 'UNAVAILABLE' | EnhancedFeedStatus;
   historySource: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
   gexSource?: 'CBOE_DELAYED' | 'LIVE';
 }

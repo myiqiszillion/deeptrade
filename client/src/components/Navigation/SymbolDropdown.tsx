@@ -41,7 +41,7 @@ interface SymbolDropdownProps {
   currentSymbol: string;
   currentInstrument?: FuturesInstrument;
   onSelectSymbol: (symbol: string) => void;
-  feedStatus?: 'LIVE' | 'UNAVAILABLE';
+  feedStatus?: 'LIVE' | 'UNAVAILABLE' | import('../../types').EnhancedFeedStatus;
   instruments?: InstrumentOption[];
 }
 
@@ -171,7 +171,7 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
       {/* Trigger Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 h-8 px-2.5 rounded-[3px] bg-[#10151C] hover:bg-[#141A23] border border-[#1C2630] hover:border-[#25303A] transition-colors text-left group"
+        className="symbol-dropdown-trigger flex items-center gap-2 h-8 px-2.5 rounded-[3px] bg-[#10151C] hover:bg-[#141A23] border border-[#1C2630] hover:border-[#25303A] transition-colors text-left group"
         title="Switch Instrument Contract (Ctrl+K)"
         aria-expanded={isOpen}
       >
@@ -194,7 +194,7 @@ export const SymbolDropdown: React.FC<SymbolDropdownProps> = ({
 
       {/* Floating Dropdown Panel */}
       {isOpen && (
-        <div className="absolute top-full left-0 mt-1 w-80 sm:w-96 rounded bg-[#0D1218] border border-[#25303A] shadow-[0_12px_32px_rgba(0,0,0,0.85)] flex flex-col overflow-hidden text-xs text-[#E7EDF3] animate-in fade-in duration-100">
+        <div className="symbol-dropdown-menu absolute top-full left-0 mt-1 w-80 sm:w-96 rounded bg-[#0D1218] border border-[#25303A] shadow-[0_12px_32px_rgba(0,0,0,0.85)] flex flex-col overflow-hidden text-xs text-[#E7EDF3] animate-in fade-in duration-100">
           {/* Search Header */}
           <div className="p-2 border-b border-[#1C2630] bg-[#111720] flex items-center gap-2">
             <Search size={13} className="text-[#7F8B97] shrink-0" />

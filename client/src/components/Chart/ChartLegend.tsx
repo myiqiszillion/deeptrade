@@ -9,7 +9,7 @@ interface ChartLegendProps {
   /** Last rendered bar; the legend never invents values when there is no bar yet. */
   lastBar?: { open: number; high: number; low: number; close: number; volume?: number };
   previousClose?: number;
-  feedStatus: 'LIVE' | 'UNAVAILABLE';
+  feedStatus: 'LIVE' | 'UNAVAILABLE' | import('../../types').EnhancedFeedStatus;
   overlays: Record<OverlayKey, boolean>;
   onToggleOverlay: (key: OverlayKey) => void;
   decimals?: number;

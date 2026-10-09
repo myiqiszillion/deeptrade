@@ -98,14 +98,24 @@ pnpm install
 
 ### Chạy môi trường phát triển (Development)
 ```bash
+# Chạy backend dev server (port 8080)
 pnpm dev
-```
-- **WebSocket Server**: `ws://localhost:8080`
 
-### Đóng gói & Chạy bản Production (1 Port duy nhất)
-Server Node.js được thiết kế để phục vụ cả WebSocket và REST API trên cùng một cổng (`8080`):
+# Chạy frontend web terminal dev server (port 5173 với proxy về 8080)
+pnpm client:dev
+```
+- **Backend HTTP & WebSocket**: `http://localhost:8080` & `ws://localhost:8080`
+- **Frontend Terminal**: `http://localhost:5173`
+
+### Đóng gói & Chạy bản Production (Monorepo)
 ```bash
+# Build toàn bộ cả server và client
+pnpm build:all
+
+# Hoặc build riêng server
 pnpm build
+
+# Khởi chạy server production
 node server/dist/index.js
 ```
 - **Health check API**: http://localhost:8080/healthz

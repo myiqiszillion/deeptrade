@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, HelpCircle, LogOut, PanelRight, Play, Search, User } from 'lucide-react';
+import { Activity, Bell, HelpCircle, LogOut, PanelRight, Play, Search, User } from 'lucide-react';
 import { FuturesInstrument } from '../../types';
 import { InstrumentOption, SymbolDropdown } from './SymbolDropdown';
 import { formatPrice } from '../../services/priceFormat';
@@ -9,7 +9,7 @@ interface TerminalHeaderProps {
   instrument?: FuturesInstrument;
   currentPrice: number;
   isConnected: boolean;
-  feedStatus: 'LIVE' | 'UNAVAILABLE';
+  feedStatus: 'LIVE' | 'UNAVAILABLE' | import('../../types').EnhancedFeedStatus;
   sessionMode: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
   onSelectSymbol: (symbol: string) => void;
   showSystemStatus: boolean;
@@ -18,6 +18,9 @@ interface TerminalHeaderProps {
   onToggleReplay: () => void;
   showHelp: boolean;
   onToggleHelp: () => void;
+  showAlertCenter?: boolean;
+  onToggleAlertCenter?: () => void;
+  unreadAlertsCount?: number;
   activePanel: string | null;
   onTogglePanel: () => void;
   highPrice?: number;
@@ -45,6 +48,9 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
   onToggleReplay,
   showHelp,
   onToggleHelp,
+  showAlertCenter,
+  onToggleAlertCenter,
+  unreadAlertsCount,
   activePanel,
   onTogglePanel,
   highPrice,
@@ -165,6 +171,21 @@ export const TerminalHeader: React.FC<TerminalHeaderProps> = ({
         >
           <HelpCircle size={14} />
         </button>
+
+        {onToggleAlertCenter && (
+          <button
+            className={`terminal-btn terminal-btn-icon relative ${showAlertCenter ? 'active' : ''}`}
+            onClick={onToggleAlertCenter}
+            title="Order Flow Alert Center (Rules, Imbalances, Absorptions, Sound)"
+            aria-label="Alerts"
+            aria-expanded={showAlertCenter}
+          >
+            <Bell size={14} />
+            {unreadAlertsCount !== undefined && unreadAlertsCount > 0 && (
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full border border-zinc-900" />
+            )}
+          </button>
+        )}
 
         <div className="toolbar-divider" />
 

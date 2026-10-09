@@ -18,6 +18,7 @@ import { FeedStatusEvent, MarketDataFeed, MarketDepthEvent, MarketTrade } from '
 import { marketDataStore } from '../storage/marketDataStore.js';
 import { SessionCalendar } from '../calendar/sessionCalendar.js';
 import { microstructureEngine } from '../microstructure/engine.js';
+import { alertEngine } from '../alerts/alertEngine.js';
 
 export const TIMEFRAMES: Record<string, number> = {
   '1s': 1000,
@@ -163,6 +164,17 @@ export class MarketContext {
     this.gexEngine = gexEngine;
 
     this.orderbook = new OrderbookManager(50);
+    this.orderbook.onSnapshotRecorded = (snap, exchTs) => {
+      marketDataStore.enqueueDepthSnapshot({
+        symbol: this.symbol,
+        exchangeTs: exchTs,
+        receiveTs: snap.time,
+        sequenceNumber: this.lastDepthUpdateId,
+        dataSource: this.provider,
+        bids: snap.bids,
+        asks: snap.asks,
+      });
+    };
     this.profile = new ProfileEngine(this.instrument.tickSize);
     this.vwap = new VWAPEngine();
     this.tape = new TapeEngine(this.computeDeepTradeThresholdUsd(), 15.0);
@@ -187,50 +199,15 @@ export class MarketContext {
     return this.subscribers.size;
   }
 
-  public getHistoryTicks(timeframe?: string): Tick[] {
+  public getHistoryTicks(): Tick[] {
     if (this.historyTicks.length > 0) {
       return [...this.historyTicks];
     }
-    if (this.historyBars.length > 0) {
-      const tf = timeframe || '1m';
-      const tfMs = TIMEFRAMES[tf] || 60000;
-      const quarterMs = Math.max(1, Math.floor(tfMs / 4));
-      const synTicks: Tick[] = [];
-      for (const bar of this.historyBars) {
-        const volEach = Math.max(1, Math.round(bar.volume / 4));
-        const isUp = bar.close >= bar.open;
-        synTicks.push({
-          id: `syn_${bar.time}_1`,
-          timestamp: bar.time,
-          price: bar.open,
-          size: volEach,
-          side: isUp ? 'buy' : 'sell',
-        });
-        synTicks.push({
-          id: `syn_${bar.time}_2`,
-          timestamp: bar.time + quarterMs,
-          price: isUp ? bar.low : bar.high,
-          size: volEach,
-          side: isUp ? 'sell' : 'buy',
-        });
-        synTicks.push({
-          id: `syn_${bar.time}_3`,
-          timestamp: bar.time + quarterMs * 2,
-          price: isUp ? bar.high : bar.low,
-          size: volEach,
-          side: isUp ? 'buy' : 'sell',
-        });
-        synTicks.push({
-          id: `syn_${bar.time}_4`,
-          timestamp: bar.time + quarterMs * 3,
-          price: bar.close,
-          size: volEach,
-          side: isUp ? 'buy' : 'sell',
-        });
-      }
-      return synTicks;
-    }
     return [];
+  }
+
+  public getDepthHistory(fromMs?: number, toMs?: number) {
+    return this.orderbook.getDepthHistory(fromMs, toMs);
   }
 
   public getBook(): OrderbookSnapshot {
@@ -517,6 +494,9 @@ export class MarketContext {
       // Persist closed bar to store
       if (closedBar) {
         marketDataStore.saveBar(closedBar, this.symbol, tf, this.provider);
+        alertEngine.evaluateFootprintBar(this.symbol, closedBar, this.instrument.tickSize);
+      } else if (currentBar) {
+        alertEngine.evaluateFootprintBar(this.symbol, currentBar, this.instrument.tickSize);
       }
 
       // Send to subscribers subscribed to this timeframe
@@ -562,6 +542,12 @@ export class MarketContext {
       this.instrument.pointValue,
       this.instrument.tickSize
     );
+
+    // Evaluate alert rules against live market events
+    alertEngine.evaluateTick(this.symbol, tick, this.profile.getVolumeProfile());
+    if (absorption) {
+      alertEngine.evaluateAbsorption(this.symbol, absorption);
+    }
 
     // Send tick, tape, deep trade and absorption to all subscribers of this symbol
     for (const session of this.subscribers) {
@@ -619,7 +605,8 @@ export class MarketContext {
       this.orderbook.applySnapshot(
         event.bids.map((l) => [l.price, l.size] as [number, number]),
         event.asks.map((l) => [l.price, l.size] as [number, number]),
-        snapUpdateId
+        snapUpdateId,
+        event.ts
       );
     } else {
       const deltaUpdateId = event.updateId ?? event.ts;
@@ -637,9 +624,9 @@ export class MarketContext {
       this.lastDepthUpdateId = deltaUpdateId;
 
       if (event.side === 'bid') {
-        this.orderbook.applyDelta([[event.price, event.size]], [], deltaUpdateId);
+        this.orderbook.applyDelta([[event.price, event.size]], [], deltaUpdateId, event.ts);
       } else {
-        this.orderbook.applyDelta([], [[event.price, event.size]], deltaUpdateId);
+        this.orderbook.applyDelta([], [[event.price, event.size]], deltaUpdateId, event.ts);
       }
     }
 
@@ -651,6 +638,7 @@ export class MarketContext {
         session.send({ type: 'ORDERBOOK_UPDATE', orderbook: snap });
       }
       this.lastOrderbookUpdate = now;
+      alertEngine.evaluateOrderbook(this.symbol, snap);
     }
   }
 
@@ -1107,7 +1095,7 @@ export class MarketContext {
       timeframe,
       historySource: this.historySource,
       historyBars: this.historyBarsByTf.get(timeframe) || [],
-      recentTicks: this.getHistoryTicks(timeframe).slice(-50).reverse(),
+      recentTicks: this.getHistoryTicks().slice(-50).reverse(),
       feedStatus: this.feedStatus,
       mode: session.isReplay() ? session.mode : 'LIVE',
     };

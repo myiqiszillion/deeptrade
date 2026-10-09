@@ -32,6 +32,9 @@ import { historyBarsTarget } from './marketData/historyDepth.js';
 import { DatabentoHttpClient } from './databento/client.js';
 import { createDatabentoRouter } from './databento/routes.js';
 import { createChartRouter } from './chart/routes.js';
+import { createAlertRouter } from './alerts/routes.js';
+import { alertEngine } from './alerts/alertEngine.js';
+import { AlertEvent } from './alerts/types.js';
 import { RedisCache } from './storage/redisCache.js';
 import { createOptionsRouter } from './marketData/optionsRoutes.js';
 import { createExposureRouter } from './options/exposureRoutes.js';
@@ -329,7 +332,33 @@ const handleExposureRequest = createExposureRouter({ store: marketDataStore, cac
 const handleVolSurfaceRequest = createVolSurfaceRouter();
 const handleBacktestRequest = createBacktestRouter();
 const handleDatabentoRequest = createDatabentoRouter({ client: databentoClient });
-const handleChartRequest = createChartRouter({ client: databentoClient });
+const handleChartRequest = createChartRouter({
+  client: databentoClient,
+  getDepthHistory: (symbol, from, to) => contextManager.getContext(symbol)?.getDepthHistory(from, to) || [],
+});
+const handleAlertRequest = createAlertRouter({
+  getUserFromRequest: (req) => authenticatedUser(req),
+  getUserPlan: (userId) => {
+    try {
+      return billingService.getEffectivePlan(userId).plan.id;
+    } catch {
+      return 'free';
+    }
+  },
+});
+
+// Configure alert engine delivery callback for isolated user real-time WebSocket delivery
+alertEngine.setDeliveryCallback((userId: string, alert: AlertEvent) => {
+  const userSet = userSessions.get(userId);
+  if (userSet) {
+    for (const session of userSet) {
+      session.send({
+        type: 'ALERT_EVENT',
+        alert,
+      });
+    }
+  }
+});
 
 function createSession(socket: WebSocket): ChartSession {
   return new ChartSession(socket);
@@ -705,6 +734,13 @@ const httpServer = createServer(async (req, res) => {
   if (req.url?.startsWith('/api/v1/udf/') || req.url?.startsWith('/api/v1/chart/')) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const handled = await handleChartRequest(req, res, url);
+    if (handled) return;
+  }
+
+  // 7a-2. Order Flow Alert Management API
+  if (req.url?.startsWith('/api/v1/alerts/')) {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const handled = await handleAlertRequest(req, res, url);
     if (handled) return;
   }
 

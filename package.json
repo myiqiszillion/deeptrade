@@ -4,24 +4,33 @@
   "private": true,
   "scripts": {
     "dev": "pnpm --filter @deepchart/server dev",
+    "client:dev": "pnpm --filter client dev",
     "build": "pnpm --filter @deepchart/server build",
+    "client:build": "pnpm --filter client build",
+    "build:all": "pnpm build && pnpm client:build",
     "typecheck": "pnpm --filter @deepchart/server exec tsc -p tsconfig.test.json --noEmit",
+    "typecheck:client": "pnpm --filter client exec tsc -b",
+    "typecheck:all": "pnpm typecheck && pnpm typecheck:client",
     "test": "pnpm test:unit && pnpm test:integration",
     "test:unit": "pnpm --filter @deepchart/server exec tsx test/unit/index.ts",
     "test:integration": "pnpm --filter @deepchart/server exec tsx test/integration/index.ts",
     "verify": "pnpm --filter @deepchart/server exec tsx src/verify_e2e.ts",
     "verify:p0": "pnpm --filter @deepchart/server exec tsx src/verify_p0.ts",
+    "test:e2e": "playwright test",
     "mcp": "pnpm --filter @deepchart/server exec tsx src/mcp/server.ts",
+    "benchmark": "pnpm --filter @deepchart/server exec tsx ../scripts/benchmark_baseline.ts",
     "db:backup": "node scripts/backup_db.mjs"
   },
   "engines": {
     "node": ">=22.13"
   },
-
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
     ]
   },
-  "packageManager": "pnpm@12.4.2"
+  "packageManager": "pnpm@12.4.2",
+  "devDependencies": {
+    "@playwright/test": "^1.64.0"
+  }
 }

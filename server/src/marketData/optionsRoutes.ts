@@ -57,7 +57,7 @@ export function createOptionsRouter(ctx: OptionsRouteContext) {
       try {
         const cached = await cache.getOptionChain(underlying);
         if (cached && cached.length > 0) {
-          return sendJson(200, formatChainResponse(underlying, cached, 'cache'));
+          return sendJson(200, formatChainResponse(underlying, cached, 'cache', store));
         }
 
         let definitions = store.getOptionDefinitions(underlying);
@@ -66,7 +66,7 @@ export function createOptionsRouter(ctx: OptionsRouteContext) {
           if (!dbClient.configured) {
             if (definitions.length === 0) {
               // No store data and no vendor — return empty chain, not 500. Caller sees dataSource hint.
-              return sendJson(200, formatChainResponse(underlying, [], 'none'));
+              return sendJson(200, formatChainResponse(underlying, [], 'none', store));
             }
           } else {
             // Cost-cap guard
@@ -91,7 +91,7 @@ export function createOptionsRouter(ctx: OptionsRouteContext) {
           }
         }
 
-        return sendJson(200, formatChainResponse(underlying, definitions, definitions.length ? 'databento' : 'none'));
+        return sendJson(200, formatChainResponse(underlying, definitions, definitions.length ? 'databento' : 'none', store));
       } catch (err: any) {
         return sendError(500, err.message || 'Failed to retrieve options chain');
       }
@@ -211,31 +211,86 @@ export function createOptionsRouter(ctx: OptionsRouteContext) {
   };
 }
 
-function formatChainResponse(underlying: string, definitions: OptionContractDefinition[], source: string) {
+function formatChainResponse(
+  underlying: string,
+  definitions: OptionContractDefinition[],
+  source: string,
+  store?: MarketDataStore
+) {
   let totalCallOi = 0;
   let totalPutOi = 0;
+  let hasRealOi = false;
 
-  for (const d of definitions) {
-    if (d.type === 'call') {
-      totalCallOi += 100;
-    } else {
-      totalPutOi += 100;
+  const enrichedContracts = definitions.map((d) => {
+    let openInterest: number | undefined = undefined;
+    let settlementPrice: number | undefined = undefined;
+    let clearedVolume: number | undefined = undefined;
+
+    if (store) {
+      const stat = store.getLatestStatistics(d.symbol);
+      if (stat) {
+        if (typeof stat.openInterest === 'number' && stat.openInterest >= 0) {
+          openInterest = stat.openInterest;
+          hasRealOi = true;
+          if (d.type === 'call') {
+            totalCallOi += stat.openInterest;
+          } else {
+            totalPutOi += stat.openInterest;
+          }
+        }
+        if (typeof stat.settlementPrice === 'number' && stat.settlementPrice > 0) {
+          settlementPrice = stat.settlementPrice;
+        }
+        if (typeof stat.clearedVolume === 'number' && stat.clearedVolume >= 0) {
+          clearedVolume = stat.clearedVolume;
+        }
+      }
+    }
+
+    return {
+      ...d,
+      openInterest,
+      settlementPrice,
+      volume: clearedVolume,
+    };
+  });
+
+  const putCallRatio = hasRealOi && totalCallOi > 0
+    ? Number((totalPutOi / totalCallOi).toFixed(2))
+    : (hasRealOi ? 0 : 1.0);
+
+  let spotPrice = 0;
+  let gex = 0;
+  let netGamma = 0;
+  let zeroGamma: number | undefined = undefined;
+  let maxPain: number | undefined = undefined;
+
+  if (store) {
+    const exp = store.getLatestExposure(underlying);
+    if (exp && exp.spot > 0) {
+      spotPrice = exp.spot;
+      gex = exp.totalGex;
+      netGamma = exp.netGamma;
+      if (typeof exp.gammaFlip === 'number' && exp.gammaFlip > 0) {
+        zeroGamma = exp.gammaFlip;
+      }
+      if (typeof exp.walls?.callWall === 'number' && exp.walls.callWall > 0) {
+        maxPain = exp.walls.callWall;
+      }
     }
   }
 
-  const putCallRatio = totalCallOi > 0 ? Number((totalPutOi / totalCallOi).toFixed(2)) : 1.0;
-
   return {
     symbol: underlying,
-    spotPrice: 0,
-    gex: 0,
-    netGamma: 0,
-    zeroGamma: 0,
-    maxPain: 0,
+    spotPrice,
+    gex,
+    netGamma,
+    zeroGamma,
+    maxPain,
     totalCallOi,
     totalPutOi,
     putCallRatio,
-    contracts: definitions,
+    contracts: enrichedContracts,
     source,
     timestamp: Date.now(),
   };

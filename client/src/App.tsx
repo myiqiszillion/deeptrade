@@ -4,6 +4,7 @@ import {
   AbsorptionAlert,
   ChartViewport,
   DeepTrade,
+  EnhancedFeedStatus,
   FootprintBar,
   FuturesInstrument,
   GEXProfile,
@@ -15,9 +16,12 @@ import {
   TPOProfileData,
   Tick,
   VolumeProfileData,
+  VolumeProfileRangeData,
   VWAPPoint,
+  AlertEvent,
 } from './types';
 import { FootprintCanvas } from './components/Chart/FootprintCanvas';
+import { SecondaryChartPane } from './components/Chart/SecondaryChartPane';
 import { CVDPanel } from './components/Chart/CVDPanel';
 import { AuthPanel } from './components/Auth/AuthPanel';
 import {
@@ -35,6 +39,7 @@ import { CommandPalette, OverlayKey, PanelId } from './components/CommandPalette
 import { ToolRail } from './components/Layout/ToolRail';
 import { ChartLegend } from './components/Chart/ChartLegend';
 import { MarketWatch } from './components/Navigation/MarketWatch';
+import { AlertToastNotification } from './components/Alerts/AlertToastNotification';
 import { rememberSymbol } from './services/symbolPrefs';
 import { Activity, BookOpen, Search, X } from 'lucide-react';
 
@@ -51,6 +56,9 @@ const OnboardingCard = React.lazy(() =>
 );
 const TickReplayWidget = React.lazy(() =>
   import('./components/Backtest/TickReplayWidget').then((m) => ({ default: m.TickReplayWidget }))
+);
+const AlertCenterModal = React.lazy(() =>
+  import('./components/Alerts/AlertCenterModal').then((m) => ({ default: m.AlertCenterModal }))
 );
 
 /** Placeholder that keeps the layout from jumping while a lazy panel streams in. */
@@ -79,10 +87,13 @@ const POPULAR_FUTURES = [
 const SETTINGS_STORAGE_KEY = 'deepchart_free_settings_v1';
 
 interface SavedSettings {
-  activePanel?: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | null;
+  activePanel?: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Chain' | 'Heatmap' | 'Alerts' | null;
   dockMode?: 'split' | 'single';
   symbol?: string;
   timeframe?: string;
+  isSplitWorkspace?: boolean;
+  secondarySymbol?: string;
+  secondaryTimeframe?: string;
   chartMode?: 'footprint' | 'candles';
   clusterMultiplier?: 'auto' | 1 | 2 | 4 | 5 | 10 | 25 | 50;
   showDOM?: boolean;
@@ -302,7 +313,7 @@ export const App: React.FC = () => {
   // REAL vendor bars from before the live session. Plain candles: no per-price footprint exists
   // for them, and the server never fabricates one.
   const [historyBars, setHistoryBars] = useState<HistoricalBar[]>([]);
-  const [feedStatus, setFeedStatus] = useState<'LIVE' | 'UNAVAILABLE'>('UNAVAILABLE');
+  const [feedStatus, setFeedStatus] = useState<EnhancedFeedStatus>('UNAVAILABLE');
 
   // High-frequency tick buffering: ticks arrive every 30-120ms. Buffering them and
   // flushing to React state at ~8Hz keeps the Time & Sales tape lossless while cutting
@@ -336,8 +347,21 @@ export const App: React.FC = () => {
   // Features & Panels Toggles (restored from browser storage)
   const [activePanel, setActivePanel] = useState<SavedSettings['activePanel']>(
     savedSettings.activePanel === null ? null :
-      ['DOM', 'Profile', 'Tape', 'GEX', 'Flow'].includes(savedSettings.activePanel ?? '') ? savedSettings.activePanel : 'DOM'
+      ['DOM', 'Profile', 'Tape', 'GEX', 'Flow', 'Chain', 'Heatmap', 'Alerts'].includes(savedSettings.activePanel ?? '') ? savedSettings.activePanel : 'DOM'
   );
+  const [isSplitWorkspace, setIsSplitWorkspace] = useState<boolean>(Boolean(savedSettings.isSplitWorkspace));
+  const [secondarySymbol, setSecondarySymbol] = useState<string>(savedSettings.secondarySymbol || 'NQ');
+  const [secondaryTimeframe, setSecondaryTimeframe] = useState<string>(savedSettings.secondaryTimeframe || '1m');
+  const [crosshairTime, setCrosshairTime] = useState<number | null>(null);
+
+  // Alert Center state
+  const [showAlertCenter, setShowAlertCenter] = useState<boolean>(false);
+  const [latestAlert, setLatestAlert] = useState<AlertEvent | null>(null);
+  const [unreadAlertsCount, setUnreadAlertsCount] = useState<number>(0);
+  const [footprintMode, setFootprintMode] = useState<'bidAsk' | 'delta' | 'totalVolume'>('bidAsk');
+  const [showUnfinishedAuction, setShowUnfinishedAuction] = useState<boolean>(true);
+  const [fixedRangeActive, setFixedRangeActive] = useState<boolean>(false);
+  const [fixedRangeProfile, setFixedRangeProfile] = useState<VolumeProfileRangeData | null>(null);
   const [instrumentsList, setInstrumentsList] = useState<InstrumentOption[]>(POPULAR_FUTURES);
   const [showSystemStatus, setShowSystemStatus] = useState(false);
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
@@ -486,8 +510,9 @@ export const App: React.FC = () => {
         case '2':
         case '3':
         case '4':
-        case '5': {
-          const panels = ['DOM', 'Profile', 'Tape', 'GEX', 'Flow'] as const;
+        case '5':
+        case '6': {
+          const panels = ['DOM', 'Profile', 'Tape', 'GEX', 'Flow', 'Chain'] as const;
           const target = panels[Number(key) - 1];
           setActivePanel((prev) => (prev === target ? null : target));
           break;
@@ -509,6 +534,9 @@ export const App: React.FC = () => {
       chartMode,
       clusterMultiplier,
       activePanel,
+      isSplitWorkspace,
+      secondarySymbol,
+      secondaryTimeframe,
       showVWAP,
       showImbalances,
       showDeltaNumbers,
@@ -522,6 +550,9 @@ export const App: React.FC = () => {
     chartMode,
     clusterMultiplier,
     activePanel,
+    isSplitWorkspace,
+    secondarySymbol,
+    secondaryTimeframe,
     showVWAP,
     showImbalances,
     showDeltaNumbers,
@@ -539,6 +570,10 @@ export const App: React.FC = () => {
   // Connect WebSocket & Register Listeners
   useEffect(() => {
     wsClient.setListeners({
+      onAlert: (alert) => {
+        setLatestAlert(alert);
+        setUnreadAlertsCount((c) => c + 1);
+      },
       // Server-initiated refusals need product UI: 1008 = sign-in/entitlement, 1013 = capacity.
       onServerClose: ({ code, reason }) => {
         setAuthNotice(
@@ -722,6 +757,9 @@ export const App: React.FC = () => {
           setHistoryBars((prev) => mergeHistorySeries(prev, resp.bars));
         }
       },
+      onFeedStatusChange: (status) => {
+        setFeedStatus(status);
+      },
     });
 
     const flushTimer = setInterval(() => {
@@ -773,6 +811,7 @@ export const App: React.FC = () => {
     setAbsorptions([]);
     setRecentTicks([]);
     setTape({ tps: 0, volumePerSec: 0, buyRatio: 0.5, acceleration: 0 });
+    setFixedRangeProfile(null);
     setViewport((prev) => ({ ...prev, anchorPrice: undefined, autoFollow: true }));
     const src = 'databento';
     wsClient.subscribe(sym, src, timeframeRef.current);
@@ -788,10 +827,21 @@ export const App: React.FC = () => {
     historySeriesKeyRef.current = '';
     setHasMoreHistory(true);
     setIsLoadingHistory(false);
+    setFixedRangeProfile(null);
     setTimeframe(tf);
     const src = 'databento';
     wsClient.subscribe(desiredSymbolRef.current, src, tf);
   };
+
+  const handleFixedRangeSelect = React.useCallback(async (startTime: number, endTime: number) => {
+    try {
+      const profile = await deepchartApi.getVolumeProfileRange(symbolRef.current, startTime, endTime);
+      setFixedRangeProfile(profile);
+    } catch (err) {
+      console.error('Failed to compute range volume profile:', err);
+      setFixedRangeProfile(null);
+    }
+  }, []);
 
   // Trigger historical backfill when viewport is panned near the oldest available bar
   useEffect(() => {
@@ -973,6 +1023,7 @@ export const App: React.FC = () => {
         deepTradeThresholdUsd={deepTradeThresholdUsd}
         gexProfile={gexProfile}
         optionsFlow={optionsFlow}
+        onOpenAlertModal={() => setShowAlertCenter(true)}
       />
     </React.Suspense>
   ) : null;
@@ -1007,6 +1058,9 @@ export const App: React.FC = () => {
         onToggleReplay={() => setShowReplay(!showReplay)}
         showHelp={showHelp}
         onToggleHelp={() => setShowHelp(!showHelp)}
+        showAlertCenter={showAlertCenter}
+        onToggleAlertCenter={() => setShowAlertCenter(!showAlertCenter)}
+        unreadAlertsCount={unreadAlertsCount}
         activePanel={activePanel}
         onTogglePanel={() => setActivePanel(activePanel ? null : 'DOM')}
         highPrice={sessionStats.high}
@@ -1044,6 +1098,18 @@ export const App: React.FC = () => {
         onZoomOut={handleZoomOut}
         activePanel={activePanel}
         onSelectPanel={(p) => setActivePanel(activePanel === p ? null : p)}
+        isSplitWorkspace={isSplitWorkspace}
+        onToggleSplitWorkspace={() => setIsSplitWorkspace(!isSplitWorkspace)}
+        footprintMode={footprintMode}
+        onFootprintModeChange={setFootprintMode}
+        showUnfinishedAuction={showUnfinishedAuction}
+        onToggleUnfinishedAuction={() => setShowUnfinishedAuction((prev) => !prev)}
+        fixedRangeActive={fixedRangeActive}
+        onToggleFixedRange={() => setFixedRangeActive((prev) => !prev)}
+        onClearFixedRange={() => {
+          setFixedRangeProfile(null);
+          setFixedRangeActive(false);
+        }}
       />
 
       {showHelp && (
@@ -1097,9 +1163,10 @@ export const App: React.FC = () => {
         {/* Dock when docked left: same component, divider on its right edge */}
         {dockSide === 'left' && dockElement}
 
-        {/* Center: Footprint Chart Canvas & CVD Panel */}
-        <div className="flex-1 flex flex-col min-w-0 h-full">
-          <div className="flex-1 min-h-0 relative" id="chart-surface">
+        {/* Center: Footprint Chart Canvas & CVD Panel (Supports Split Workspace) */}
+        <div className="flex-1 flex flex-row min-w-0 h-full overflow-hidden">
+          <div className="flex-1 flex flex-col min-w-0 h-full">
+            <div className="flex-1 min-h-0 relative" id="chart-surface">
             {(bars.length > 0 || historyBars.length > 0) && (
               <FootprintCanvas
                 bars={bars}
@@ -1128,6 +1195,17 @@ export const App: React.FC = () => {
                 onViewportChange={setViewport}
                 crosshairX={crosshairX}
                 onCrosshairChange={setCrosshairX}
+                crosshairTime={crosshairTime}
+                onCrosshairTimeChange={setCrosshairTime}
+                footprintMode={footprintMode}
+                showUnfinishedAuction={showUnfinishedAuction}
+                fixedRangeActive={fixedRangeActive}
+                fixedRangeProfile={fixedRangeProfile}
+                onFixedRangeSelect={handleFixedRangeSelect}
+                onClearFixedRange={() => {
+                  setFixedRangeProfile(null);
+                  setFixedRangeActive(false);
+                }}
               />
             )}
 
@@ -1209,6 +1287,19 @@ export const App: React.FC = () => {
               onClose={() => setShowCVD(false)}
             />
           )}
+          </div>
+
+          {/* Secondary Chart Pane (Multi-Asset Split Workspace) */}
+          {isSplitWorkspace && (
+            <SecondaryChartPane
+              initialSymbol={secondarySymbol}
+              initialTimeframe={secondaryTimeframe}
+              crosshairTime={crosshairTime}
+              onCrosshairTimeChange={setCrosshairTime}
+              onClose={() => setIsSplitWorkspace(false)}
+              onSymbolChange={(s) => setSecondarySymbol(s)}
+            />
+          )}
         </div>
 
         {/* Dock on the right (the left position renders before the chart) */}
@@ -1282,6 +1373,25 @@ export const App: React.FC = () => {
           onClose={() => setShowOnboardingModal(false)}
         />
       </React.Suspense>
+
+      {/* Real-time Order Flow Alert Toast Notification Banner */}
+      <AlertToastNotification
+        latestAlert={latestAlert}
+        onOpenAlertCenter={() => setShowAlertCenter(true)}
+        onSelectSymbol={handleSelectSymbol}
+      />
+
+      {/* Order Flow Alert Center Modal (lazy) */}
+      {showAlertCenter && (
+        <React.Suspense fallback={null}>
+          <AlertCenterModal
+            isOpen={showAlertCenter}
+            onClose={() => setShowAlertCenter(false)}
+            currentSymbol={symbol}
+            onSelectSymbol={handleSelectSymbol}
+          />
+        </React.Suspense>
+      )}
     </div>
   );
 };

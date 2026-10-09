@@ -1,4 +1,16 @@
-import { FuturesInstrument, GEXProfile, OptionsFlowTrade, Tick } from '../types';
+import {
+  ChartLevels,
+  DepthHeatmapResponse,
+  FuturesInstrument,
+  GEXProfile,
+  OptionChainResponse,
+  OptionsFlowTrade,
+  Tick,
+  VolumeProfileRangeData,
+  AlertRule,
+  CreateAlertRuleInput,
+  AlertHistoryItem,
+} from '../types';
 
 const API_BASE = typeof window !== 'undefined' ? (window.location.port === '5173' ? 'http://localhost:8080' : '') : '';
 
@@ -217,6 +229,49 @@ export const deepchartApi = {
     return apiFetch<GEXProfile>(`/api/v1/gex?symbol=${encodeURIComponent(symbol)}`);
   },
 
+  async getOptionsChain(underlying = 'SPY', expiration?: string): Promise<OptionChainResponse> {
+    const params = new URLSearchParams({ underlying });
+    if (expiration) params.set('expiration', expiration);
+    return apiFetch<OptionChainResponse>(`/api/v1/options/chain?${params.toString()}`);
+  },
+
+  async getChartLevels(symbol = 'ES'): Promise<ChartLevels> {
+    return apiFetch<ChartLevels>(`/api/v1/chart/levels?symbol=${encodeURIComponent(symbol)}`);
+  },
+
+  async getVolumeProfileRange(symbol: string, startTime: number, endTime: number): Promise<VolumeProfileRangeData> {
+    return apiFetch<VolumeProfileRangeData>('/api/v1/chart/volume-profile-range', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol, startTime, endTime }),
+    });
+  },
+
+  async getDepthHeatmap(
+    symbol = 'ES',
+    from?: number,
+    to?: number,
+    resolution?: number,
+    limit?: number,
+    offset?: number
+  ): Promise<DepthHeatmapResponse> {
+    const params = new URLSearchParams({ symbol });
+    if (from !== undefined) params.set('from', String(from));
+    if (to !== undefined) params.set('to', String(to));
+    if (resolution !== undefined) params.set('resolution', String(resolution));
+    if (limit !== undefined) params.set('limit', String(limit));
+    if (offset !== undefined) params.set('offset', String(offset));
+    return apiFetch<DepthHeatmapResponse>(`/api/v1/chart/depth-heatmap?${params.toString()}`);
+  },
+
+  async getExposure(underlying = 'SPY'): Promise<any> {
+    return apiFetch<any>(`/api/v1/exposure?underlying=${encodeURIComponent(underlying)}`);
+  },
+
+  async getVolSurface(underlying = 'SPY'): Promise<any> {
+    return apiFetch<any>(`/api/v1/vol-surface?underlying=${encodeURIComponent(underlying)}`);
+  },
+
   async getOptionsFlow(symbol?: string): Promise<OptionsFlowTrade[]> {
     const query = symbol ? `?symbol=${encodeURIComponent(symbol)}` : '';
     const data = await apiFetch<{ optionsFlow: OptionsFlowTrade[] }>(`/api/v1/options-flow${query}`);
@@ -289,5 +344,54 @@ export const deepchartApi = {
 
   async getMe(): Promise<{ user: any; entitlements: any[]; plan?: PlanSummary }> {
     return apiFetch<{ user: any; entitlements: any[]; plan?: PlanSummary }>('/api/v1/auth/me');
+  },
+
+  async listAlertRules(symbol?: string): Promise<{ rules: AlertRule[]; count: number }> {
+    const qs = symbol ? `?symbol=${encodeURIComponent(symbol)}` : '';
+    return apiFetch<{ rules: AlertRule[]; count: number }>(`/api/v1/alerts/rules${qs}`);
+  },
+
+  async createAlertRule(data: CreateAlertRuleInput): Promise<AlertRule> {
+    return apiFetch<AlertRule>('/api/v1/alerts/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  },
+
+  async updateAlertRule(ruleId: string, updates: Partial<CreateAlertRuleInput> & { enabled?: boolean }): Promise<AlertRule> {
+    return apiFetch<AlertRule>(`/api/v1/alerts/rules/${encodeURIComponent(ruleId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+  },
+
+  async deleteAlertRule(ruleId: string): Promise<{ success: boolean }> {
+    return apiFetch<{ success: boolean }>(`/api/v1/alerts/rules/${encodeURIComponent(ruleId)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async getAlertHistory(options?: { symbol?: string; limit?: number; unreadOnly?: boolean }): Promise<{ history: AlertHistoryItem[]; count: number }> {
+    const params = new URLSearchParams();
+    if (options?.symbol) params.set('symbol', options.symbol);
+    if (options?.limit) params.set('limit', String(options.limit));
+    if (options?.unreadOnly) params.set('unreadOnly', 'true');
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return apiFetch<{ history: AlertHistoryItem[]; count: number }>(`/api/v1/alerts/history${qs}`);
+  },
+
+  async acknowledgeAlert(historyId: string): Promise<{ success: boolean }> {
+    return apiFetch<{ success: boolean }>(`/api/v1/alerts/history/${encodeURIComponent(historyId)}/ack`, {
+      method: 'POST',
+    });
+  },
+
+  async clearAlertHistory(symbol?: string): Promise<{ deleted: number }> {
+    const qs = symbol ? `?symbol=${encodeURIComponent(symbol)}` : '';
+    return apiFetch<{ deleted: number }>(`/api/v1/alerts/history${qs}`, {
+      method: 'DELETE',
+    });
   },
 };

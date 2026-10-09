@@ -1,5 +1,15 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { AbsorptionAlert, ChartViewport, DeepTrade, FootprintBar, GEXProfile, HistoricalBar, VWAPPoint } from '../../types';
+import {
+  AbsorptionAlert,
+  ChartViewport,
+  DeepTrade,
+  FootprintBar,
+  GEXProfile,
+  HistoricalBar,
+  VolumeProfileData,
+  VolumeProfileRangeData,
+  VWAPPoint,
+} from '../../types';
 import { historyBeforeLive } from '../../services/chartHistory';
 import { formatPrice, formatVolume } from '../../services/priceFormat';
 import {
@@ -10,7 +20,7 @@ import {
   getNicePriceStep,
 } from '../../services/viewportMath';
 import { ChartTooltip, TooltipData } from './ChartTooltip';
-import { SignalFilters } from '../Navigation/ChartToolbar';
+import { FootprintMode, SignalFilters } from '../Navigation/ChartToolbar';
 
 interface FootprintCanvasProps {
   bars: FootprintBar[];
@@ -20,6 +30,7 @@ interface FootprintCanvasProps {
   deepTrades: DeepTrade[];
   absorptions: AbsorptionAlert[];
   gexProfile?: GEXProfile;
+  rangeVolumeProfile?: VolumeProfileData;
   showVWAP: boolean;
   showImbalances: boolean;
   showDeltaNumbers: boolean;
@@ -31,10 +42,25 @@ interface FootprintCanvasProps {
   isLive?: boolean;
   sessionMode?: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
   chartMode?: 'footprint' | 'candles';
+  footprintMode?: FootprintMode;
+  showUnfinishedAuction?: boolean;
+  fixedRangeActive?: boolean;
+  onFixedRangeSelect?: (startTime: number, endTime: number) => void;
+  fixedRangeProfile?: VolumeProfileRangeData | null;
+  onClearFixedRange?: () => void;
+  colorSettings?: {
+    upColor?: string;
+    downColor?: string;
+    pocColor?: string;
+    imbalanceBuyColor?: string;
+    imbalanceSellColor?: string;
+  };
   viewport?: ChartViewport;
   onViewportChange?: (vp: ChartViewport) => void;
   crosshairX?: number | null;
   onCrosshairChange?: (x: number | null) => void;
+  crosshairTime?: number | null;
+  onCrosshairTimeChange?: (time: number | null) => void;
 }
 
 interface ClusterRow {
@@ -61,6 +87,7 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   deepTrades,
   absorptions,
   gexProfile,
+  rangeVolumeProfile,
   showVWAP,
   showImbalances,
   showDeltaNumbers,
@@ -72,13 +99,24 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   isLive = false,
   sessionMode = 'LIVE',
   chartMode = 'footprint',
+  footprintMode = 'bidAsk',
+  showUnfinishedAuction = true,
+  fixedRangeActive = false,
+  onFixedRangeSelect,
+  fixedRangeProfile,
+  onClearFixedRange,
+  colorSettings,
   viewport: propsViewport,
   onViewportChange,
   crosshairX,
   onCrosshairChange,
+  crosshairTime,
+  onCrosshairTimeChange,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const isSelectingRangeRef = useRef(false);
+  const rangeSelectionRef = useRef<{ startX: number; currentX: number } | null>(null);
 
   // Default viewport targeting 20-25 visible candles on screen (70px width + 10px spacing = 80px step)
   const [internalViewport, setInternalViewport] = useState<ChartViewport>({
@@ -275,6 +313,15 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
 
   // Mouse interaction handlers
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (fixedRangeActive) {
+      isSelectingRangeRef.current = true;
+      const rect = canvasRef.current?.getBoundingClientRect();
+      const curX = rect ? e.clientX - rect.left : e.clientX;
+      rangeSelectionRef.current = { startX: curX, currentX: curX };
+      requestRender();
+      return;
+    }
+
     isDraggingRef.current = true;
     dragStartRef.current = {
       x: e.clientX,
@@ -294,8 +341,27 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     mousePosRef.current = { x: curX, y: curY };
     requestRender();
 
+    if (isSelectingRangeRef.current && rangeSelectionRef.current) {
+      rangeSelectionRef.current.currentX = curX;
+      requestRender();
+      return;
+    }
+
     if (onCrosshairChange) {
       onCrosshairChange(curX < canvas.clientWidth - GUTTER_WIDTH ? curX : null);
+    }
+
+    if (onCrosshairTimeChange) {
+      if (curX < canvas.clientWidth - GUTTER_WIDTH && bars.length > 0) {
+        const barIndex = Math.floor((curX - viewport.panX) / (viewport.barWidth + viewport.barSpacing));
+        if (barIndex >= 0 && barIndex < bars.length) {
+          onCrosshairTimeChange(bars[barIndex].time);
+        } else {
+          onCrosshairTimeChange(null);
+        }
+      } else {
+        onCrosshairTimeChange(null);
+      }
     }
 
     if (isDraggingRef.current) {
@@ -481,16 +547,52 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
   };
 
   const handleMouseUp = () => {
+    if (isSelectingRangeRef.current && rangeSelectionRef.current) {
+      isSelectingRangeRef.current = false;
+      const { startX, currentX } = rangeSelectionRef.current;
+      rangeSelectionRef.current = null;
+      requestRender();
+
+      if (Math.abs(currentX - startX) > 10 && bars.length > 0) {
+        const barStep = viewport.barWidth + viewport.barSpacing;
+        const minX = Math.min(startX, currentX);
+        const maxX = Math.max(startX, currentX);
+
+        const startBarIdx = Math.max(0, Math.min(bars.length - 1, Math.floor((minX - viewport.panX) / barStep)));
+        const endBarIdx = Math.max(0, Math.min(bars.length - 1, Math.floor((maxX - viewport.panX) / barStep)));
+
+        const startBar = bars[startBarIdx];
+        const endBar = bars[endBarIdx];
+
+        if (startBar && endBar) {
+          const t1 = startBar.time;
+          const tfMs = timeframe === '1s' ? 1000 : timeframe === '5s' ? 5000 : timeframe === '15s' ? 15000 : timeframe === '30s' ? 30000 : timeframe === '5m' ? 300000 : timeframe === '15m' ? 900000 : timeframe === '1h' ? 3600000 : 60000;
+          const t2 = endBar.time + tfMs;
+          if (t2 > t1 && onFixedRangeSelect) {
+            onFixedRangeSelect(t1, t2);
+          }
+        }
+      }
+      return;
+    }
+
     isDraggingRef.current = false;
     requestRender();
   };
 
   const handleMouseLeave = () => {
+    if (isSelectingRangeRef.current) {
+      isSelectingRangeRef.current = false;
+      rangeSelectionRef.current = null;
+    }
     isDraggingRef.current = false;
     mousePosRef.current = null;
     setTooltipData(null);
     if (onCrosshairChange) {
       onCrosshairChange(null);
+    }
+    if (onCrosshairTimeChange) {
+      onCrosshairTimeChange(null);
     }
     requestRender();
   };
@@ -733,6 +835,31 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         const barX = viewport.panX + barIndex * barStep;
         if (barX + viewport.barWidth < 0 || barX > chartWidth) return;
 
+        // Session separation vertical demarcation when date changes
+        if (barIndex > 0) {
+          const prevBar = bars[barIndex - 1];
+          const d1 = new Date(bar.time).getUTCDate();
+          const d0 = new Date(prevBar.time).getUTCDate();
+          if (d1 !== d0) {
+            ctx.save();
+            ctx.strokeStyle = '#334155';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            const sepX = barX - viewport.barSpacing / 2;
+            ctx.beginPath();
+            ctx.moveTo(sepX, 0);
+            ctx.lineTo(sepX, chartHeight);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = '#64748B';
+            ctx.font = 'bold 8px JetBrains Mono, monospace';
+            ctx.textAlign = 'left';
+            const dateStr = new Date(bar.time).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+            ctx.fillText(dateStr.toUpperCase(), sepX + 4, 14);
+            ctx.restore();
+          }
+        }
+
         const isUp = bar.close >= bar.open;
         const barCenterX = barX + viewport.barWidth / 2;
 
@@ -825,106 +952,203 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         if (highestVolRow) highestVolRow.isPOC = true;
 
         const maxClusterVol = Math.max(0.1, ...clusterRows.map((r) => Math.max(r.bidVol, r.askVol)));
-        const cellWidth = Math.floor((viewport.barWidth - 1) / 2);
+        // Footprint display mode branch
+        if (footprintMode === 'delta') {
+          // DELTA LADDER MODE
+          const deltaCellW = viewport.barWidth - 4;
+          const maxDelta = Math.max(1, ...clusterRows.map((r) => Math.abs(r.delta)));
+          clusterRows.forEach((row) => {
+            const centerY = priceToY(row.price);
+            const rowHeight = Math.max(2, (clusterStep / tickSize) * viewport.priceScale);
+            const rowTop = centerY - rowHeight / 2;
+            if (rowTop + rowHeight < 0 || rowTop > chartHeight) return;
 
-        // Center vertical divider (very subtle hairline)
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-        ctx.fillRect(barX + cellWidth, highY, 1, Math.max(1, lowY - highY));
+            const isHoveredRow = mousePos &&
+              mousePos.x >= barX && mousePos.x <= barX + viewport.barWidth &&
+              mousePos.y >= rowTop && mousePos.y <= rowTop + rowHeight;
 
-        clusterRows.forEach((row) => {
-          // Exact 1:1 mathematical centering on price scale
-          const centerY = priceToY(row.price);
-          const rowHeight = Math.max(2, (clusterStep / tickSize) * viewport.priceScale);
-          const rowTop = centerY - rowHeight / 2;
+            const isPos = row.delta >= 0;
+            const ratio = Math.min(1, Math.abs(row.delta) / maxDelta);
+            ctx.fillStyle = isPos
+              ? `rgba(34, 197, 94, ${0.08 + ratio * 0.35})`
+              : `rgba(239, 68, 68, ${0.08 + ratio * 0.35})`;
+            ctx.fillRect(barX + 2, rowTop, deltaCellW, rowHeight - 0.5);
 
-          if (rowTop + rowHeight < 0 || rowTop > chartHeight) return;
-
-          const isHoveredRow = mousePos &&
-            mousePos.x >= barX && mousePos.x <= barX + viewport.barWidth &&
-            mousePos.y >= rowTop && mousePos.y <= rowTop + rowHeight;
-
-          // Extremely subtle volume intensity tint (never competes with numbers!)
-          const bidRatio = Math.min(1, row.bidVol / maxClusterVol);
-          const askRatio = Math.min(1, row.askVol / maxClusterVol);
-
-          if (bidRatio > 0.06) {
-            ctx.fillStyle = `rgba(239, 68, 68, ${0.03 + bidRatio * 0.08})`;
-            const w = Math.min(cellWidth - 2, bidRatio * (cellWidth - 2));
-            ctx.fillRect(barX + cellWidth - w, rowTop, w, rowHeight - 0.5);
-          }
-
-          if (askRatio > 0.06) {
-            ctx.fillStyle = `rgba(34, 197, 94, ${0.03 + askRatio * 0.08})`;
-            const w = Math.min(cellWidth - 2, askRatio * (cellWidth - 2));
-            ctx.fillRect(barX + cellWidth + 1, rowTop, w, rowHeight - 0.5);
-          }
-
-          // Point of Control (POC): Subtle thin horizontal accent + slightly stronger text
-          // P2: ~1px additional breathing room between POC number and POC accent line
-          if (row.isPOC) {
-            ctx.strokeStyle = 'rgba(245, 158, 11, 0.65)';
-            ctx.lineWidth = 1;
-            const pocLineY = Math.min(rowTop + rowHeight - 0.5, centerY + rowHeight / 2);
-            ctx.beginPath();
-            ctx.moveTo(barX + 2, pocLineY);
-            ctx.lineTo(barX + viewport.barWidth - 2, pocLineY);
-            ctx.stroke();
-          }
-
-          // Stacked Imbalance: P1 - 2.0px edge marker with clear intensity
-          if (showImbalances) {
-            if (row.hasStackedBidImbalance) {
-              ctx.fillStyle = '#EF4444';
-              ctx.fillRect(barX, rowTop, 2.0, rowHeight);
+            if (row.isPOC) {
+              ctx.strokeStyle = colorSettings?.pocColor || 'rgba(245, 158, 11, 0.7)';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(barX + 2, rowTop, deltaCellW, rowHeight - 0.5);
             }
-            if (row.hasStackedAskImbalance) {
-              ctx.fillStyle = '#22C55E';
-              ctx.fillRect(barX + viewport.barWidth - 2.0, rowTop, 2.0, rowHeight);
+
+            if (isHoveredRow) {
+              ctx.strokeStyle = '#22D3EE';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(barX + 2, rowTop, deltaCellW, rowHeight - 0.5);
             }
-          }
 
-          // Hover row outline
-          if (isHoveredRow) {
-            ctx.strokeStyle = 'rgba(34, 211, 238, 0.7)';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(barX, rowTop, viewport.barWidth, rowHeight);
-          }
-
-          // High-contrast, clean monospace numbers
-          // Elevated textY provides ~1px additional breathing room above POC accent line
-          if (rowHeight >= 8 && viewport.barWidth >= 40) {
-            const fontSize = Math.min(10, Math.max(8, Math.floor(rowHeight - 2)));
-            const textY = centerY + fontSize * 0.26;
-
-            // Bid Text (Right-aligned in Bid cell)
-            ctx.textAlign = 'right';
-            if (row.hasBidImbalance && showImbalances) {
-              ctx.fillStyle = '#F87171';
-              ctx.font = `600 ${fontSize}px JetBrains Mono, monospace`;
-            } else if (row.isPOC) {
-              ctx.fillStyle = '#FDE68A';
-              ctx.font = `600 ${fontSize}px JetBrains Mono, monospace`;
-            } else {
-              ctx.fillStyle = '#94A3B8';
-              ctx.font = `400 ${fontSize}px JetBrains Mono, monospace`;
+            if (rowHeight >= 8 && viewport.barWidth >= 40) {
+              const fontSize = Math.min(10, Math.max(8, Math.floor(rowHeight - 2)));
+              ctx.font = `${row.isPOC ? '600' : '400'} ${fontSize}px JetBrains Mono, monospace`;
+              ctx.textAlign = 'center';
+              ctx.fillStyle = row.isPOC ? '#FDE68A' : isPos ? (colorSettings?.upColor || '#4ADE80') : (colorSettings?.downColor || '#F87171');
+              ctx.fillText(`${isPos ? '+' : ''}${formatVolume(row.delta)}`, barCenterX, centerY + fontSize * 0.26);
             }
-            ctx.fillText(formatVolume(row.bidVol), barX + cellWidth - 3, textY);
+          });
+        } else if (footprintMode === 'totalVolume') {
+          // TOTAL VOLUME MODE
+          const volCellW = viewport.barWidth - 4;
+          const maxVol = Math.max(1, ...clusterRows.map((r) => r.totalVol));
+          clusterRows.forEach((row) => {
+            const centerY = priceToY(row.price);
+            const rowHeight = Math.max(2, (clusterStep / tickSize) * viewport.priceScale);
+            const rowTop = centerY - rowHeight / 2;
+            if (rowTop + rowHeight < 0 || rowTop > chartHeight) return;
 
-            // Ask Text (Left-aligned in Ask cell)
-            ctx.textAlign = 'left';
-            if (row.hasAskImbalance && showImbalances) {
-              ctx.fillStyle = '#4ADE80';
-              ctx.font = `600 ${fontSize}px JetBrains Mono, monospace`;
-            } else if (row.isPOC) {
-              ctx.fillStyle = '#FDE68A';
-              ctx.font = `600 ${fontSize}px JetBrains Mono, monospace`;
-            } else {
-              ctx.fillStyle = '#94A3B8';
-              ctx.font = `400 ${fontSize}px JetBrains Mono, monospace`;
+            const isHoveredRow = mousePos &&
+              mousePos.x >= barX && mousePos.x <= barX + viewport.barWidth &&
+              mousePos.y >= rowTop && mousePos.y <= rowTop + rowHeight;
+
+            const fillW = Math.min(volCellW, (row.totalVol / maxVol) * volCellW);
+            ctx.fillStyle = 'rgba(56, 189, 248, 0.22)';
+            ctx.fillRect(barX + 2, rowTop, fillW, rowHeight - 0.5);
+
+            if (row.isPOC) {
+              ctx.strokeStyle = colorSettings?.pocColor || 'rgba(245, 158, 11, 0.7)';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(barX + 2, rowTop, volCellW, rowHeight - 0.5);
             }
-            ctx.fillText(formatVolume(row.askVol), barX + cellWidth + 4, textY);
+
+            if (isHoveredRow) {
+              ctx.strokeStyle = '#22D3EE';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(barX + 2, rowTop, volCellW, rowHeight - 0.5);
+            }
+
+            if (rowHeight >= 8 && viewport.barWidth >= 40) {
+              const fontSize = Math.min(10, Math.max(8, Math.floor(rowHeight - 2)));
+              ctx.font = `${row.isPOC ? '600' : '400'} ${fontSize}px JetBrains Mono, monospace`;
+              ctx.textAlign = 'center';
+              ctx.fillStyle = row.isPOC ? '#FDE68A' : '#E2E8F0';
+              ctx.fillText(formatVolume(row.totalVol), barCenterX, centerY + fontSize * 0.26);
+            }
+          });
+        } else {
+          // BID x ASK MODE (default)
+          const cellWidth = Math.floor((viewport.barWidth - 1) / 2);
+
+          // Center vertical divider (very subtle hairline)
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+          ctx.fillRect(barX + cellWidth, highY, 1, Math.max(1, lowY - highY));
+
+          clusterRows.forEach((row) => {
+            // Exact 1:1 mathematical centering on price scale
+            const centerY = priceToY(row.price);
+            const rowHeight = Math.max(2, (clusterStep / tickSize) * viewport.priceScale);
+            const rowTop = centerY - rowHeight / 2;
+
+            if (rowTop + rowHeight < 0 || rowTop > chartHeight) return;
+
+            const isHoveredRow = mousePos &&
+              mousePos.x >= barX && mousePos.x <= barX + viewport.barWidth &&
+              mousePos.y >= rowTop && mousePos.y <= rowTop + rowHeight;
+
+            // Extremely subtle volume intensity tint (never competes with numbers!)
+            const bidRatio = Math.min(1, row.bidVol / maxClusterVol);
+            const askRatio = Math.min(1, row.askVol / maxClusterVol);
+
+            if (bidRatio > 0.06) {
+              ctx.fillStyle = `rgba(239, 68, 68, ${0.03 + bidRatio * 0.08})`;
+              const w = Math.min(cellWidth - 2, bidRatio * (cellWidth - 2));
+              ctx.fillRect(barX + cellWidth - w, rowTop, w, rowHeight - 0.5);
+            }
+
+            if (askRatio > 0.06) {
+              ctx.fillStyle = `rgba(34, 197, 94, ${0.03 + askRatio * 0.08})`;
+              const w = Math.min(cellWidth - 2, askRatio * (cellWidth - 2));
+              ctx.fillRect(barX + cellWidth + 1, rowTop, w, rowHeight - 0.5);
+            }
+
+            // Point of Control (POC): Subtle thin horizontal accent + slightly stronger text
+            if (row.isPOC) {
+              ctx.strokeStyle = colorSettings?.pocColor || 'rgba(245, 158, 11, 0.65)';
+              ctx.lineWidth = 1;
+              const pocLineY = Math.min(rowTop + rowHeight - 0.5, centerY + rowHeight / 2);
+              ctx.beginPath();
+              ctx.moveTo(barX + 2, pocLineY);
+              ctx.lineTo(barX + viewport.barWidth - 2, pocLineY);
+              ctx.stroke();
+            }
+
+            // Stacked Imbalance: 2.5px edge marker with clear intensity
+            if (showImbalances) {
+              if (row.hasStackedBidImbalance) {
+                ctx.fillStyle = colorSettings?.imbalanceSellColor || '#EF4444';
+                ctx.fillRect(barX, rowTop, 2.5, rowHeight);
+              }
+              if (row.hasStackedAskImbalance) {
+                ctx.fillStyle = colorSettings?.imbalanceBuyColor || '#22C55E';
+                ctx.fillRect(barX + viewport.barWidth - 2.5, rowTop, 2.5, rowHeight);
+              }
+            }
+
+            // Hover row outline
+            if (isHoveredRow) {
+              ctx.strokeStyle = 'rgba(34, 211, 238, 0.7)';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(barX, rowTop, viewport.barWidth, rowHeight);
+            }
+
+            // High-contrast, clean monospace numbers
+            if (rowHeight >= 8 && viewport.barWidth >= 40) {
+              const fontSize = Math.min(10, Math.max(8, Math.floor(rowHeight - 2)));
+              const textY = centerY + fontSize * 0.26;
+
+              // Bid Text (Right-aligned in Bid cell)
+              ctx.textAlign = 'right';
+              if (row.hasBidImbalance && showImbalances) {
+                ctx.fillStyle = colorSettings?.imbalanceSellColor || '#F87171';
+                ctx.font = `600 ${fontSize}px JetBrains Mono, monospace`;
+              } else if (row.isPOC) {
+                ctx.fillStyle = '#FDE68A';
+                ctx.font = `600 ${fontSize}px JetBrains Mono, monospace`;
+              } else {
+                ctx.fillStyle = '#94A3B8';
+                ctx.font = `400 ${fontSize}px JetBrains Mono, monospace`;
+              }
+              ctx.fillText(formatVolume(row.bidVol), barX + cellWidth - 3, textY);
+
+              // Ask Text (Left-aligned in Ask cell)
+              ctx.textAlign = 'left';
+              if (row.hasAskImbalance && showImbalances) {
+                ctx.fillStyle = colorSettings?.imbalanceBuyColor || '#4ADE80';
+                ctx.font = `600 ${fontSize}px JetBrains Mono, monospace`;
+              } else if (row.isPOC) {
+                ctx.fillStyle = '#FDE68A';
+                ctx.font = `600 ${fontSize}px JetBrains Mono, monospace`;
+              } else {
+                ctx.fillStyle = '#94A3B8';
+                ctx.font = `400 ${fontSize}px JetBrains Mono, monospace`;
+              }
+              ctx.fillText(formatVolume(row.askVol), barX + cellWidth + 4, textY);
+            }
+          });
+        }
+
+        // Unfinished Auction indicators at candle extremes
+        if (showUnfinishedAuction) {
+          if (bar.unfinishedHigh) {
+            ctx.fillStyle = '#EF4444';
+            ctx.font = 'bold 8px JetBrains Mono, monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('✕ UA', barCenterX, highY - 4);
           }
-        });
+          if (bar.unfinishedLow) {
+            ctx.fillStyle = '#22C55E';
+            ctx.font = 'bold 8px JetBrains Mono, monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('✕ UA', barCenterX, lowY + 11);
+          }
+        }
       });
 
       // 8. Institutional Signals: Render attached to originating candle and price level
@@ -1057,35 +1281,283 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         ctx.restore();
       }
 
+      // Range-Constrained Volume Profile Lines (POC, VAH, VAL & Value Area Band)
+      if (rangeVolumeProfile && rangeVolumeProfile.totalVolume > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, chartWidth, chartHeight);
+        ctx.clip();
+
+        const pocY = priceToY(rangeVolumeProfile.poc);
+        const vahY = priceToY(rangeVolumeProfile.vah);
+        const valY = priceToY(rangeVolumeProfile.val);
+
+        // Value Area Band (70% standard)
+        if (vahY >= 0 && valY <= chartHeight) {
+          ctx.fillStyle = 'rgba(56, 189, 248, 0.04)';
+          ctx.fillRect(0, Math.min(vahY, valY), chartWidth, Math.abs(valY - vahY));
+        }
+
+        // VAH Line
+        if (vahY >= 0 && vahY <= chartHeight) {
+          ctx.strokeStyle = '#38BDF8';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(0, vahY);
+          ctx.lineTo(chartWidth, vahY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#38BDF8';
+          ctx.font = '9px JetBrains Mono, monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText(`VAH ${formatPrice(rangeVolumeProfile.vah, tickSize)}`, 28, vahY - 4);
+        }
+
+        // POC Line
+        if (pocY >= 0 && pocY <= chartHeight) {
+          ctx.strokeStyle = '#F59E0B';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(0, pocY);
+          ctx.lineTo(chartWidth, pocY);
+          ctx.stroke();
+          ctx.fillStyle = '#F59E0B';
+          ctx.font = 'bold 9px JetBrains Mono, monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText(`POC ${formatPrice(rangeVolumeProfile.poc, tickSize)}`, 28, pocY - 4);
+        }
+
+        // VAL Line
+        if (valY >= 0 && valY <= chartHeight) {
+          ctx.strokeStyle = '#38BDF8';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(0, valY);
+          ctx.lineTo(chartWidth, valY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#38BDF8';
+          ctx.font = '9px JetBrains Mono, monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText(`VAL ${formatPrice(rangeVolumeProfile.val, tickSize)}`, 28, valY - 4);
+        }
+        ctx.restore();
+      }
+
+      // Range Selection Drag Preview Box
+      if (rangeSelectionRef.current) {
+        const { startX, currentX } = rangeSelectionRef.current;
+        const left = Math.min(startX, currentX);
+        const right = Math.max(startX, currentX);
+        const w = right - left;
+
+        ctx.save();
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.15)';
+        ctx.fillRect(left, 0, w, chartHeight);
+        ctx.strokeStyle = '#38BDF8';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(left, 0, w, chartHeight);
+        ctx.setLineDash([]);
+
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+        ctx.fillRect(left + 6, 12, 175, 22);
+        ctx.strokeStyle = '#38BDF8';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(left + 6, 12, 175, 22);
+        ctx.fillStyle = '#38BDF8';
+        ctx.font = 'bold 9px JetBrains Mono, monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText('SELECTING RANGE VP...', left + 12, 26);
+        ctx.restore();
+      }
+
+      // Localized Fixed Range Volume Profile Overlay
+      if (fixedRangeProfile) {
+        ctx.save();
+        let rangeStartX = 0;
+        let rangeEndX = chartWidth;
+
+        const sIdx = bars.findIndex((b) => b.time >= fixedRangeProfile.startTime);
+        if (sIdx >= 0) {
+          rangeStartX = viewport.panX + sIdx * barStep;
+        } else if (bars.length > 0 && fixedRangeProfile.startTime > bars[bars.length - 1].time) {
+          rangeStartX = viewport.panX + bars.length * barStep;
+        } else {
+          rangeStartX = 0;
+        }
+
+        const eIdx = bars.findIndex((b) => b.time >= fixedRangeProfile.endTime);
+        if (eIdx >= 0) {
+          rangeEndX = viewport.panX + eIdx * barStep + viewport.barWidth;
+        } else if (bars.length > 0 && fixedRangeProfile.endTime >= bars[bars.length - 1].time) {
+          rangeEndX = viewport.panX + (bars.length - 1) * barStep + viewport.barWidth;
+        } else {
+          rangeEndX = chartWidth;
+        }
+
+        const clampedStartX = Math.max(0, Math.min(chartWidth, rangeStartX));
+        const clampedEndX = Math.max(clampedStartX + 40, Math.min(chartWidth, rangeEndX));
+        const boxWidth = clampedEndX - clampedStartX;
+
+        // Background highlight for fixed range
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.04)';
+        ctx.fillRect(clampedStartX, 0, boxWidth, chartHeight);
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.4)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(clampedStartX, 0, boxWidth, chartHeight);
+
+        // Header badge
+        const badgeW = Math.min(260, Math.max(160, boxWidth - 8));
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+        ctx.fillRect(clampedStartX + 4, 8, badgeW, 22);
+        ctx.strokeStyle = '#38BDF8';
+        ctx.strokeRect(clampedStartX + 4, 8, badgeW, 22);
+
+        ctx.fillStyle = '#38BDF8';
+        ctx.font = 'bold 9px JetBrains Mono, monospace';
+        ctx.textAlign = 'left';
+
+        if (fixedRangeProfile.available === false || fixedRangeProfile.status === 'unavailable' || fixedRangeProfile.totalVolume === 0) {
+          ctx.fillStyle = '#F59E0B';
+          ctx.fillText('RANGE VP: NO TRADE DATA', clampedStartX + 10, 23);
+        } else {
+          ctx.fillText(
+            `RANGE VP · POC ${formatPrice(fixedRangeProfile.poc, tickSize)} · ${formatVolume(fixedRangeProfile.totalVolume)}V`,
+            clampedStartX + 10,
+            23
+          );
+        }
+
+        // Render histogram if levels available
+        if (fixedRangeProfile.levels && fixedRangeProfile.levels.length > 0 && fixedRangeProfile.totalVolume > 0) {
+          const maxVol = Math.max(1, ...fixedRangeProfile.levels.map((l) => l.volume));
+          const maxBarW = Math.max(40, boxWidth * 0.7);
+
+          // 70% Value Area background
+          const vahY = priceToY(fixedRangeProfile.vah);
+          const valY = priceToY(fixedRangeProfile.val);
+          if (vahY >= 0 && valY <= chartHeight && valY >= 0) {
+            ctx.fillStyle = 'rgba(56, 189, 248, 0.08)';
+            ctx.fillRect(clampedStartX, Math.min(vahY, valY), boxWidth, Math.abs(valY - vahY));
+          }
+
+          for (const lvl of fixedRangeProfile.levels) {
+            const centerY = priceToY(lvl.price);
+            const rowH = Math.max(2, (clusterStep / tickSize) * viewport.priceScale);
+            const rowTop = centerY - rowH / 2;
+            if (rowTop + rowH < 0 || rowTop > chartHeight) continue;
+
+            const w = Math.min(maxBarW, (lvl.volume / maxVol) * maxBarW);
+            const isPosDelta = lvl.delta >= 0;
+            ctx.fillStyle = isPosDelta ? 'rgba(34, 197, 94, 0.35)' : 'rgba(239, 68, 68, 0.35)';
+            ctx.fillRect(clampedStartX + 2, rowTop, w, Math.max(1, rowH - 0.5));
+
+            if (rowH >= 8 && w > 30) {
+              ctx.font = '8px JetBrains Mono, monospace';
+              ctx.fillStyle = '#E2E8F0';
+              ctx.fillText(formatVolume(lvl.volume), clampedStartX + 6, centerY + 2.5);
+            }
+          }
+
+          // POC Line (amber, bold)
+          const pocY = priceToY(fixedRangeProfile.poc);
+          if (pocY >= 0 && pocY <= chartHeight) {
+            ctx.strokeStyle = '#F59E0B';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(clampedStartX, pocY);
+            ctx.lineTo(clampedEndX, pocY);
+            ctx.stroke();
+
+            ctx.fillStyle = '#F59E0B';
+            ctx.font = 'bold 9px JetBrains Mono, monospace';
+            ctx.fillText(`POC ${formatPrice(fixedRangeProfile.poc, tickSize)}`, clampedStartX + 6, pocY - 3);
+          }
+
+          // VAH Line (sky, dashed)
+          if (vahY >= 0 && vahY <= chartHeight) {
+            ctx.strokeStyle = '#38BDF8';
+            ctx.lineWidth = 1.2;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(clampedStartX, vahY);
+            ctx.lineTo(clampedEndX, vahY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            ctx.fillStyle = '#38BDF8';
+            ctx.font = '9px JetBrains Mono, monospace';
+            ctx.fillText(`VAH ${formatPrice(fixedRangeProfile.vah, tickSize)}`, clampedStartX + 6, vahY - 3);
+          }
+
+          // VAL Line (sky, dashed)
+          if (valY >= 0 && valY <= chartHeight) {
+            ctx.strokeStyle = '#38BDF8';
+            ctx.lineWidth = 1.2;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(clampedStartX, valY);
+            ctx.lineTo(clampedEndX, valY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            ctx.fillStyle = '#38BDF8';
+            ctx.font = '9px JetBrains Mono, monospace';
+            ctx.fillText(`VAL ${formatPrice(fixedRangeProfile.val, tickSize)}`, clampedStartX + 6, valY - 3);
+          }
+        }
+        ctx.restore();
+      }
+
       // Close main chart clipping region
       ctx.restore();
 
-      // --- COMPACT DELTA & VOLUME TEXT IN FOOTER (clipped to chartWidth) ---
-      if (showDeltaNumbers) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(0, chartHeight, chartWidth, FOOTER_HEIGHT);
-        ctx.clip();
-        bars.forEach((bar, barIndex) => {
-          const barX = viewport.panX + barIndex * barStep;
-          if (barX + viewport.barWidth < 0 || barX > chartWidth) return;
-          const barCenterX = barX + viewport.barWidth / 2;
-          const deltaY = chartHeight + 14;
-          const isPos = bar.delta >= 0;
+      // --- FOOTER: TIME AXIS + DELTA & VOLUME SUMMARY (clipped to chartWidth) ---
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, chartHeight, chartWidth, FOOTER_HEIGHT);
+      ctx.clip();
 
-          // Line 1: Delta text (clean integer)
-          ctx.font = '600 10px JetBrains Mono, monospace';
+      const labelInterval = Math.max(1, Math.ceil(70 / barStep));
+
+      bars.forEach((bar, barIndex) => {
+        const barX = viewport.panX + barIndex * barStep;
+        if (barX + viewport.barWidth < 0 || barX > chartWidth) return;
+        const barCenterX = barX + viewport.barWidth / 2;
+
+        if (showDeltaNumbers) {
+          const isPos = bar.delta >= 0;
+          ctx.font = '600 9px JetBrains Mono, monospace';
           ctx.textAlign = 'center';
           ctx.fillStyle = isPos ? '#22C55E' : '#EF4444';
-          ctx.fillText(`${isPos ? '+' : ''}${formatVolume(bar.delta)} Δ`, barCenterX, deltaY);
+          ctx.fillText(`${isPos ? '+' : ''}${formatVolume(bar.delta)} Δ`, barCenterX, chartHeight + 12);
 
-          // Line 2: Volume text (clean integer / K)
-          ctx.font = '400 9px JetBrains Mono, monospace';
+          ctx.font = '400 8px JetBrains Mono, monospace';
           ctx.fillStyle = '#64748B';
-          ctx.fillText(formatVolume(bar.volume), barCenterX, deltaY + 13);
-        });
-        ctx.restore();
-      }
+          ctx.fillText(formatVolume(bar.volume), barCenterX, chartHeight + 22);
+        }
+
+        // Time axis tick marks and formatted timestamps
+        if (barIndex % labelInterval === 0) {
+          const dateObj = new Date(bar.time);
+          const timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+          ctx.beginPath();
+          ctx.moveTo(barCenterX, chartHeight);
+          ctx.lineTo(barCenterX, chartHeight + 3);
+          ctx.stroke();
+
+          ctx.fillStyle = '#94A3B8';
+          ctx.font = '9px JetBrains Mono, monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(timeStr, barCenterX, chartHeight + (showDeltaNumbers ? 33 : 20));
+        }
+      });
+      ctx.restore();
 
       // 10. Clean Current Price Marker on Right Axis
       ctx.strokeStyle = 'rgba(245, 185, 66, 0.45)';
@@ -1106,7 +1578,20 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
       ctx.fillText(formatPrice(currentPrice, tickSize), width - 6, curY + 3.5);
 
       // 11. Crosshair & Hover Coordinate Display
-      const activeX = crosshairX ?? mousePos?.x;
+      let activeX = crosshairX ?? mousePos?.x;
+      if (
+        (activeX === null || activeX === undefined) &&
+        crosshairTime !== undefined &&
+        crosshairTime !== null &&
+        bars.length > 0
+      ) {
+        const foundIdx = bars.findIndex(
+          (b) => b.time === crosshairTime || (b.time <= crosshairTime && b.time + 60000 > crosshairTime)
+        );
+        if (foundIdx >= 0) {
+          activeX = viewport.panX + foundIdx * barStep + viewport.barWidth / 2;
+        }
+      }
       const activeY = mousePos?.y;
 
       if (activeX !== null && activeX !== undefined && activeX < chartWidth) {
@@ -1159,7 +1644,12 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
       yToPrice,
       clusterMultiplier,
       crosshairX,
+      crosshairTime,
       chartMode,
+      footprintMode,
+      showUnfinishedAuction,
+      fixedRangeProfile,
+      colorSettings,
     ]
   );
 
@@ -1204,6 +1694,23 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         onDoubleClick={handleDoubleClick}
         className="w-full h-full cursor-crosshair block"
       />
+
+      {/* Floating Clear Range VP Button */}
+      {fixedRangeProfile && onClearFixedRange && (
+        <div className="absolute top-3 left-4 z-20 flex items-center gap-2 bg-[#0F172A]/90 border border-sky-500/40 rounded px-2.5 py-1 shadow-lg font-mono text-[10px]">
+          <span className="text-sky-400 font-bold">Range VP Active</span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onClearFixedRange();
+            }}
+            className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 border border-rose-500/30 font-semibold transition-colors"
+            title="Remove Fixed Range Volume Profile"
+          >
+            ✕ Remove
+          </button>
+        </div>
+      )}
 
       {/* Interactive Microstructure HUD Tooltip */}
       <ChartTooltip

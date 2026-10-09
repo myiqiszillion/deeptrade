@@ -329,6 +329,77 @@ export async function runChartRoutesTests(): Promise<void> {
     console.log('✓ GET /api/v1/chart/levels returns chart support/resistance levels');
   }
 
+  // 14b. POST /api/v1/chart/volume-profile-range (Task 3: Visible & Fixed Range Volume Profile)
+  {
+    // Valid POST request
+    const req = new EventEmitter() as any;
+    req.method = 'POST';
+    const res = new MockResponse() as any;
+    const url = new URL('http://localhost:8080/api/v1/chart/volume-profile-range');
+    const startTime = 1711033200000;
+    const endTime = 1711033260000;
+
+    const promise = handler(req, res, url);
+    req.emit('data', JSON.stringify({ symbol: 'ES', startTime, endTime }));
+    req.emit('end');
+
+    const handled = await promise;
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.symbol, 'ES');
+    assert.equal(body.startTime, startTime);
+    assert.equal(body.endTime, endTime);
+    assert.ok(typeof body.totalVolume === 'number');
+    assert.ok(typeof body.poc === 'number');
+    assert.ok(typeof body.vah === 'number');
+    assert.ok(typeof body.val === 'number');
+    assert.ok(Array.isArray(body.levels));
+    console.log('✓ POST /api/v1/chart/volume-profile-range returns range volume profile with POC, VAH, VAL');
+
+    // Method not allowed: GET
+    const reqGet = new EventEmitter() as any;
+    reqGet.method = 'GET';
+    const resGet = new MockResponse() as any;
+    const handledGet = await handler(reqGet, resGet, url);
+    assert.equal(handledGet, true);
+    assert.equal(resGet.statusCode, 405);
+    console.log('✓ GET /api/v1/chart/volume-profile-range rejected with 405 Method Not Allowed');
+
+    // Invalid time range: startTime >= endTime
+    const reqInvalid = new EventEmitter() as any;
+    reqInvalid.method = 'POST';
+    const resInvalid = new MockResponse() as any;
+    const pInvalid = handler(reqInvalid, resInvalid, url);
+    reqInvalid.emit('data', JSON.stringify({ symbol: 'ES', startTime: 1000, endTime: 500 }));
+    reqInvalid.emit('end');
+    await pInvalid;
+    assert.equal(resInvalid.statusCode, 400);
+    console.log('✓ POST /api/v1/chart/volume-profile-range validates startTime < endTime');
+
+    // Invalid symbol: UNKNOWN_XYZ
+    const reqUnknown = new EventEmitter() as any;
+    reqUnknown.method = 'POST';
+    const resUnknown = new MockResponse() as any;
+    const pUnknown = handler(reqUnknown, resUnknown, url);
+    reqUnknown.emit('data', JSON.stringify({ symbol: 'UNKNOWN_XYZ', startTime: 1000, endTime: 2000 }));
+    reqUnknown.emit('end');
+    await pUnknown;
+    assert.equal(resUnknown.statusCode, 404);
+    console.log('✓ POST /api/v1/chart/volume-profile-range rejects unknown symbol with 404');
+
+    // Range exceeding 30 days
+    const reqExcess = new EventEmitter() as any;
+    reqExcess.method = 'POST';
+    const resExcess = new MockResponse() as any;
+    const pExcess = handler(reqExcess, resExcess, url);
+    reqExcess.emit('data', JSON.stringify({ symbol: 'ES', startTime: 1000, endTime: 1000 + 35 * 86400000 }));
+    reqExcess.emit('end');
+    await pExcess;
+    assert.equal(resExcess.statusCode, 400);
+    console.log('✓ POST /api/v1/chart/volume-profile-range enforces maximum 30-day range limit');
+  }
+
   // 15. Fallthrough for non-chart routes
   {
     const req = new EventEmitter() as any;

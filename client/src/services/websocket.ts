@@ -1,6 +1,7 @@
 import {
   AbsorptionAlert,
   DeepTrade,
+  EnhancedFeedStatus,
   FootprintBar,
   FuturesInstrument,
   GEXProfile,
@@ -15,7 +16,20 @@ import {
   VWAPPoint,
   WSClientMessage,
   WSServerMessage,
+  AlertEvent,
 } from '../types';
+
+export interface FeedHealthState {
+  isConnected: boolean;
+  reconnectCount: number;
+  lastMessageTs: number | null;
+  lastTradeTs: number | null;
+  subscriptionState: 'UNSUBSCRIBED' | 'SUBSCRIBING' | 'SUBSCRIBED' | 'ERROR';
+  symbol: string | null;
+  source: string | null;
+  timeframe: string | null;
+  staleThresholdMs: number;
+}
 
 /** Same key the REST client uses, so a login in the SPA authenticates the socket too. */
 export function readAuthToken(): string | null {
@@ -58,6 +72,8 @@ export interface WSListeners {
   onOptionsFlow?: (trade: OptionsFlowTrade) => void;
   onReplayState?: (progress: ReplayProgress) => void;
   onConnectionChange?: (connected: boolean) => void;
+  onFeedStatusChange?: (status: EnhancedFeedStatus) => void;
+  onFeedHealthUpdate?: (health: FeedHealthState) => void;
   /**
    * Server-initiated close that needs product UI rather than a silent retry:
    * 1008 = authentication/entitlement refused, 1013 = server at capacity.
@@ -74,6 +90,7 @@ export interface WSListeners {
   }) => void;
   onError?: (error: { code: string; message: string }) => void;
   onLatencyUpdate?: (latencyMs: number) => void;
+  onAlert?: (alert: AlertEvent) => void;
 }
 
 export class DeepChartWSClient {
@@ -84,7 +101,16 @@ export class DeepChartWSClient {
   private reconnectTimer: any = null;
   private disconnectTimer: any = null;
   private pingTimer: any = null;
+  private staleCheckTimer: any = null;
   private intentionalClose = false;
+
+  // Observability & Subscription state
+  private reconnectCount = 0;
+  private lastMessageTs: number | null = null;
+  private lastTradeTs: number | null = null;
+  private subscriptionState: 'UNSUBSCRIBED' | 'SUBSCRIBING' | 'SUBSCRIBED' | 'ERROR' = 'UNSUBSCRIBED';
+  private activeSubscription: { symbol: string; source?: string; timeframe?: string } | null = null;
+  private staleThresholdMs = 15000;
 
   constructor(url?: string) {
     const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
@@ -107,6 +133,45 @@ export class DeepChartWSClient {
     this.listeners = listeners;
   }
 
+  public getFeedHealth(): FeedHealthState {
+    return {
+      isConnected: this.isConnected,
+      reconnectCount: this.reconnectCount,
+      lastMessageTs: this.lastMessageTs,
+      lastTradeTs: this.lastTradeTs,
+      subscriptionState: this.subscriptionState,
+      symbol: this.activeSubscription?.symbol ?? null,
+      source: this.activeSubscription?.source ?? null,
+      timeframe: this.activeSubscription?.timeframe ?? null,
+      staleThresholdMs: this.staleThresholdMs,
+    };
+  }
+
+  private notifyHealth() {
+    this.listeners.onFeedHealthUpdate?.(this.getFeedHealth());
+  }
+
+  private startStaleChecker() {
+    this.stopStaleChecker();
+    this.staleCheckTimer = setInterval(() => {
+      if (!this.isConnected) return;
+      const now = Date.now();
+      // True stale condition: No messages received from server across staleThresholdMs.
+      // If messages (pongs, orderbook, status) are arriving, the feed is healthy even if market has no trades.
+      if (this.lastMessageTs && (now - this.lastMessageTs > this.staleThresholdMs)) {
+        this.listeners.onFeedStatusChange?.('STALE');
+      }
+      this.notifyHealth();
+    }, 4000);
+  }
+
+  private stopStaleChecker() {
+    if (this.staleCheckTimer) {
+      clearInterval(this.staleCheckTimer);
+      this.staleCheckTimer = null;
+    }
+  }
+
   public connect() {
     this.intentionalClose = false;
     if (this.disconnectTimer) {
@@ -119,6 +184,7 @@ export class DeepChartWSClient {
       if (this.ws.readyState === WebSocket.OPEN) {
         this.isConnected = true;
         this.listeners.onConnectionChange?.(true);
+        this.notifyHealth();
         return;
       }
       if (this.ws.readyState === WebSocket.CONNECTING) {
@@ -143,25 +209,46 @@ export class DeepChartWSClient {
 
       this.ws.onopen = () => {
         this.isConnected = true;
+        this.reconnectCount = 0;
         this.listeners.onConnectionChange?.(true);
         this.startPing();
+        this.startStaleChecker();
+        this.notifyHealth();
         console.log('[DeepChart WS] Connected to server.');
+
+        // Automatic resubscribe after reconnect
+        if (this.activeSubscription) {
+          this.subscriptionState = 'SUBSCRIBING';
+          this.send({
+            type: 'SUBSCRIBE',
+            symbol: this.activeSubscription.symbol,
+            timeframe: this.activeSubscription.timeframe || '1m',
+            source: this.activeSubscription.source,
+          });
+        }
       };
 
       this.ws.onmessage = (event) => {
         try {
+          this.lastMessageTs = Date.now();
           const msg = JSON.parse(event.data) as WSServerMessage;
           switch (msg.type) {
             case 'INIT_STATE':
+              this.subscriptionState = 'SUBSCRIBED';
+              this.notifyHealth();
               this.listeners.onInitState?.(msg);
               break;
             case 'TICK':
+              this.lastTradeTs = Date.now();
+              this.notifyHealth();
               this.listeners.onTick?.(msg.tick);
               break;
             case 'BAR_UPDATE':
+              this.lastTradeTs = Date.now();
               this.listeners.onBarUpdate?.(msg.bar);
               break;
             case 'BAR_CLOSE':
+              this.lastTradeTs = Date.now();
               this.listeners.onBarClose?.(msg.bar);
               break;
             case 'ORDERBOOK_UPDATE':
@@ -171,6 +258,7 @@ export class DeepChartWSClient {
               this.listeners.onSpeedOfTape?.(msg.tape);
               break;
             case 'DEEP_TRADE':
+              this.lastTradeTs = Date.now();
               this.listeners.onDeepTrade?.(msg.trade);
               break;
             case 'ABSORPTION':
@@ -201,7 +289,12 @@ export class DeepChartWSClient {
               }
               break;
             case 'ERROR':
+              this.subscriptionState = 'ERROR';
+              this.notifyHealth();
               this.listeners.onError?.(msg);
+              break;
+            case 'ALERT_EVENT':
+              this.listeners.onAlert?.(msg.alert);
               break;
           }
         } catch (err) {
@@ -211,9 +304,14 @@ export class DeepChartWSClient {
 
       this.ws.onclose = (event: CloseEvent) => {
         this.stopPing();
+        this.stopStaleChecker();
         this.isConnected = false;
+        this.reconnectCount++;
+        this.subscriptionState = 'UNSUBSCRIBED';
         this.listeners.onConnectionChange?.(false);
         this.listeners.onLatencyUpdate?.(0);
+        this.notifyHealth();
+
         if (this.intentionalClose) {
           console.log('[DeepChart WS] Disconnected (intentional).');
           return;
@@ -253,10 +351,27 @@ export class DeepChartWSClient {
   }
 
   public subscribe(symbol: string, source?: 'cme' | 'databento' | 'tradovate' | string, timeframe?: string) {
+    const tf = timeframe || '1m';
+    // Duplicate subscription prevention: avoid sending redundant subscribe message if already subscribed
+    if (
+      this.activeSubscription &&
+      this.activeSubscription.symbol === symbol &&
+      this.activeSubscription.source === source &&
+      this.activeSubscription.timeframe === tf &&
+      this.subscriptionState === 'SUBSCRIBED' &&
+      this.isConnected
+    ) {
+      return;
+    }
+
+    this.activeSubscription = { symbol, source, timeframe: tf };
+    this.subscriptionState = 'SUBSCRIBING';
+    this.notifyHealth();
+
     this.send({
       type: 'SUBSCRIBE',
       symbol,
-      timeframe: timeframe || '1m',
+      timeframe: tf,
       source,
     });
   }

@@ -1,7 +1,8 @@
 import React from 'react';
+import { EnhancedFeedStatus } from '../../types';
 
 interface TerminalStatusBarProps {
-  feedStatus: 'LIVE' | 'UNAVAILABLE';
+  feedStatus: 'LIVE' | 'UNAVAILABLE' | EnhancedFeedStatus;
   isConnected: boolean;
   historySource: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
   isLoadingHistory: boolean;
@@ -9,6 +10,9 @@ interface TerminalStatusBarProps {
   sessionMode: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
   tickCount?: number;
   latencyMs?: number | null;
+  lastUpdateTs?: number | null;
+  dataSource?: string;
+  delayNotice?: string;
 }
 
 export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
@@ -20,17 +24,89 @@ export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
   sessionMode,
   tickCount = 0,
   latencyMs = null,
+  lastUpdateTs = null,
+  dataSource,
+  delayNotice,
 }) => {
-  const isLive = feedStatus === 'LIVE' && isConnected;
+  // Resolve unified display status
+  let displayStatus: EnhancedFeedStatus = 'UNAVAILABLE';
+  if (!isConnected) {
+    displayStatus = 'RECONNECTING';
+  } else if (feedStatus === 'LIVE' || feedStatus === 'REALTIME') {
+    displayStatus = 'REALTIME';
+  } else if (feedStatus === 'DELAYED') {
+    displayStatus = 'DELAYED';
+  } else if (feedStatus === 'STALE') {
+    displayStatus = 'STALE';
+  } else if (feedStatus === 'MARKET_CLOSED') {
+    displayStatus = 'MARKET_CLOSED';
+  } else {
+    displayStatus = 'UNAVAILABLE';
+  }
+
+  const statusConfig: Record<
+    EnhancedFeedStatus,
+    { label: string; color: string; dotClass: string; title: string }
+  > = {
+    LIVE: {
+      label: 'REALTIME',
+      color: 'text-[#19C37D]',
+      dotClass: 'bg-[#19C37D] shadow-[0_0_8px_#19C37D]',
+      title: 'Real-time CME Globex licensed vendor feed (live sub-second tick stream)',
+    },
+    REALTIME: {
+      label: 'REALTIME',
+      color: 'text-[#19C37D]',
+      dotClass: 'bg-[#19C37D] shadow-[0_0_8px_#19C37D]',
+      title: 'Real-time CME Globex licensed vendor feed (live sub-second tick stream)',
+    },
+    DELAYED: {
+      label: delayNotice || 'DELAYED (15M)',
+      color: 'text-[#38BDF8]',
+      dotClass: 'bg-[#38BDF8] shadow-[0_0_8px_#38BDF8]',
+      title: 'Verified delayed market data feed',
+    },
+    STALE: {
+      label: 'STALE',
+      color: 'text-[#F59E0B]',
+      dotClass: 'bg-[#F59E0B] animate-pulse',
+      title: 'Feed connected but no recent ticks received',
+    },
+    RECONNECTING: {
+      label: 'RECONNECTING',
+      color: 'text-[#FBBF24]',
+      dotClass: 'bg-[#FBBF24] animate-ping',
+      title: 'WebSocket attempting reconnection with exponential backoff',
+    },
+    MARKET_CLOSED: {
+      label: 'MARKET CLOSED',
+      color: 'text-[#94A3B8]',
+      dotClass: 'bg-[#64748B]',
+      title: 'Exchange session is outside active trading hours',
+    },
+    UNAVAILABLE: {
+      label: 'UNAVAILABLE',
+      color: 'text-[#F05252]',
+      dotClass: 'bg-[#F05252]',
+      title: 'Real-time vendor feed unavailable (configuration, entitlement or credentials)',
+    },
+  };
+
+  const currentCfg = statusConfig[displayStatus];
 
   return (
     <footer className="terminal-status-bar select-none" role="contentinfo">
       {/* Left: Feed Status */}
-      <div className="flex items-center gap-1.5 shrink-0">
-        <span className={`status-indicator-dot ${isLive ? 'live' : 'offline'}`} />
-        <span className={`font-semibold tracking-wide ${isLive ? 'text-[#19C37D]' : 'text-[#F05252]'}`}>
-          FEED: {isLive ? 'REALTIME' : 'UNAVAILABLE'}
+      <div className="flex items-center gap-1.5 shrink-0" title={currentCfg.title}>
+        <span className={`w-2 h-2 rounded-full ${currentCfg.dotClass}`} />
+        <span className={`font-semibold tracking-wide ${currentCfg.color}`}>
+          FEED: {currentCfg.label}
         </span>
+        {dataSource && (
+          <span className="text-[9px] px-1 py-0.2 bg-white/5 text-slate-400 rounded hidden md:inline">
+            {dataSource}
+          </span>
+        )}
       </div>
 
       <div className="toolbar-divider hidden sm:block" />

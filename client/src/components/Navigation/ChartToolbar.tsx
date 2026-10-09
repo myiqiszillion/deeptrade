@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { RotateCcw, ZoomIn, ZoomOut, Check, Sliders, ChevronDown } from 'lucide-react';
+import { RotateCcw, ZoomIn, ZoomOut, Check, Sliders, ChevronDown, Columns2 } from 'lucide-react';
 
 export interface SignalFilters {
   buyAbs: boolean;
@@ -8,9 +8,13 @@ export interface SignalFilters {
   whale: boolean;
 }
 
+export type FootprintMode = 'bidAsk' | 'delta' | 'totalVolume';
+
 interface ChartToolbarProps {
   chartMode: 'footprint' | 'candles';
   onChartModeChange: (mode: 'footprint' | 'candles') => void;
+  footprintMode?: FootprintMode;
+  onFootprintModeChange?: (mode: FootprintMode) => void;
   timeframe: string;
   onTimeframeChange: (tf: string) => void;
   clusterMultiplier: 'auto' | 1 | 2 | 4 | 5 | 10 | 25 | 50;
@@ -23,6 +27,12 @@ interface ChartToolbarProps {
   onToggleDeltaNumbers: () => void;
   showCVD: boolean;
   onToggleCVD: () => void;
+  showUnfinishedAuction?: boolean;
+  onToggleUnfinishedAuction?: () => void;
+  fixedRangeActive?: boolean;
+  onToggleFixedRange?: () => void;
+  hasFixedRange?: boolean;
+  onClearFixedRange?: () => void;
   signalFilters: SignalFilters;
   onToggleSignalFilter: (key: keyof SignalFilters) => void;
   autoFollow: boolean;
@@ -30,13 +40,17 @@ interface ChartToolbarProps {
   onFitView: () => void;
   onZoomIn?: () => void;
   onZoomOut?: () => void;
-  activePanel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | null;
-  onSelectPanel: (panel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow') => void;
+  activePanel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Chain' | 'Heatmap' | 'Alerts' | null;
+  onSelectPanel: (panel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Chain' | 'Heatmap' | 'Alerts') => void;
+  isSplitWorkspace?: boolean;
+  onToggleSplitWorkspace?: () => void;
 }
 
 export const ChartToolbar: React.FC<ChartToolbarProps> = ({
   chartMode,
   onChartModeChange,
+  footprintMode = 'bidAsk',
+  onFootprintModeChange,
   timeframe,
   onTimeframeChange,
   clusterMultiplier,
@@ -49,6 +63,12 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
   onToggleDeltaNumbers,
   showCVD,
   onToggleCVD,
+  showUnfinishedAuction = true,
+  onToggleUnfinishedAuction,
+  fixedRangeActive = false,
+  onToggleFixedRange,
+  hasFixedRange = false,
+  onClearFixedRange,
   signalFilters,
   onToggleSignalFilter,
   autoFollow,
@@ -58,6 +78,8 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
   onZoomOut,
   activePanel,
   onSelectPanel,
+  isSplitWorkspace,
+  onToggleSplitWorkspace,
 }) => {
   const [indicatorsMenuOpen, setIndicatorsMenuOpen] = useState(false);
   const indicatorsMenuRef = useRef<HTMLDivElement | null>(null);
@@ -90,6 +112,24 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
           </button>
         ))}
       </div>
+
+      {chartMode === 'footprint' && onFootprintModeChange && (
+        <>
+          <div className="toolbar-divider" />
+          <div className="toolbar-group">
+            {(['bidAsk', 'delta', 'totalVolume'] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => onFootprintModeChange(m)}
+                className={`toolbar-button text-[10px] ${footprintMode === m ? 'active active-cyan' : ''}`}
+                title={`Footprint mode: ${m === 'bidAsk' ? 'Bid x Ask' : m === 'delta' ? 'Delta ladder' : 'Total volume ladder'}`}
+              >
+                {m === 'bidAsk' ? 'Bid×Ask' : m === 'delta' ? 'Delta' : 'Total Vol'}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
 
       <div className="toolbar-divider" />
 
@@ -132,7 +172,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
 
       <div className="toolbar-divider" />
 
-      {/* GROUP 4: Indicators (VWAP | Imbalance | Delta | CVD) */}
+      {/* GROUP 4: Indicators (VWAP | Imbalance | Delta | CVD | UA | Range VP) */}
       {/* Desktop view (>= 1536px): Full inline group */}
       <div className="toolbar-group indicators-desktop-group">
         <button
@@ -174,6 +214,44 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
           <span className="w-1.5 h-1.5 rounded-full bg-[#A78BFA]" />
           <span>CVD</span>
         </button>
+
+        {onToggleUnfinishedAuction && (
+          <button
+            className={`toolbar-button ${showUnfinishedAuction ? 'active-amber' : ''}`}
+            aria-pressed={showUnfinishedAuction}
+            onClick={onToggleUnfinishedAuction}
+            title="Unfinished Auction (UA) high & low indicators"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-[#F59E0B]" />
+            <span>UA</span>
+          </button>
+        )}
+
+        {onToggleFixedRange && (
+          <div className="flex items-center">
+            <button
+              className={`toolbar-button ${fixedRangeActive ? 'active active-cyan' : hasFixedRange ? 'active-cyan' : ''}`}
+              aria-pressed={fixedRangeActive}
+              onClick={onToggleFixedRange}
+              title={fixedRangeActive ? 'Click and drag on chart to select range' : 'Fixed Range Volume Profile (Click to activate)'}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-[#38BDF8]" />
+              <span>Range VP</span>
+            </button>
+            {hasFixedRange && onClearFixedRange && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClearFixedRange();
+                }}
+                className="toolbar-button px-1 text-slate-400 hover:text-rose-400"
+                title="Clear selected range"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Responsive Collapsible Dropdown for Indicators (< 1536px) */}
@@ -182,7 +260,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
           <button
             onClick={() => setIndicatorsMenuOpen(!indicatorsMenuOpen)}
             className={`toolbar-button ${
-              showVWAP || showImbalances || showDeltaNumbers || showCVD ? 'active-cyan' : ''
+              showVWAP || showImbalances || showDeltaNumbers || showCVD || showUnfinishedAuction || fixedRangeActive || hasFixedRange ? 'active-cyan' : ''
             }`}
             title="Toggle Indicators"
           >
@@ -193,7 +271,7 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
         </div>
 
         {indicatorsMenuOpen && (
-          <div className="absolute top-full left-0 mt-1 py-1 px-1 rounded-[3px] bg-[#0D1218] border border-[#25303A] shadow-[0_8px_24px_rgba(0,0,0,0.85)] z-50 flex flex-col gap-1 min-w-[130px]">
+          <div className="absolute top-full left-0 mt-1 py-1 px-1 rounded-[3px] bg-[#0D1218] border border-[#25303A] shadow-[0_8px_24px_rgba(0,0,0,0.85)] z-50 flex flex-col gap-1 min-w-[140px]">
             <button
               onClick={() => { onToggleVWAP(); }}
               className={`toolbar-button justify-start w-full ${showVWAP ? 'active-amber' : ''}`}
@@ -226,6 +304,26 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
               <span>CVD</span>
               {showCVD && <Check size={11} className="ml-auto text-[#A78BFA]" />}
             </button>
+            {onToggleUnfinishedAuction && (
+              <button
+                onClick={() => { onToggleUnfinishedAuction(); }}
+                className={`toolbar-button justify-start w-full ${showUnfinishedAuction ? 'active-amber' : ''}`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-[#F59E0B]" />
+                <span>UA High/Low</span>
+                {showUnfinishedAuction && <Check size={11} className="ml-auto text-[#F59E0B]" />}
+              </button>
+            )}
+            {onToggleFixedRange && (
+              <button
+                onClick={() => { onToggleFixedRange(); }}
+                className={`toolbar-button justify-start w-full ${fixedRangeActive ? 'active-cyan' : ''}`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-[#38BDF8]" />
+                <span>Range VP Tool</span>
+                {fixedRangeActive && <Check size={11} className="ml-auto text-[#38BDF8]" />}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -329,9 +427,9 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
         </button>
       </div>
 
-      {/* GROUP 6: Workspace Switcher Tabs (DOM | PROFILE | TAPE | GEX | FLOW) */}
+      {/* GROUP 6: Workspace Switcher Tabs (DOM | HEATMAP | PROFILE | TAPE | ALERTS | GEX | FLOW | CHAIN) */}
       <div className="toolbar-group ml-auto">
-        {(['DOM', 'Profile', 'Tape', 'GEX', 'Flow'] as const).map((panel) => (
+        {(['DOM', 'Heatmap', 'Profile', 'Tape', 'Alerts', 'GEX', 'Flow', 'Chain'] as const).map((panel) => (
           <button
             key={panel}
             aria-pressed={activePanel === panel}
@@ -344,6 +442,23 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
             {panel}
           </button>
         ))}
+
+        {onToggleSplitWorkspace && (
+          <>
+            <div className="toolbar-divider" />
+            <button
+              type="button"
+              onClick={onToggleSplitWorkspace}
+              className={`toolbar-button text-[10px] font-semibold flex items-center gap-1 ${
+                isSplitWorkspace ? 'active active-cyan' : ''
+              }`}
+              title={isSplitWorkspace ? 'Close Split Workspace (Single Chart)' : 'Split Workspace (2 Linked Charts with synced time cursor)'}
+            >
+              <Columns2 size={12} />
+              <span>{isSplitWorkspace ? 'Split (2)' : 'Split'}</span>
+            </button>
+          </>
+        )}
       </div>
     </nav>
   );

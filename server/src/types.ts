@@ -1,5 +1,6 @@
 import { FuturesInstrument } from './futuresConfig.js';
 import { GEXProfile, OptionsFlowTrade } from './gexEngine.js';
+import { AlertEvent } from './alerts/types.js';
 
 type OrderSide = 'buy' | 'sell' | 'unknown';
 
@@ -224,5 +225,6 @@ export type WSServerMessage =
   | { type: 'REPLAY_FRAME'; frame: { timestamp: number; price: number; volume: number; gex?: number | null; iv?: number | null; esPrice?: number | null; nqPrice?: number | null; signal?: any } }
   | { type: 'PONG'; timestamp: number }
   | { type: 'ERROR'; code: string; message: string }
-  | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; provider?: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number | { provider: string; symbol: string; timeframe?: string; beforeTime: number; beforeId?: string }; requestId?: string };
+  | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; provider?: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number | { provider: string; symbol: string; timeframe?: string; beforeTime: number; beforeId?: string }; requestId?: string }
+  | { type: 'ALERT_EVENT'; alert: AlertEvent };
 

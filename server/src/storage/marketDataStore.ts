@@ -6,7 +6,9 @@ import { FootprintBar, HistoricalBar, Tick } from '../types.js';
 import { MarketTrade } from '../marketData/types.js';
 import { Entitlement, User } from '../auth/types.js';
 import { OptionContractDefinition, OptionStatisticRecord } from '../databento/types.js';
-import { IMarketDataStore } from './types.js';
+import { IMarketDataStore, DepthSnapshotInput, DepthQueryOptions, DepthQueryResult } from './types.js';
+import { encodeDepthLevels, decodeDepthLevels } from './depthCodec.js';
+import { AlertRule, AlertHistoryItem } from '../alerts/types.js';
 
 export interface BarQueryOptions {
   provider: string;
@@ -82,6 +84,12 @@ export class MarketDataStore implements IMarketDataStore {
   private insertGapStmt: any;
   private insertOptionDefStmt: any;
   private insertOptionStatStmt: any;
+  private insertDepthStmt: any;
+  private depthWriteQueue: DepthSnapshotInput[] = [];
+  private readonly maxDepthQueueSize = 5000;
+  private depthSamplingIntervalMs = Number(process.env.DEPTH_SAMPLING_INTERVAL_MS) || 250;
+  private lastDepthSampleBySymbol = new Map<string, number>();
+  private depthFlushTimer: any = null;
   private writeFailures = 0;
   private lastWriteWarningTs = 0;
 
@@ -110,6 +118,13 @@ export class MarketDataStore implements IMarketDataStore {
     this.db = new DatabaseSync(resolvedPath);
     this.dbPath = resolvedPath;
     this.initSchema();
+
+    this.depthFlushTimer = setInterval(() => {
+      this.flushDepthQueue();
+    }, 500);
+    if (this.depthFlushTimer && typeof this.depthFlushTimer.unref === 'function') {
+      this.depthFlushTimer.unref();
+    }
   }
 
   private initSchema(): void {
@@ -326,7 +341,51 @@ export class MarketDataStore implements IMarketDataStore {
         checksum TEXT NOT NULL,
         fetched_at INTEGER NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS idx_raw_manifest ON raw_manifest(dataset, schema, date);
+      CREATE TABLE IF NOT EXISTS depth_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        exchange_ts INTEGER NOT NULL,
+        receive_ts INTEGER NOT NULL,
+        sequence_number INTEGER,
+        schema_version INTEGER DEFAULT 1,
+        data_source TEXT DEFAULT 'live',
+        session_id TEXT,
+        levels_blob BLOB NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_depth_symbol_ts ON depth_snapshots (symbol, exchange_ts ASC);
+      CREATE INDEX IF NOT EXISTS idx_depth_receive_ts ON depth_snapshots (receive_ts);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_depth_symbol_seq ON depth_snapshots (symbol, sequence_number) WHERE sequence_number IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS alert_rules (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        type TEXT NOT NULL,
+        threshold REAL NOT NULL,
+        timeframe TEXT NOT NULL DEFAULT '1m',
+        cooldown_sec INTEGER NOT NULL DEFAULT 60,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        last_triggered_at INTEGER,
+        metadata TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_alert_rules_user ON alert_rules(user_id);
+      CREATE INDEX IF NOT EXISTS idx_alert_rules_symbol ON alert_rules(symbol, enabled);
+
+      CREATE TABLE IF NOT EXISTS alert_history (
+        id TEXT PRIMARY KEY,
+        rule_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        type TEXT NOT NULL,
+        severity TEXT NOT NULL DEFAULT 'INFO',
+        message TEXT NOT NULL,
+        price REAL,
+        trigger_time INTEGER NOT NULL,
+        acknowledged INTEGER NOT NULL DEFAULT 0,
+        metadata TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_alert_history_user ON alert_history(user_id, trigger_time DESC);
     `);
 
     // Databases created before real accounts existed need the credential columns added.
@@ -367,6 +426,12 @@ export class MarketDataStore implements IMarketDataStore {
       INSERT OR REPLACE INTO option_statistics (
         symbol, time, open_interest, settlement_price, cleared_volume
       ) VALUES (?, ?, ?, ?, ?)
+    `);
+
+    this.insertDepthStmt = this.db.prepare(`
+      INSERT OR IGNORE INTO depth_snapshots (
+        symbol, exchange_ts, receive_ts, sequence_number, schema_version, data_source, session_id, levels_blob
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
   }
 
@@ -658,6 +723,124 @@ export class MarketDataStore implements IMarketDataStore {
       hasMore,
       cursor,
     };
+  }
+
+  /**
+   * Query historical bars in a specific time range [startTime, endTime].
+   * Returns bars in ASCENDING chronological order.
+   */
+  public queryBarsRange(options: {
+    provider?: string;
+    symbol: string;
+    timeframe: string;
+    startTime: number;
+    endTime: number;
+    limit?: number;
+  }): HistoricalBar[] {
+    const { provider, symbol, timeframe, startTime, endTime } = options;
+    const limit = Math.min(Math.max(options.limit ?? 2000, 1), 10000);
+
+    const sql = provider
+      ? `SELECT time, open, high, low, close, volume, buy_volume, sell_volume, delta, is_partial
+         FROM bars
+         WHERE provider = ? AND symbol = ? AND timeframe = ? AND time >= ? AND time <= ?
+         ORDER BY time ASC
+         LIMIT ?`
+      : `SELECT time, open, high, low, close, volume, buy_volume, sell_volume, delta, is_partial
+         FROM bars
+         WHERE symbol = ? AND timeframe = ? AND time >= ? AND time <= ?
+         ORDER BY time ASC
+         LIMIT ?`;
+
+    const args = provider
+      ? [provider, symbol, timeframe, startTime, endTime, limit]
+      : [symbol, timeframe, startTime, endTime, limit];
+
+    const rows = this.db.prepare(sql).all(...args) as Array<{
+      time: number;
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number;
+      buy_volume: number | null;
+      sell_volume: number | null;
+      delta: number | null;
+      is_partial: number;
+    }>;
+
+    return rows.map((r) => {
+      const b: HistoricalBar = {
+        time: Number(r.time),
+        open: Number(r.open),
+        high: Number(r.high),
+        low: Number(r.low),
+        close: Number(r.close),
+        volume: Number(r.volume),
+      };
+      if (r.buy_volume !== null && r.buy_volume !== undefined) b.buyVolume = Number(r.buy_volume);
+      if (r.sell_volume !== null && r.sell_volume !== undefined) b.sellVolume = Number(r.sell_volume);
+      if (r.delta !== null && r.delta !== undefined) b.delta = Number(r.delta);
+      if (r.is_partial) b.isPartial = true;
+      return b;
+    });
+  }
+
+  /**
+   * Query historical trades in a specific time range [startTime, endTime].
+   * Returns ticks in ASCENDING chronological order.
+   */
+  public queryTradesRange(options: {
+    provider?: string;
+    symbol: string;
+    startTime: number;
+    endTime: number;
+    limit?: number;
+  }): Tick[] {
+    const { provider, symbol, startTime, endTime } = options;
+    const limit = Math.min(Math.max(options.limit ?? 5000, 1), 50000);
+
+    const sql = provider
+      ? `SELECT trade_id, ts, price, size, side, aggressor_provenance, receive_ts, sequence_id, source_provider, is_coalesced
+         FROM trades
+         WHERE provider = ? AND symbol = ? AND ts >= ? AND ts <= ?
+         ORDER BY ts ASC, trade_id ASC
+         LIMIT ?`
+      : `SELECT trade_id, ts, price, size, side, aggressor_provenance, receive_ts, sequence_id, source_provider, is_coalesced
+         FROM trades
+         WHERE symbol = ? AND ts >= ? AND ts <= ?
+         ORDER BY ts ASC, trade_id ASC
+         LIMIT ?`;
+
+    const args = provider
+      ? [provider, symbol, startTime, endTime, limit]
+      : [symbol, startTime, endTime, limit];
+
+    const rows = this.db.prepare(sql).all(...args) as Array<{
+      trade_id: string;
+      ts: number;
+      price: number;
+      size: number;
+      side: string;
+      aggressor_provenance: string | null;
+      receive_ts: number | null;
+      sequence_id: string | null;
+      source_provider: string | null;
+      is_coalesced: number;
+    }>;
+
+    return rows.map((r) => ({
+      id: r.trade_id,
+      timestamp: Number(r.ts),
+      price: Number(r.price),
+      size: Number(r.size),
+      side: (r.side?.toLowerCase() === 'buy' ? 'buy' : r.side?.toLowerCase() === 'sell' ? 'sell' : 'unknown') as 'buy' | 'sell' | 'unknown',
+      receiveTs: r.receive_ts ? Number(r.receive_ts) : undefined,
+      aggressorProvenance: r.aggressor_provenance as any,
+      sequenceId: r.sequence_id ?? undefined,
+      sourceProvider: r.source_provider ?? undefined,
+      qualityFlags: r.is_coalesced ? { isCoalesced: true } : undefined,
+    }));
   }
 
   /**
@@ -1066,6 +1249,7 @@ export class MarketDataStore implements IMarketDataStore {
       const cutoff = now - olderThanMs;
       statements.push(`DELETE FROM trades WHERE ts < ${cutoff};`);
       statements.push(`DELETE FROM gaps WHERE to_ts < ${cutoff};`);
+      statements.push(`DELETE FROM depth_snapshots WHERE exchange_ts < ${cutoff};`);
     }
 
     if (barsOlderThanMs > 0) {
@@ -1093,6 +1277,7 @@ export class MarketDataStore implements IMarketDataStore {
       const cutoff = now - olderThanMs;
       tables.push({ table: 'trades', where: `ts < ${cutoff}` });
       tables.push({ table: 'gaps', where: `to_ts < ${cutoff}` });
+      tables.push({ table: 'depth_snapshots', where: `exchange_ts < ${cutoff}` });
     }
     if (barsOlderThanMs > 0) {
       tables.push({ table: 'bars', where: `time < ${now - barsOlderThanMs}` });
@@ -1393,10 +1578,432 @@ export class MarketDataStore implements IMarketDataStore {
     } catch { return null; }
   }
 
+  // ---- Market Depth MBP-10 Storage -----------------------------------------
+  public enqueueDepthSnapshot(snapshot: DepthSnapshotInput): void {
+    if (!snapshot || !snapshot.symbol || !Number.isFinite(snapshot.exchangeTs)) return;
+    const symbol = snapshot.symbol.toUpperCase().trim();
+    const lastSample = this.lastDepthSampleBySymbol.get(symbol) || 0;
+    if (snapshot.exchangeTs - lastSample < this.depthSamplingIntervalMs) {
+      return; // Bounded sampling rate per symbol
+    }
+    this.lastDepthSampleBySymbol.set(symbol, snapshot.exchangeTs);
+
+    if (this.depthWriteQueue.length >= this.maxDepthQueueSize) {
+      this.depthWriteQueue.shift(); // Evict oldest to keep memory bounded
+      this.warnWriteFailure('enqueueDepthSnapshot queue overflow (oldest evicted)', new Error('Queue capacity reached'));
+    }
+
+    this.depthWriteQueue.push({
+      ...snapshot,
+      symbol,
+      receiveTs: snapshot.receiveTs ?? Date.now(),
+      schemaVersion: snapshot.schemaVersion ?? 1,
+      dataSource: snapshot.dataSource ?? 'live',
+    });
+
+    if (this.depthWriteQueue.length >= 50) {
+      this.flushDepthQueue();
+    }
+  }
+
+  public flushDepthQueue(): void {
+    if (this.depthWriteQueue.length === 0) return;
+    const batch = this.depthWriteQueue;
+    this.depthWriteQueue = [];
+
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      for (const s of batch) {
+        const blob = encodeDepthLevels(s.bids, s.asks);
+        this.insertDepthStmt.run(
+          s.symbol,
+          s.exchangeTs,
+          s.receiveTs ?? Date.now(),
+          s.sequenceNumber ?? null,
+          s.schemaVersion ?? 1,
+          s.dataSource ?? 'live',
+          s.sessionId ?? null,
+          blob
+        );
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try { this.db.exec('ROLLBACK'); } catch {}
+      this.warnWriteFailure(`flushDepthQueue(${batch.length} snapshots)`, err);
+    }
+  }
+
+  public saveDepthSnapshot(snapshot: DepthSnapshotInput): void {
+    try {
+      const blob = encodeDepthLevels(snapshot.bids, snapshot.asks);
+      this.insertDepthStmt.run(
+        snapshot.symbol.toUpperCase().trim(),
+        snapshot.exchangeTs,
+        snapshot.receiveTs ?? Date.now(),
+        snapshot.sequenceNumber ?? null,
+        snapshot.schemaVersion ?? 1,
+        snapshot.dataSource ?? 'live',
+        snapshot.sessionId ?? null,
+        blob
+      );
+    } catch (err) {
+      this.warnWriteFailure(`saveDepthSnapshot(${snapshot.symbol} @ ${snapshot.exchangeTs})`, err);
+    }
+  }
+
+  public saveDepthSnapshotsBatch(snapshots: DepthSnapshotInput[]): void {
+    if (snapshots.length === 0) return;
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      for (const s of snapshots) {
+        const blob = encodeDepthLevels(s.bids, s.asks);
+        this.insertDepthStmt.run(
+          s.symbol.toUpperCase().trim(),
+          s.exchangeTs,
+          s.receiveTs ?? Date.now(),
+          s.sequenceNumber ?? null,
+          s.schemaVersion ?? 1,
+          s.dataSource ?? 'live',
+          s.sessionId ?? null,
+          blob
+        );
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try { this.db.exec('ROLLBACK'); } catch {}
+      this.warnWriteFailure(`saveDepthSnapshotsBatch(${snapshots.length})`, err);
+    }
+  }
+
+  public queryDepthSnapshots(options: DepthQueryOptions): DepthQueryResult {
+    const symbol = options.symbol.toUpperCase().trim();
+    const startTime = options.startTime;
+    const endTime = options.endTime;
+    const limit = Math.min(Math.max(options.limit ?? 500, 1), 2000);
+    const offset = Math.max(options.offset ?? 0, 0);
+
+    const countRow = this.db.prepare(`
+      SELECT COUNT(*) as total FROM depth_snapshots
+      WHERE symbol = ? AND exchange_ts >= ? AND exchange_ts <= ?
+    `).get(symbol, startTime, endTime) as any;
+    const totalAvailable = countRow ? Number(countRow.total) : 0;
+
+    const rows = this.db.prepare(`
+      SELECT id, symbol, exchange_ts, receive_ts, sequence_number, schema_version, data_source, levels_blob
+      FROM depth_snapshots
+      WHERE symbol = ? AND exchange_ts >= ? AND exchange_ts <= ?
+      ORDER BY exchange_ts ASC
+      LIMIT ? OFFSET ?
+    `).all(symbol, startTime, endTime, limit + 1, offset) as any[];
+
+    const hasMore = rows.length > limit;
+    const targetRows = hasMore ? rows.slice(0, limit) : rows;
+
+    const resolutionMs = options.resolutionMs && options.resolutionMs > 0 ? options.resolutionMs : 0;
+    const snapshots: Array<{ time: number; bids: Array<{ price: number; size: number }>; asks: Array<{ price: number; size: number }> }> = [];
+    let lastBucket = -1;
+
+    for (const r of targetRows) {
+      const ts = Number(r.exchange_ts);
+      if (resolutionMs > 0) {
+        const bucket = Math.floor(ts / resolutionMs);
+        if (bucket === lastBucket) continue;
+        lastBucket = bucket;
+      }
+      const decoded = decodeDepthLevels(r.levels_blob);
+      snapshots.push({
+        time: ts,
+        bids: decoded.bids,
+        asks: decoded.asks,
+      });
+    }
+
+    return {
+      symbol,
+      count: snapshots.length,
+      totalAvailable,
+      hasMore,
+      samplingIntervalMs: options.resolutionMs || this.depthSamplingIntervalMs,
+      dataSource: totalAvailable > 0 ? 'sqlite_mbp10' : 'none',
+      available: snapshots.length > 0,
+      snapshots,
+    };
+  }
+
+  public getDepthStorageStats(symbol?: string): { count: number; oldestExchangeTs: number | null; newestExchangeTs: number | null; estimatedSizeBytes: number } {
+    try {
+      const sql = symbol
+        ? `SELECT COUNT(*) as count, MIN(exchange_ts) as oldest, MAX(exchange_ts) as newest, SUM(LENGTH(levels_blob)) as bytes FROM depth_snapshots WHERE symbol = ?`
+        : `SELECT COUNT(*) as count, MIN(exchange_ts) as oldest, MAX(exchange_ts) as newest, SUM(LENGTH(levels_blob)) as bytes FROM depth_snapshots`;
+      const row = (symbol ? this.db.prepare(sql).get(symbol.toUpperCase().trim()) : this.db.prepare(sql).get()) as any;
+      if (!row) return { count: 0, oldestExchangeTs: null, newestExchangeTs: null, estimatedSizeBytes: 0 };
+      return {
+        count: Number(row.count || 0),
+        oldestExchangeTs: row.oldest ? Number(row.oldest) : null,
+        newestExchangeTs: row.newest ? Number(row.newest) : null,
+        estimatedSizeBytes: Number(row.bytes || 0),
+      };
+    } catch {
+      return { count: 0, oldestExchangeTs: null, newestExchangeTs: null, estimatedSizeBytes: 0 };
+    }
+  }
+
+  public cleanupOldDepthSnapshots(cutoffExchangeTs: number): number {
+    try {
+      const stmt = this.db.prepare('DELETE FROM depth_snapshots WHERE exchange_ts < ?');
+      const info = stmt.run(cutoffExchangeTs);
+      return Number(info.changes);
+    } catch (err) {
+      this.warnWriteFailure(`cleanupOldDepthSnapshots(${cutoffExchangeTs})`, err);
+      return 0;
+    }
+  }
+
+  // ---- Order Flow Alert Rules & History ------------------------------------
+  public saveAlertRule(rule: AlertRule): void {
+    try {
+      this.db.prepare(`
+        INSERT OR REPLACE INTO alert_rules (
+          id, user_id, symbol, type, threshold, timeframe, cooldown_sec, enabled, created_at, last_triggered_at, metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        rule.id,
+        rule.userId,
+        rule.symbol.toUpperCase().trim(),
+        rule.type,
+        rule.threshold,
+        rule.timeframe || '1m',
+        rule.cooldownSec || 60,
+        rule.enabled ? 1 : 0,
+        rule.createdAt || Date.now(),
+        rule.lastTriggeredAt ?? null,
+        rule.metadata ? JSON.stringify(rule.metadata) : null
+      );
+    } catch (err) {
+      this.warnWriteFailure(`saveAlertRule(${rule.id})`, err);
+    }
+  }
+
+  public getAlertRulesForUser(userId: string): AlertRule[] {
+    return this.getAlertRules(userId);
+  }
+
+  public createAlertRule(rule: Partial<AlertRule> & { userId: string; symbol: string; type: AlertRule['type']; threshold: number }): AlertRule {
+    const fullRule: AlertRule = {
+      id: rule.id || `rule_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      userId: rule.userId,
+      symbol: rule.symbol.toUpperCase().trim(),
+      type: rule.type,
+      threshold: rule.threshold,
+      timeframe: rule.timeframe || '1m',
+      cooldownSec: rule.cooldownSec ?? 60,
+      enabled: rule.enabled ?? true,
+      createdAt: rule.createdAt || Date.now(),
+      lastTriggeredAt: null,
+      metadata: rule.metadata,
+    };
+    this.saveAlertRule(fullRule);
+    return fullRule;
+  }
+
+  public getAlertRules(userId: string): AlertRule[] {
+    try {
+      const rows = this.db.prepare(`
+        SELECT id, user_id, symbol, type, threshold, timeframe, cooldown_sec, enabled, created_at, last_triggered_at, metadata
+        FROM alert_rules
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+      `).all(userId) as any[];
+
+      return rows.map((r) => ({
+        id: r.id,
+        userId: r.user_id,
+        symbol: r.symbol,
+        type: r.type,
+        threshold: Number(r.threshold),
+        timeframe: r.timeframe,
+        cooldownSec: Number(r.cooldown_sec),
+        enabled: Boolean(r.enabled),
+        createdAt: Number(r.created_at),
+        lastTriggeredAt: r.last_triggered_at ? Number(r.last_triggered_at) : null,
+        metadata: r.metadata ? JSON.parse(r.metadata) : undefined,
+      }));
+    } catch (err) {
+      this.warnWriteFailure(`getAlertRules(${userId})`, err);
+      return [];
+    }
+  }
+
+  public getActiveAlertRulesForSymbol(symbol: string): AlertRule[] {
+    try {
+      const rows = this.db.prepare(`
+        SELECT id, user_id, symbol, type, threshold, timeframe, cooldown_sec, enabled, created_at, last_triggered_at, metadata
+        FROM alert_rules
+        WHERE symbol = ? AND enabled = 1
+      `).all(symbol.toUpperCase().trim()) as any[];
+
+      return rows.map((r) => ({
+        id: r.id,
+        userId: r.user_id,
+        symbol: r.symbol,
+        type: r.type,
+        threshold: Number(r.threshold),
+        timeframe: r.timeframe,
+        cooldownSec: Number(r.cooldown_sec),
+        enabled: Boolean(r.enabled),
+        createdAt: Number(r.created_at),
+        lastTriggeredAt: r.last_triggered_at ? Number(r.last_triggered_at) : null,
+        metadata: r.metadata ? JSON.parse(r.metadata) : undefined,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  public getAlertRuleById(id: string, userId?: string): AlertRule | null {
+    try {
+      const sql = userId
+        ? `SELECT * FROM alert_rules WHERE id = ? AND user_id = ?`
+        : `SELECT * FROM alert_rules WHERE id = ?`;
+      const row = (userId ? this.db.prepare(sql).get(id, userId) : this.db.prepare(sql).get(id)) as any;
+      if (!row) return null;
+      return {
+        id: row.id,
+        userId: row.user_id,
+        symbol: row.symbol,
+        type: row.type,
+        threshold: Number(row.threshold),
+        timeframe: row.timeframe,
+        cooldownSec: Number(row.cooldown_sec),
+        enabled: Boolean(row.enabled),
+        createdAt: Number(row.created_at),
+        lastTriggeredAt: row.last_triggered_at ? Number(row.last_triggered_at) : null,
+        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public updateAlertRule(rule: Partial<AlertRule> & { id: string; userId: string }): boolean {
+    try {
+      const existing = this.getAlertRuleById(rule.id, rule.userId);
+      if (!existing) return false;
+      const updated: AlertRule = {
+        ...existing,
+        ...rule,
+        symbol: rule.symbol ? rule.symbol.toUpperCase().trim() : existing.symbol,
+      };
+      this.saveAlertRule(updated);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  public updateAlertRuleLastTriggered(id: string, triggeredAt: number): void {
+    try {
+      this.db.prepare(`UPDATE alert_rules SET last_triggered_at = ? WHERE id = ?`).run(triggeredAt, id);
+    } catch (err) {
+      this.warnWriteFailure(`updateAlertRuleLastTriggered(${id})`, err);
+    }
+  }
+
+  public deleteAlertRule(id: string, userId: string): boolean {
+    try {
+      const res = this.db.prepare(`DELETE FROM alert_rules WHERE id = ? AND user_id = ?`).run(id, userId);
+      return (res.changes ?? 0) > 0;
+    } catch (err) {
+      this.warnWriteFailure(`deleteAlertRule(${id})`, err);
+      return false;
+    }
+  }
+
+  public saveAlertHistory(item: AlertHistoryItem): void {
+    try {
+      this.db.prepare(`
+        INSERT INTO alert_history (
+          id, rule_id, user_id, symbol, type, severity, message, price, trigger_time, acknowledged, metadata
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        item.id,
+        item.ruleId,
+        item.userId,
+        item.symbol.toUpperCase().trim(),
+        item.type,
+        item.severity || 'INFO',
+        item.message,
+        item.price ?? null,
+        item.triggerTime,
+        item.acknowledged ? 1 : 0,
+        item.metadata ? JSON.stringify(item.metadata) : null
+      );
+    } catch (err) {
+      this.warnWriteFailure(`saveAlertHistory(${item.id})`, err);
+    }
+  }
+
+  public getAlertHistory(userId: string, limit = 50, offset = 0): { items: AlertHistoryItem[]; total: number } {
+    try {
+      const boundedLimit = Math.min(Math.max(limit, 1), 200);
+      const countRow = this.db.prepare(`SELECT COUNT(*) as total FROM alert_history WHERE user_id = ?`).get(userId) as any;
+      const total = countRow ? Number(countRow.total) : 0;
+
+      const rows = this.db.prepare(`
+        SELECT id, rule_id, user_id, symbol, type, severity, message, price, trigger_time, acknowledged, metadata
+        FROM alert_history
+        WHERE user_id = ?
+        ORDER BY trigger_time DESC
+        LIMIT ? OFFSET ?
+      `).all(userId, boundedLimit, Math.max(0, offset)) as any[];
+
+      const items: AlertHistoryItem[] = rows.map((r) => ({
+        id: r.id,
+        ruleId: r.rule_id,
+        userId: r.user_id,
+        symbol: r.symbol,
+        type: r.type,
+        severity: r.severity,
+        message: r.message,
+        price: r.price !== null && r.price !== undefined ? Number(r.price) : undefined,
+        triggerTime: Number(r.trigger_time),
+        acknowledged: Boolean(r.acknowledged),
+        metadata: r.metadata ? JSON.parse(r.metadata) : undefined,
+      }));
+
+      return { items, total };
+    } catch (err) {
+      this.warnWriteFailure(`getAlertHistory(${userId})`, err);
+      return { items: [], total: 0 };
+    }
+  }
+
+  public acknowledgeAlertHistory(id: string, userId: string): boolean {
+    try {
+      const res = this.db.prepare(`UPDATE alert_history SET acknowledged = 1 WHERE id = ? AND user_id = ?`).run(id, userId);
+      return (res.changes ?? 0) > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  public clearAlertHistory(userId: string): void {
+    try {
+      this.db.prepare(`DELETE FROM alert_history WHERE user_id = ?`).run(userId);
+    } catch (err) {
+      this.warnWriteFailure(`clearAlertHistory(${userId})`, err);
+    }
+  }
+
   /**
    * Close the database connection.
    */
   public close(): void {
+    if (this.depthFlushTimer) {
+      clearInterval(this.depthFlushTimer);
+      this.depthFlushTimer = null;
+    }
+    this.flushDepthQueue();
     this.db.close();
   }
 }

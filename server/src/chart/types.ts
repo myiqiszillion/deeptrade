@@ -119,6 +119,20 @@ export interface VolumeProfileResponse {
   }>;
 }
 
+export interface VolumeProfileRangeRequest {
+  symbol: string;
+  startTime: number;
+  endTime: number;
+}
+
+export interface VolumeProfileRangeResponse extends VolumeProfileResponse {
+  startTime: number;
+  endTime: number;
+  available?: boolean;
+  status?: 'ok' | 'unavailable' | 'no_data';
+  message?: string;
+}
+
 export interface VwapPointResponse {
   time: number; // Unix ms
   vwap: number;
@@ -134,6 +148,17 @@ export interface DepthHeatmapSnapshot {
   time: number; // Unix ms
   bids: Array<{ price: number; size: number }>;
   asks: Array<{ price: number; size: number }>;
+}
+
+export interface DepthHeatmapResponse {
+  symbol: string;
+  count: number;
+  totalAvailable: number;
+  hasMore: boolean;
+  samplingIntervalMs: number;
+  dataSource: string;
+  available: boolean;
+  snapshots: DepthHeatmapSnapshot[];
 }
 
 export interface LargeTradePrint {

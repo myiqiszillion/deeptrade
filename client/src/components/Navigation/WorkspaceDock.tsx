@@ -6,6 +6,9 @@ import { ProfileOverlay } from '../Profile/ProfileOverlay';
 import { SpeedOfTapeWidget } from '../Tape/SpeedOfTapeWidget';
 import { GEXPanel } from '../Options/GEXPanel';
 import { OptionsFlowWidget } from '../Options/OptionsFlowWidget';
+import { OptionsChainWidget } from '../Options/OptionsChainWidget';
+import { LiquidityHeatmapWidget } from '../DOM/LiquidityHeatmapWidget';
+import { AlertCenterWidget } from '../Alerts/AlertCenterWidget';
 import {
   DeepTrade,
   FuturesInstrument,
@@ -19,10 +22,10 @@ import {
 } from '../../types';
 
 interface WorkspaceDockProps {
-  activePanel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | null;
+  activePanel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Chain' | 'Heatmap' | 'Alerts' | null;
   onClose: () => void;
   /** Switch panels without leaving the dock (the toolbar is far away when you are reading order flow). */
-  onSelectPanel: (panel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow') => void;
+  onSelectPanel: (panel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Chain' | 'Heatmap' | 'Alerts') => void;
   /** Which side of the chart the dock is anchored to; the divider follows it. */
   side: 'left' | 'right';
   onToggleSide: () => void;
@@ -38,16 +41,20 @@ interface WorkspaceDockProps {
   deepTradeThresholdUsd?: number;
   gexProfile?: GEXProfile;
   optionsFlow: OptionsFlowTrade[];
+  onOpenAlertModal?: () => void;
 }
 
 const DOCK_WIDTH_STORAGE_KEY = 'deepchart_dock_width_v1';
 
-const PANELS: Array<{ id: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow'; label: string; hint: string }> = [
+const PANELS: Array<{ id: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Chain' | 'Heatmap' | 'Alerts'; label: string; hint: string }> = [
   { id: 'DOM', label: 'DOM', hint: 'Depth of market ladder with live resting size' },
+  { id: 'Heatmap', label: 'Heatmap', hint: 'MBP-10 Historical Liquidity Heatmap' },
   { id: 'Profile', label: 'Profile', hint: 'Volume Profile + TPO (Market Profile) for the session' },
   { id: 'Tape', label: 'Tape', hint: 'Speed of tape and block (whale) prints' },
+  { id: 'Alerts', label: 'Alerts', hint: 'Order Flow alert rules and live notification event feed' },
   { id: 'GEX', label: 'GEX', hint: 'Gamma exposure from a real option chain' },
   { id: 'Flow', label: 'Flow', hint: 'Options flow prints' },
+  { id: 'Chain', label: 'Chain', hint: 'Options chain with strikes, Greeks, IV & open interest' },
 ];
 
 export const WorkspaceDock: React.FC<WorkspaceDockProps> = ({
@@ -68,6 +75,7 @@ export const WorkspaceDock: React.FC<WorkspaceDockProps> = ({
   deepTradeThresholdUsd,
   gexProfile,
   optionsFlow,
+  onOpenAlertModal,
 }) => {
   const [width, setWidth] = useState<number>(() => {
     try {
@@ -79,7 +87,7 @@ export const WorkspaceDock: React.FC<WorkspaceDockProps> = ({
     } catch {
       /* storage unavailable: fall back to the default width */
     }
-    return 350;
+    return 380;
   });
 
   const clampWidth = (value: number) => Math.max(280, Math.min(650, value));
@@ -119,12 +127,12 @@ export const WorkspaceDock: React.FC<WorkspaceDockProps> = ({
         }}
         onDrag={(delta) => setWidth(clampWidth(dragStartWidthRef.current + delta))}
         onStep={(delta) => setWidth((prev) => clampWidth(prev + delta))}
-        onReset={() => setWidth(350)}
+        onReset={() => setWidth(380)}
       />
 
       {/* Dock Header: panel switcher + context + close */}
       <div className="dock-header select-none">
-        <div className="flex items-center gap-1 min-w-0">
+        <div className="flex items-center gap-0.5 min-w-0 overflow-x-auto">
           {PANELS.map((panel) => (
             <button
               key={panel.id}
@@ -132,7 +140,7 @@ export const WorkspaceDock: React.FC<WorkspaceDockProps> = ({
               aria-pressed={activePanel === panel.id}
               onClick={() => onSelectPanel(panel.id)}
               title={panel.hint}
-              className={`h-6 px-2 rounded font-mono text-[10px] font-semibold uppercase tracking-wide transition-colors ${
+              className={`h-6 px-1.5 rounded font-mono text-[10px] font-semibold uppercase tracking-wide transition-colors shrink-0 ${
                 activePanel === panel.id
                   ? 'bg-[#1C2630] text-[#E7EDF3]'
                   : 'text-[#7F8B97] hover:text-[#E7EDF3] hover:bg-white/5'
@@ -176,6 +184,14 @@ export const WorkspaceDock: React.FC<WorkspaceDockProps> = ({
           />
         )}
 
+        {activePanel === 'Heatmap' && (
+          <LiquidityHeatmapWidget
+            symbol={symbol}
+            currentPrice={currentPrice}
+            tickSize={instrument?.tickSize}
+          />
+        )}
+
         {activePanel === 'Profile' && (
           <ProfileOverlay
             volumeProfile={volumeProfile}
@@ -202,6 +218,14 @@ export const WorkspaceDock: React.FC<WorkspaceDockProps> = ({
 
         {activePanel === 'Flow' && (
           <OptionsFlowWidget flowTrades={optionsFlow} />
+        )}
+
+        {activePanel === 'Chain' && (
+          <OptionsChainWidget symbol={symbol} currentPrice={currentPrice} />
+        )}
+
+        {activePanel === 'Alerts' && (
+          <AlertCenterWidget symbol={symbol} onOpenModal={onOpenAlertModal || (() => {})} />
         )}
       </div>
     </aside>

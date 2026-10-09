@@ -3,7 +3,7 @@ import { ArrowRight, BarChart3, Check, Command, Layers, LineChart, LogOut, Play,
 import { InstrumentOption } from './Navigation/SymbolDropdown';
 import { loadFavoriteSymbols, loadRecentSymbols } from '../services/symbolPrefs';
 
-export type PanelId = 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow';
+export type PanelId = 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Chain' | 'Heatmap' | 'Alerts';
 export type OverlayKey = 'vwap' | 'imbalances' | 'delta' | 'cvd';
 
 export interface CommandPaletteActions {
@@ -157,12 +157,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       }
     );
 
-    for (const panel of ['DOM', 'Profile', 'Tape', 'GEX', 'Flow'] as PanelId[]) {
+    for (const panel of ['DOM', 'Profile', 'Tape', 'GEX', 'Flow', 'Chain', 'Heatmap', 'Alerts'] as PanelId[]) {
       list.push({
         id: `panel:${panel}`,
         section: 'Panels',
         label: `${activePanel === panel ? 'Hide' : 'Show'} ${panel} panel`,
-        hint: `Shortcut: ${(['DOM', 'Profile', 'Tape', 'GEX', 'Flow'] as PanelId[]).indexOf(panel) + 1}`,
+        hint: `Shortcut: ${(['DOM', 'Profile', 'Tape', 'GEX', 'Flow', 'Chain', 'Heatmap', 'Alerts'] as PanelId[]).indexOf(panel) + 1}`,
         keywords: `panel dock ${panel} workspace`.toLowerCase(),
         active: activePanel === panel,
         icon: <Layers size={13} className="text-[#4E5965]" />,

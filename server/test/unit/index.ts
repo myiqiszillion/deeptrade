@@ -34,6 +34,9 @@ const { runInstrumentSyncTests } = await import('./instrumentSync.test.js');
 const { runOptionsMathTests } = await import('./optionsMath.test.js');
 const { runDatabentoRoutesTests } = await import('./databentoRoutes.test.js');
 const { runChartRoutesTests } = await import('./chartRoutes.test.js');
+const { runDepthStorageTests } = await import('./depthStorage.test.js');
+const { runAlertEngineTests } = await import('./alertEngine.test.js');
+const { runAlertsApiTests } = await import('./alertsApi.test.js');
 
 async function main() {
   console.log('======================================================');
@@ -65,6 +68,9 @@ async function main() {
   await runDatabentoConfigTests();
   await runInstrumentSyncTests();
   await runOptionsMathTests();
+  await runDepthStorageTests();
+  await runAlertEngineTests();
+  await runAlertsApiTests();
 
   const elapsed = Date.now() - start;
   console.log('\n======================================================');

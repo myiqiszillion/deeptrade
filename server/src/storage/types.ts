@@ -29,8 +29,63 @@ export interface IMarketDataStore {
   saveStatistics(stats: OptionStatisticRecord[]): void | Promise<void>;
   getLatestStatistics(symbol: string): OptionStatisticRecord | null | Promise<OptionStatisticRecord | null>;
 
+  // Market Depth MBP-10 Operations
+  saveDepthSnapshot(snapshot: DepthSnapshotInput): void | Promise<void>;
+  saveDepthSnapshotsBatch(snapshots: DepthSnapshotInput[]): void | Promise<void>;
+  queryDepthSnapshots(options: DepthQueryOptions): DepthQueryResult | Promise<DepthQueryResult>;
+  cleanupOldDepthSnapshots(cutoffExchangeTs: number): number | Promise<number>;
+
   // Close / cleanup
   close(): void | Promise<void>;
+}
+
+export interface DepthSnapshotInput {
+  symbol: string;
+  exchangeTs: number;
+  receiveTs?: number;
+  sequenceNumber?: number | null;
+  schemaVersion?: number;
+  dataSource?: string;
+  sessionId?: string | null;
+  bids: Array<{ price: number; size: number }>;
+  asks: Array<{ price: number; size: number }>;
+}
+
+export interface StoredDepthSnapshot {
+  id: number;
+  symbol: string;
+  exchangeTs: number;
+  receiveTs: number;
+  sequenceNumber?: number | null;
+  schemaVersion: number;
+  dataSource: string;
+  sessionId?: string | null;
+  bids: Array<{ price: number; size: number }>;
+  asks: Array<{ price: number; size: number }>;
+}
+
+export interface DepthQueryOptions {
+  symbol: string;
+  startTime: number;
+  endTime: number;
+  resolutionMs?: number;
+  limit?: number;
+  offset?: number;
+}
+
+export interface DepthQueryResult {
+  symbol: string;
+  count: number;
+  totalAvailable: number;
+  hasMore: boolean;
+  samplingIntervalMs: number;
+  dataSource: string;
+  available: boolean;
+  snapshots: Array<{
+    time: number;
+    bids: Array<{ price: number; size: number }>;
+    asks: Array<{ price: number; size: number }>;
+  }>;
 }
 
 export interface ICacheStore {
@@ -39,3 +94,4 @@ export interface ICacheStore {
   getOptionChain(underlying: string): Promise<OptionContractDefinition[] | null>;
   setOptionChain(underlying: string, chain: OptionContractDefinition[], ttlSeconds?: number): Promise<void>;
 }
+
