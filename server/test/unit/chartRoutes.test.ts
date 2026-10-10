@@ -272,6 +272,22 @@ export async function runChartRoutesTests(): Promise<void> {
     console.log('✓ GET /api/v1/chart/volume-profile returns VP with POC, VAH, VAL');
   }
 
+  // 10.5 /api/v1/chart/tpo
+  {
+    const req = new EventEmitter() as any;
+    req.method = 'GET';
+    const res = new MockResponse() as any;
+    const url = new URL('http://localhost:8080/api/v1/chart/tpo?symbol=ES');
+    const handled = await handler(req, res, url);
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.symbol, 'ES');
+    assert.ok(body.poc > 0);
+    assert.ok(Array.isArray(body.brackets));
+    console.log('✓ GET /api/v1/chart/tpo returns TPO profile with brackets and POC');
+  }
+
   // 11. /api/v1/chart/vwap
   {
     const req = new EventEmitter() as any;

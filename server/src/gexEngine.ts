@@ -87,7 +87,8 @@ export class GEXEngine {
     }
 
     const buckets = new Map<number, Bucket>();
-    for (const row of rows) {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    for (const row of safeRows) {
       if (!Number.isFinite(row.gamma) || !Number.isFinite(row.openInterest) || row.openInterest <= 0) continue;
       const gexUsd = row.gamma * row.openInterest * CONTRACT_MULTIPLIER * spotPrice * spotPrice * 0.01;
       const bucket =

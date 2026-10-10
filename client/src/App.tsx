@@ -91,9 +91,12 @@ interface SavedSettings {
   dockMode?: 'split' | 'single';
   symbol?: string;
   timeframe?: string;
-  isSplitWorkspace?: boolean;
-  secondarySymbol?: string;
-  secondaryTimeframe?: string;
+  isSplitWorkspace?: boolean; // legacy
+  layoutMode?: 'single' | 'split2' | 'grid3' | 'grid4';
+  gridSymbols?: string[];
+  gridTimeframes?: string[];
+  secondarySymbol?: string; // legacy
+  secondaryTimeframe?: string; // legacy
   chartMode?: 'footprint' | 'candles';
   clusterMultiplier?: 'auto' | 1 | 2 | 4 | 5 | 10 | 25 | 50;
   showDOM?: boolean;
@@ -349,10 +352,24 @@ export const App: React.FC = () => {
     savedSettings.activePanel === null ? null :
       ['DOM', 'Profile', 'Tape', 'GEX', 'Flow', 'Chain', 'Heatmap', 'Alerts'].includes(savedSettings.activePanel ?? '') ? savedSettings.activePanel : 'DOM'
   );
-  const [isSplitWorkspace, setIsSplitWorkspace] = useState<boolean>(Boolean(savedSettings.isSplitWorkspace));
-  const [secondarySymbol, setSecondarySymbol] = useState<string>(savedSettings.secondarySymbol || 'NQ');
-  const [secondaryTimeframe, setSecondaryTimeframe] = useState<string>(savedSettings.secondaryTimeframe || '1m');
+  const [layoutMode, setLayoutMode] = useState<'single' | 'split2' | 'grid3' | 'grid4'>(
+    savedSettings.layoutMode || (savedSettings.isSplitWorkspace ? 'split2' : 'single')
+  );
+  const [gridSymbols, setGridSymbols] = useState<string[]>(
+    savedSettings.gridSymbols || [savedSettings.secondarySymbol || 'NQ', 'ES', 'CL']
+  );
+  const [gridTimeframes, setGridTimeframes] = useState<string[]>(
+    savedSettings.gridTimeframes || [savedSettings.secondaryTimeframe || '1m', '1m', '1m']
+  );
   const [crosshairTime, setCrosshairTime] = useState<number | null>(null);
+
+  const cycleLayoutMode = () => {
+    setLayoutMode((prev) => {
+      const next = prev === 'single' ? 'split2' : prev === 'split2' ? 'grid3' : prev === 'grid3' ? 'grid4' : 'single';
+      saveSettings({ ...savedSettings, layoutMode: next });
+      return next;
+    });
+  };
 
   // Alert Center state
   const [showAlertCenter, setShowAlertCenter] = useState<boolean>(false);
@@ -534,9 +551,9 @@ export const App: React.FC = () => {
       chartMode,
       clusterMultiplier,
       activePanel,
-      isSplitWorkspace,
-      secondarySymbol,
-      secondaryTimeframe,
+      layoutMode,
+      gridSymbols,
+      gridTimeframes,
       showVWAP,
       showImbalances,
       showDeltaNumbers,
@@ -550,9 +567,9 @@ export const App: React.FC = () => {
     chartMode,
     clusterMultiplier,
     activePanel,
-    isSplitWorkspace,
-    secondarySymbol,
-    secondaryTimeframe,
+    layoutMode,
+    gridSymbols,
+    gridTimeframes,
     showVWAP,
     showImbalances,
     showDeltaNumbers,
@@ -1098,8 +1115,8 @@ export const App: React.FC = () => {
         onZoomOut={handleZoomOut}
         activePanel={activePanel}
         onSelectPanel={(p) => setActivePanel(activePanel === p ? null : p)}
-        isSplitWorkspace={isSplitWorkspace}
-        onToggleSplitWorkspace={() => setIsSplitWorkspace(!isSplitWorkspace)}
+        layoutMode={layoutMode}
+        onCycleLayoutMode={cycleLayoutMode}
         footprintMode={footprintMode}
         onFootprintModeChange={setFootprintMode}
         showUnfinishedAuction={showUnfinishedAuction}
@@ -1289,16 +1306,59 @@ export const App: React.FC = () => {
           )}
           </div>
 
-          {/* Secondary Chart Pane (Multi-Asset Split Workspace) */}
-          {isSplitWorkspace && (
-            <SecondaryChartPane
-              initialSymbol={secondarySymbol}
-              initialTimeframe={secondaryTimeframe}
-              crosshairTime={crosshairTime}
-              onCrosshairTimeChange={setCrosshairTime}
-              onClose={() => setIsSplitWorkspace(false)}
-              onSymbolChange={(s) => setSecondarySymbol(s)}
-            />
+          {/* Grid Layout Panes */}
+          {layoutMode !== 'single' && (
+            <div className={`flex flex-1 gap-px bg-[#1C2630] ${layoutMode === 'grid4' ? 'flex-wrap' : 'flex-row'}`}>
+              <SecondaryChartPane
+                id="pane2"
+                className={layoutMode === 'grid4' ? 'w-[calc(50%-1px)] h-[calc(50%-1px)]' : 'flex-1'}
+                initialSymbol={gridSymbols[0]}
+                initialTimeframe={gridTimeframes[0]}
+                crosshairTime={crosshairTime}
+                onCrosshairTimeChange={setCrosshairTime}
+                onClose={cycleLayoutMode}
+                onSymbolChange={(s) => {
+                  const newSymbols = [...gridSymbols];
+                  newSymbols[0] = s;
+                  setGridSymbols(newSymbols);
+                  saveSettings({ ...savedSettings, gridSymbols: newSymbols });
+                }}
+              />
+              {(layoutMode === 'grid3' || layoutMode === 'grid4') && (
+                <SecondaryChartPane
+                  id="pane3"
+                  className={layoutMode === 'grid4' ? 'w-[calc(50%-1px)] h-[calc(50%-1px)]' : 'flex-1'}
+                  initialSymbol={gridSymbols[1]}
+                  initialTimeframe={gridTimeframes[1]}
+                  crosshairTime={crosshairTime}
+                  onCrosshairTimeChange={setCrosshairTime}
+                  onClose={cycleLayoutMode}
+                  onSymbolChange={(s) => {
+                    const newSymbols = [...gridSymbols];
+                    newSymbols[1] = s;
+                    setGridSymbols(newSymbols);
+                    saveSettings({ ...savedSettings, gridSymbols: newSymbols });
+                  }}
+                />
+              )}
+              {layoutMode === 'grid4' && (
+                <SecondaryChartPane
+                  id="pane4"
+                  className="w-[calc(50%-1px)] h-[calc(50%-1px)]"
+                  initialSymbol={gridSymbols[2]}
+                  initialTimeframe={gridTimeframes[2]}
+                  crosshairTime={crosshairTime}
+                  onCrosshairTimeChange={setCrosshairTime}
+                  onClose={cycleLayoutMode}
+                  onSymbolChange={(s) => {
+                    const newSymbols = [...gridSymbols];
+                    newSymbols[2] = s;
+                    setGridSymbols(newSymbols);
+                    saveSettings({ ...savedSettings, gridSymbols: newSymbols });
+                  }}
+                />
+              )}
+            </div>
           )}
         </div>
 

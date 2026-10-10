@@ -35,7 +35,8 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: 'pnpm dev',
+      command: 'node ./node_modules/tsx/dist/cli.mjs src/index.ts',
+      cwd: './server',
       url: 'http://localhost:8080/healthz',
       reuseExistingServer: true,
       timeout: 30000,
@@ -47,7 +48,8 @@ export default defineConfig({
       },
     },
     {
-      command: 'pnpm client:dev',
+      command: 'node ./node_modules/vite/bin/vite.js',
+      cwd: './client',
       url: 'http://localhost:5173',
       reuseExistingServer: true,
       timeout: 30000,

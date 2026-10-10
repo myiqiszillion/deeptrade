@@ -26,8 +26,9 @@ interface IReplaySession {
 export class ChartSession {
   public readonly id = `s${++sessionCounter}`;
   public readonly createdAt = Date.now();
-  public subscribedSymbol = process.env.DEFAULT_SYMBOL || 'ES';
+  public subscribedSymbol = process.env.DEFAULT_SYMBOL || 'ES'; // kept for backward compatibility
   public subscribedTimeframe = '1m';
+  public subscriptions = new Map<string, string>(); // symbol -> timeframe
   public subscriptionGeneration = 0;
   public replaySession: IReplaySession | null = null;
   public mode: SessionMode = 'LIVE';
@@ -41,6 +42,10 @@ export class ChartSession {
   public setUser(user: User): void {
     this.user = user;
     this.isAuthenticated = true;
+  }
+
+  public getTimeframe(symbol: string): string {
+    return this.subscriptions.get(symbol) || this.subscribedTimeframe;
   }
 
   public nextGeneration(): number {
@@ -85,7 +90,7 @@ export class ChartSession {
   }
 
   /** Simple flood protection: a public server cannot trust any single client's send rate. */
-  public allowMessage(limitPerSecond = parseInt(process.env.MAX_MESSAGES_PER_SEC || '40', 10)): boolean {
+  public allowMessage(limitPerSecond = parseInt(process.env.MAX_MESSAGES_PER_SEC || '100', 10)): boolean {
     const now = Date.now();
     this.messageTimestamps = this.messageTimestamps.filter((t) => now - t < 1000);
     if (this.messageTimestamps.length >= limitPerSecond) return false;

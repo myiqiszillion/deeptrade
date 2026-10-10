@@ -42,8 +42,8 @@ interface ChartToolbarProps {
   onZoomOut?: () => void;
   activePanel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Chain' | 'Heatmap' | 'Alerts' | null;
   onSelectPanel: (panel: 'DOM' | 'Profile' | 'Tape' | 'GEX' | 'Flow' | 'Chain' | 'Heatmap' | 'Alerts') => void;
-  isSplitWorkspace?: boolean;
-  onToggleSplitWorkspace?: () => void;
+  layoutMode?: 'single' | 'split2' | 'grid3' | 'grid4';
+  onCycleLayoutMode?: () => void;
 }
 
 export const ChartToolbar: React.FC<ChartToolbarProps> = ({
@@ -78,8 +78,8 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
   onZoomOut,
   activePanel,
   onSelectPanel,
-  isSplitWorkspace,
-  onToggleSplitWorkspace,
+  layoutMode,
+  onCycleLayoutMode,
 }) => {
   const [indicatorsMenuOpen, setIndicatorsMenuOpen] = useState(false);
   const indicatorsMenuRef = useRef<HTMLDivElement | null>(null);
@@ -443,19 +443,19 @@ export const ChartToolbar: React.FC<ChartToolbarProps> = ({
           </button>
         ))}
 
-        {onToggleSplitWorkspace && (
+        {onCycleLayoutMode && (
           <>
             <div className="toolbar-divider" />
             <button
               type="button"
-              onClick={onToggleSplitWorkspace}
+              onClick={onCycleLayoutMode}
               className={`toolbar-button text-[10px] font-semibold flex items-center gap-1 ${
-                isSplitWorkspace ? 'active active-cyan' : ''
+                layoutMode && layoutMode !== 'single' ? 'active active-cyan' : ''
               }`}
-              title={isSplitWorkspace ? 'Close Split Workspace (Single Chart)' : 'Split Workspace (2 Linked Charts with synced time cursor)'}
+              title={layoutMode === 'single' ? 'Single Chart' : layoutMode === 'split2' ? 'Split (2)' : layoutMode === 'grid3' ? 'Grid (3)' : 'Grid (4)'}
             >
               <Columns2 size={12} />
-              <span>{isSplitWorkspace ? 'Split (2)' : 'Split'}</span>
+              <span>{layoutMode === 'single' ? 'Layout: 1' : layoutMode === 'split2' ? 'Layout: 2' : layoutMode === 'grid3' ? 'Layout: 3' : 'Layout: 4'}</span>
             </button>
           </>
         )}

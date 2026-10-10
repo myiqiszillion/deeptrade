@@ -1,6 +1,6 @@
-import os from 'node:os';
-import fs from 'node:fs';
-import path from 'node:path';
+import * as os from 'node:os';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { MarketDataStore, marketDataStore } from '../server/src/storage/marketDataStore.js';
 import { DepthSnapshotInput } from '../server/src/storage/types.js';
@@ -87,7 +87,7 @@ async function runPhase4Benchmarks() {
   // ---------------------------------------------------------------------------
   console.log('2. Measuring SQLite WAL Depth Storage (Batch Ingest & Query Latency)...');
   const tempDbPath = path.join(os.tmpdir(), `bench_depth_${Date.now()}.db`);
-  const store = new MarketDataStore(tempDbPath, 100);
+  const store = new MarketDataStore(tempDbPath);
 
   const SNAPSHOT_COUNT = 25000;
   const BATCH_SIZE = 1000;
@@ -259,6 +259,7 @@ async function runPhase4Benchmarks() {
   const BAR_EVAL_COUNT = 5000;
   const sampleBar: FootprintBar = {
     id: 'bar_bench',
+    isClosed: true,
     time: 1700000000000,
     open: 5700.0,
     high: 5702.0,

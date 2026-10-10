@@ -534,7 +534,7 @@ export class ChartService {
     fromMs?: number,
     toMs?: number
   ): Promise<VolumeProfileResponse> {
-    const { dataset, querySymbol, stypeIn } = resolveSymbolForDatabento(symbol);
+    const { dataset, querySymbol } = resolveSymbolForDatabento(symbol);
     const start = fromMs || (Date.now() - 86400_000);
     const end = toMs || Date.now();
 
@@ -542,26 +542,36 @@ export class ChartService {
     const spec = FUTURES_INSTRUMENTS[symbol] || FUTURES_INSTRUMENTS[root];
     const tickSize = spec?.tickSize || 0.25;
 
-    let bars: any[] = [];
+    let ticks: any[] = [];
     if (this.client.configured) {
       try {
-        bars = await this.client.getHistoricalBars(dataset, [querySymbol], 'ohlcv-1m', start, end, 1440, stypeIn);
+        ticks = await this.client.getHistoricalTrades(dataset, [querySymbol], start, end, 50000);
       } catch (err: any) {
         console.warn(`[ChartService] Vendor getVolumeProfile error: ${err?.message}`);
       }
     }
-    if (bars.length === 0) {
-      bars = marketDataStore.queryBarsRange({
+    if (ticks.length === 0) {
+      const stored = marketDataStore.queryTrades({
+        provider: 'databento',
         symbol,
-        timeframe: '1m',
-        startTime: start,
-        endTime: end,
-        limit: 1440,
+        limit: 50000,
+        beforeTime: end,
       });
+      ticks = stored.trades.filter(t => t.timestamp >= start);
     }
 
     const profileEngine = new ProfileEngine(tickSize, start);
-    profileEngine.processHistoricalBars(bars);
+    if (ticks.length > 0) {
+      for (const t of ticks) {
+        profileEngine.processTick({
+          timestamp: t.time || t.timestamp,
+          price: t.price,
+          size: t.size,
+          side: t.side,
+          id: t.id
+        });
+      }
+    }
     const vp = profileEngine.getVolumeProfile();
 
     return {
@@ -571,6 +581,60 @@ export class ChartService {
       vah: vp.vah,
       val: vp.val,
       levels: vp.levels,
+    };
+  }
+
+  /**
+   * 10c. Time Price Opportunity (TPO) Profile
+   */
+  public async getTPOProfile(
+    symbol: string,
+    fromMs?: number,
+    toMs?: number
+  ) {
+    const { dataset, querySymbol } = resolveSymbolForDatabento(symbol);
+    const start = fromMs || (Date.now() - 86400_000);
+    const end = toMs || Date.now();
+
+    const root = symbol.toUpperCase().split('.')[0];
+    const spec = FUTURES_INSTRUMENTS[symbol] || FUTURES_INSTRUMENTS[root];
+    const tickSize = spec?.tickSize || 0.25;
+
+    let ticks: any[] = [];
+    if (this.client.configured) {
+      try {
+        ticks = await this.client.getHistoricalTrades(dataset, [querySymbol], start, end, 50000);
+      } catch (err: any) {
+        console.warn(`[ChartService] Vendor getTPOProfile error: ${err?.message}`);
+      }
+    }
+    if (ticks.length === 0) {
+      const stored = marketDataStore.queryTrades({
+        provider: 'databento',
+        symbol,
+        limit: 50000,
+        beforeTime: end,
+      });
+      ticks = stored.trades.filter(t => t.timestamp >= start);
+    }
+
+    const profileEngine = new ProfileEngine(tickSize, start);
+    if (ticks.length > 0) {
+      for (const t of ticks) {
+        profileEngine.processTick({
+          timestamp: t.time || t.timestamp,
+          price: t.price,
+          size: t.size,
+          side: t.side,
+          id: t.id
+        });
+      }
+    }
+    const tpo = profileEngine.getTPOProfile();
+
+    return {
+      symbol,
+      ...tpo
     };
   }
 

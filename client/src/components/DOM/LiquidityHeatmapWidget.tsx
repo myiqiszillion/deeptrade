@@ -447,7 +447,13 @@ export const LiquidityHeatmapWidget: React.FC<LiquidityHeatmapWidgetProps> = ({
     handleResize();
     const ro = new ResizeObserver(handleResize);
     if (containerRef.current) ro.observe(containerRef.current);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      if (canvasRef.current) {
+        canvasRef.current.width = 0;
+        canvasRef.current.height = 0;
+      }
+    };
   }, []);
 
   // Mouse interaction handlers (Pan & Hover)

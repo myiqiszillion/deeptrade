@@ -629,6 +629,8 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => {
       canvas.removeEventListener('wheel', onWheel);
+      canvas.width = 0;
+      canvas.height = 0;
     };
   }, [updateViewport, requestRender]);
 

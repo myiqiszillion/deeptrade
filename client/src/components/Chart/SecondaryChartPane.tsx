@@ -13,8 +13,11 @@ import {
 import { FootprintCanvas } from './FootprintCanvas';
 import { formatPrice } from '../../services/priceFormat';
 import { X, Activity, Maximize2 } from 'lucide-react';
+import { wsClient } from '../../services/websocket';
 
 interface SecondaryChartPaneProps {
+  id?: string;
+  className?: string;
   initialSymbol?: string;
   initialTimeframe?: string;
   crosshairTime?: number | null;
@@ -27,6 +30,8 @@ const AVAILABLE_SYMBOLS = ['NQ', 'ES', 'MES', 'MNQ', 'YM', 'RTY', 'GC', 'CL'];
 const AVAILABLE_TIMEFRAMES = ['1s', '5s', '15s', '30s', '1m', '5m', '15m', '1h'];
 
 export const SecondaryChartPane: React.FC<SecondaryChartPaneProps> = ({
+  id = 'pane2',
+  className = '',
   initialSymbol = 'NQ',
   initialTimeframe = '1m',
   crosshairTime,
@@ -45,17 +50,18 @@ export const SecondaryChartPane: React.FC<SecondaryChartPaneProps> = ({
   const [absorptions, setAbsorptions] = useState<AbsorptionAlert[]>([]);
   const [gexProfile, setGexProfile] = useState<GEXProfile | undefined>();
   const [feedStatus, setFeedStatus] = useState<'LIVE' | 'CONNECTING' | 'UNAVAILABLE'>('CONNECTING');
-  const [isConnected, setIsConnected] = useState(false);
+  const [isConnected, setIsConnected] = useState(wsClient.getFeedHealth().isConnected);
   const [viewport, setViewport] = useState<ChartViewport | undefined>();
 
-  const wsRef = useRef<DeepChartWSClient | null>(null);
-
-  // Connect isolated WebSocket client for Pane 2
   useEffect(() => {
-    const ws = new DeepChartWSClient();
-    wsRef.current = ws;
+    // Send subscribe command to multiplexer
+    wsClient.send({
+      type: 'SUBSCRIBE',
+      symbol,
+      timeframe,
+    });
 
-    ws.setListeners({
+    wsClient.addListener(id, symbol, {
       onConnectionChange: (connected) => {
         setIsConnected(connected);
         if (!connected) setFeedStatus('UNAVAILABLE');
@@ -115,14 +121,11 @@ export const SecondaryChartPane: React.FC<SecondaryChartPaneProps> = ({
       },
     });
 
-    ws.connect();
-    ws.subscribe(symbol, 'databento', timeframe);
-
     return () => {
-      ws.disconnect();
-      wsRef.current = null;
+      wsClient.send({ type: 'UNSUBSCRIBE', symbol });
+      wsClient.removeListener(id);
     };
-  }, [symbol, timeframe]);
+  }, [id, symbol, timeframe]);
 
   const handleSelectSymbol = (newSym: string) => {
     setSymbol(newSym);
@@ -130,13 +133,11 @@ export const SecondaryChartPane: React.FC<SecondaryChartPaneProps> = ({
     setHistoryBars([]);
     setCurrentPrice(0);
     onSymbolChange?.(newSym);
-    wsRef.current?.subscribe(newSym, 'databento', timeframe);
   };
 
   const handleSelectTimeframe = (newTf: string) => {
     setTimeframe(newTf);
     setBars([]);
-    wsRef.current?.subscribe(symbol, 'databento', newTf);
   };
 
   const tickSize = instrument?.tickSize || 0.25;

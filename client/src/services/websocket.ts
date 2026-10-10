@@ -24,7 +24,7 @@ export interface FeedHealthState {
   reconnectCount: number;
   lastMessageTs: number | null;
   lastTradeTs: number | null;
-  subscriptionState: 'UNSUBSCRIBED' | 'SUBSCRIBING' | 'SUBSCRIBED' | 'ERROR';
+  subscriptionState: 'UNSUBSCRIBED' | 'PENDING' | 'ACTIVE' | 'STALE' | 'RECOVERING' | 'ERROR';
   symbol: string | null;
   source: string | null;
   timeframe: string | null;
@@ -108,7 +108,7 @@ export class DeepChartWSClient {
   private reconnectCount = 0;
   private lastMessageTs: number | null = null;
   private lastTradeTs: number | null = null;
-  private subscriptionState: 'UNSUBSCRIBED' | 'SUBSCRIBING' | 'SUBSCRIBED' | 'ERROR' = 'UNSUBSCRIBED';
+  private subscriptionState: 'UNSUBSCRIBED' | 'PENDING' | 'ACTIVE' | 'STALE' | 'RECOVERING' | 'ERROR' = 'UNSUBSCRIBED';
   private activeSubscription: { symbol: string; source?: string; timeframe?: string } | null = null;
   private staleThresholdMs = 15000;
 
@@ -129,8 +129,19 @@ export class DeepChartWSClient {
     }
   }
 
+  private listenersMap = new Map<string, { symbol: string; listeners: WSListeners }>();
+
+  public addListener(id: string, symbol: string, listeners: WSListeners) {
+    this.listenersMap.set(id, { symbol, listeners });
+  }
+
+  public removeListener(id: string) {
+    this.listenersMap.delete(id);
+  }
+
+  // Backwards compatibility for components not updated yet
   public setListeners(listeners: WSListeners) {
-    this.listeners = listeners;
+    this.addListener('default', this.activeSubscription?.symbol || 'ES', listeners);
   }
 
   public getFeedHealth(): FeedHealthState {
@@ -159,7 +170,10 @@ export class DeepChartWSClient {
       // True stale condition: No messages received from server across staleThresholdMs.
       // If messages (pongs, orderbook, status) are arriving, the feed is healthy even if market has no trades.
       if (this.lastMessageTs && (now - this.lastMessageTs > this.staleThresholdMs)) {
+        this.subscriptionState = 'STALE';
         this.listeners.onFeedStatusChange?.('STALE');
+      } else if (this.subscriptionState === 'STALE') {
+        this.subscriptionState = 'RECOVERING';
       }
       this.notifyHealth();
     }, 4000);
@@ -218,7 +232,7 @@ export class DeepChartWSClient {
 
         // Automatic resubscribe after reconnect
         if (this.activeSubscription) {
-          this.subscriptionState = 'SUBSCRIBING';
+          this.subscriptionState = 'PENDING';
           this.send({
             type: 'SUBSCRIBE',
             symbol: this.activeSubscription.symbol,
@@ -232,69 +246,82 @@ export class DeepChartWSClient {
         try {
           this.lastMessageTs = Date.now();
           const msg = JSON.parse(event.data) as WSServerMessage;
+
+          const dispatch = (action: (l: WSListeners) => void) => {
+            // Support backwards compatibility for this.listeners
+            if (Object.keys(this.listeners).length > 0) {
+              action(this.listeners);
+            }
+            for (const { symbol, listeners } of this.listenersMap.values()) {
+              if (!msg.symbol || msg.symbol === symbol) {
+                action(listeners);
+              }
+            }
+          };
+
           switch (msg.type) {
             case 'INIT_STATE':
-              this.subscriptionState = 'SUBSCRIBED';
+              this.subscriptionState = 'ACTIVE';
               this.notifyHealth();
-              this.listeners.onInitState?.(msg);
+              dispatch(l => l.onInitState?.(msg));
               break;
             case 'TICK':
               this.lastTradeTs = Date.now();
               this.notifyHealth();
-              this.listeners.onTick?.(msg.tick);
+              dispatch(l => l.onTick?.(msg.tick));
               break;
             case 'BAR_UPDATE':
               this.lastTradeTs = Date.now();
-              this.listeners.onBarUpdate?.(msg.bar);
+              dispatch(l => l.onBarUpdate?.(msg.bar));
               break;
             case 'BAR_CLOSE':
               this.lastTradeTs = Date.now();
-              this.listeners.onBarClose?.(msg.bar);
+              dispatch(l => l.onBarClose?.(msg.bar));
               break;
             case 'ORDERBOOK_UPDATE':
-              this.listeners.onOrderbookUpdate?.(msg.orderbook);
+              dispatch(l => l.onOrderbookUpdate?.(msg.orderbook));
               break;
             case 'SPEED_OF_TAPE':
-              this.listeners.onSpeedOfTape?.(msg.tape);
+              dispatch(l => l.onSpeedOfTape?.(msg.tape));
               break;
             case 'DEEP_TRADE':
               this.lastTradeTs = Date.now();
-              this.listeners.onDeepTrade?.(msg.trade);
+              dispatch(l => l.onDeepTrade?.(msg.trade));
               break;
             case 'ABSORPTION':
-              this.listeners.onAbsorption?.(msg.alert);
+              dispatch(l => l.onAbsorption?.(msg.alert));
               break;
             case 'PROFILE_UPDATE':
-              this.listeners.onProfileUpdate?.({ volumeProfile: msg.volumeProfile, tpo: msg.tpo });
+              dispatch(l => l.onProfileUpdate?.({ volumeProfile: msg.volumeProfile, tpo: msg.tpo }));
               break;
             case 'VWAP_UPDATE':
-              this.listeners.onVwapUpdate?.(msg.point);
+              dispatch(l => l.onVwapUpdate?.(msg.point));
               break;
             case 'GEX_UPDATE':
-              this.listeners.onGexUpdate?.(msg.profile);
+              dispatch(l => l.onGexUpdate?.(msg.profile));
               break;
             case 'OPTIONS_FLOW':
-              this.listeners.onOptionsFlow?.(msg.trade);
+              dispatch(l => l.onOptionsFlow?.(msg.trade));
               break;
             case 'REPLAY_STATE':
-              this.listeners.onReplayState?.(msg.progress);
+              dispatch(l => l.onReplayState?.(msg.progress));
               break;
             case 'HISTORY_RESPONSE':
-              this.listeners.onHistoryResponse?.(msg);
+              dispatch(l => l.onHistoryResponse?.(msg));
               break;
             case 'PONG':
               if (typeof (msg as any).timestamp === 'number') {
                 const rtt = Math.max(1, Date.now() - (msg as any).timestamp);
-                this.listeners.onLatencyUpdate?.(rtt);
+                dispatch(l => l.onLatencyUpdate?.(rtt));
               }
               break;
             case 'ERROR':
               this.subscriptionState = 'ERROR';
               this.notifyHealth();
-              this.listeners.onError?.(msg);
+              dispatch(l => l.onError?.(msg));
               break;
             case 'ALERT_EVENT':
-              this.listeners.onAlert?.(msg.alert);
+              dispatch(l => l.onAlert?.(msg.alert));
               break;
           }
         } catch (err) {
@@ -332,8 +359,9 @@ export class DeepChartWSClient {
           return;
         }
 
-        console.log('[DeepChart WS] Disconnected. Reconnecting in 2s...');
-        this.reconnectTimer = setTimeout(() => this.connect(), 2000);
+        const backoffDelay = Math.min(30000, 1000 * Math.pow(2, this.reconnectCount));
+        console.log(`[DeepChart WS] Disconnected. Reconnecting in ${backoffDelay}ms...`);
+        this.reconnectTimer = setTimeout(() => this.connect(), backoffDelay);
       };
 
       this.ws.onerror = (err) => {
@@ -352,20 +380,20 @@ export class DeepChartWSClient {
 
   public subscribe(symbol: string, source?: 'cme' | 'databento' | 'tradovate' | string, timeframe?: string) {
     const tf = timeframe || '1m';
-    // Duplicate subscription prevention: avoid sending redundant subscribe message if already subscribed
+    // Duplicate subscription prevention
     if (
       this.activeSubscription &&
       this.activeSubscription.symbol === symbol &&
       this.activeSubscription.source === source &&
       this.activeSubscription.timeframe === tf &&
-      this.subscriptionState === 'SUBSCRIBED' &&
+      this.subscriptionState === 'ACTIVE' &&
       this.isConnected
     ) {
       return;
     }
 
     this.activeSubscription = { symbol, source, timeframe: tf };
-    this.subscriptionState = 'SUBSCRIBING';
+    this.subscriptionState = 'PENDING';
     this.notifyHealth();
 
     this.send({
@@ -374,6 +402,15 @@ export class DeepChartWSClient {
       timeframe: tf,
       source,
     });
+  }
+
+  public unsubscribe(symbol?: string) {
+    if (this.activeSubscription && (!symbol || this.activeSubscription.symbol === symbol)) {
+      this.send({ type: 'UNSUBSCRIBE', symbol: this.activeSubscription.symbol });
+      this.activeSubscription = null;
+      this.subscriptionState = 'UNSUBSCRIBED';
+      this.notifyHealth();
+    }
   }
 
   public controlReplay(action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'RETURN_TO_LIVE', speed?: number, timestamp?: number) {

@@ -85,5 +85,50 @@ export function createDatabentoHistoryProvider(client?: DatabentoHttpClient): Hi
         throw err;
       }
     },
+    async fetchTicks(symbol, config, options) {
+      const cfg = resolveDatabentoConfig();
+      if (!isDatabentoSupportedSymbol(symbol, cfg)) {
+        return [];
+      }
+
+      const dataset = datasetForSymbol(symbol, cfg);
+      const maxHistoricalEnd = Date.now() - 15 * 60 * 1000;
+      const targetEnd = options.beforeTime > 0 ? Math.min(options.beforeTime, maxHistoricalEnd) : maxHistoricalEnd;
+      const end = new Date(targetEnd);
+      // Rough estimation: 2 days of trades max based on elements
+      const start = new Date(end.getTime() - 48 * 3600_000);
+
+      let querySymbol = symbol;
+
+      if (dataset === cfg.cmeDataset) {
+        if (!querySymbol.includes('.')) {
+          querySymbol = `${querySymbol}.c.0`;
+        }
+      }
+
+      try {
+        const trades = await c.getHistoricalTrades(
+          dataset,
+          querySymbol,
+          start as any,
+          end as any,
+          options.elements
+        );
+        return trades.map(t => ({
+          timestamp: t.timestamp,
+          price: t.price,
+          size: t.size,
+          side: t.side,
+          id: t.tradeId ?? ''
+        }));
+      } catch (err: any) {
+        const msg = String(err?.message || '');
+        if (msg.includes('symbology') || msg.includes('data_end_after_available_end') || String(err?.statusCode) === '400' || String(err?.statusCode) === '422') {
+          console.warn(`[HistoryProvider] trades ${dataset} ${querySymbol}: ${msg.slice(0, 180)}`);
+          return [];
+        }
+        throw err;
+      }
+    },
   };
 }

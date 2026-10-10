@@ -291,6 +291,7 @@ export interface OptionsFlowTrade {
 
 export type WSClientMessage =
   | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'cme' | 'databento' | 'tradovate' | string }
+  | { type: 'UNSUBSCRIBE'; symbol?: string }
   | {
       type: 'REPLAY_CONTROL';
       action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP' | 'RETURN_TO_LIVE';
@@ -322,22 +323,22 @@ export type WSServerMessage =
       feedStatus?: 'LIVE' | 'UNAVAILABLE';
       mode?: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
     }
-  | { type: 'TICK'; tick: Tick }
-  | { type: 'BAR_UPDATE'; bar: FootprintBar }
-  | { type: 'BAR_CLOSE'; bar: FootprintBar }
-  | { type: 'ORDERBOOK_UPDATE'; orderbook: OrderbookSnapshot }
-  | { type: 'SPEED_OF_TAPE'; tape: SpeedOfTapeData }
-  | { type: 'DEEP_TRADE'; trade: DeepTrade }
-  | { type: 'ABSORPTION'; alert: AbsorptionAlert }
-  | { type: 'PROFILE_UPDATE'; volumeProfile: VolumeProfileData; tpo?: TPOProfileData }
-  | { type: 'VWAP_UPDATE'; point: VWAPPoint }
-  | { type: 'GEX_UPDATE'; profile: GEXProfile }
-  | { type: 'OPTIONS_FLOW'; trade: OptionsFlowTrade }
-  | { type: 'REPLAY_STATE'; progress: ReplayProgress }
-  | { type: 'PONG'; timestamp: number }
-  | { type: 'ERROR'; code: string; message: string }
+  | { type: 'TICK'; tick: Tick; symbol?: string }
+  | { type: 'BAR_UPDATE'; bar: FootprintBar; symbol?: string }
+  | { type: 'BAR_CLOSE'; bar: FootprintBar; symbol?: string }
+  | { type: 'ORDERBOOK_UPDATE'; orderbook: OrderbookSnapshot; symbol?: string }
+  | { type: 'SPEED_OF_TAPE'; tape: SpeedOfTapeData; symbol?: string }
+  | { type: 'DEEP_TRADE'; trade: DeepTrade; symbol?: string }
+  | { type: 'ABSORPTION'; alert: AbsorptionAlert; symbol?: string }
+  | { type: 'PROFILE_UPDATE'; volumeProfile: VolumeProfileData; tpo?: TPOProfileData; symbol?: string }
+  | { type: 'VWAP_UPDATE'; point: VWAPPoint; symbol?: string }
+  | { type: 'GEX_UPDATE'; profile: GEXProfile; symbol?: string }
+  | { type: 'OPTIONS_FLOW'; trade: OptionsFlowTrade; symbol?: string }
+  | { type: 'REPLAY_STATE'; progress: ReplayProgress; symbol?: string }
+  | { type: 'PONG'; timestamp: number; symbol?: string }
+  | { type: 'ERROR'; code: string; message: string; symbol?: string }
   | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; provider?: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number | { provider: string; symbol: string; timeframe?: string; beforeTime: number; beforeId?: string }; requestId?: string }
-  | { type: 'ALERT_EVENT'; alert: AlertEvent };
+  | { type: 'ALERT_EVENT'; alert: AlertEvent; symbol?: string };
 
 export type EnhancedFeedStatus =
   | 'LIVE'

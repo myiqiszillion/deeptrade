@@ -190,6 +190,16 @@ export function createChartRouter(ctx: {
         return sendJson(res, 200, vp);
       }
 
+      // /tpo
+      if (subpath === 'tpo') {
+        const symbol = url.searchParams.get('symbol') || 'ES';
+        const from = url.searchParams.get('from') ? Number(url.searchParams.get('from')) : undefined;
+        const to = url.searchParams.get('to') ? Number(url.searchParams.get('to')) : undefined;
+
+        const tpo = await chartService.getTPOProfile(symbol, from, to);
+        return sendJson(res, 200, tpo);
+      }
+
       // /volume-profile-range
       if (subpath === 'volume-profile-range') {
         if (req.method !== 'POST') {

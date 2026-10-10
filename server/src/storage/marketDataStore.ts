@@ -92,6 +92,7 @@ export class MarketDataStore implements IMarketDataStore {
   private depthFlushTimer: any = null;
   private writeFailures = 0;
   private lastWriteWarningTs = 0;
+  private depthQueueOverflows = 0;
 
   constructor(dbPath?: string) {
     let resolvedPath = dbPath;
@@ -131,7 +132,7 @@ export class MarketDataStore implements IMarketDataStore {
     // Enable Write-Ahead Logging (WAL) for high concurrency and performance
     this.db.exec(`
       PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = NORMAL;
+      PRAGMA synchronous = FULL;
       PRAGMA temp_store = MEMORY;
       PRAGMA busy_timeout = 5000;
 
@@ -1201,6 +1202,7 @@ export class MarketDataStore implements IMarketDataStore {
     entitlements: number;
     subscriptions: number;
     revokedTokens: number;
+    depthOverflows: number;
   } {
     const count = (table: string): number => {
       try {
@@ -1218,6 +1220,7 @@ export class MarketDataStore implements IMarketDataStore {
       entitlements: count('entitlements'),
       subscriptions: count('subscriptions'),
       revokedTokens: count('revoked_tokens'),
+      depthOverflows: this.depthQueueOverflows,
     };
   }
 
@@ -1590,6 +1593,7 @@ export class MarketDataStore implements IMarketDataStore {
 
     if (this.depthWriteQueue.length >= this.maxDepthQueueSize) {
       this.depthWriteQueue.shift(); // Evict oldest to keep memory bounded
+      this.depthQueueOverflows++;
       this.warnWriteFailure('enqueueDepthSnapshot queue overflow (oldest evicted)', new Error('Queue capacity reached'));
     }
 

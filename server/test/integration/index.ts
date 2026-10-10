@@ -3,6 +3,8 @@ import { runHistoryApiTests } from './historyApi.test.js';
 import { runWebSocketIntegrationTests } from './websocket.test.js';
 import { runAuthFlowTests } from './authFlow.test.js';
 import { runBehavioralContractTests } from './behavioral_contracts.test.js';
+import { runDepthPersistenceTests } from './depthPersistence.test.js';
+import { runAlertDeliveryTests } from './alertDelivery.test.js';
 
 async function main() {
   console.log('======================================================');
@@ -15,6 +17,8 @@ async function main() {
   await runWebSocketIntegrationTests();
   await runAuthFlowTests();
   await runBehavioralContractTests();
+  await runDepthPersistenceTests();
+  await runAlertDeliveryTests();
 
   const elapsed = Date.now() - start;
   console.log('\n======================================================');

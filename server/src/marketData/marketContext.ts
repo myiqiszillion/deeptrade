@@ -60,10 +60,16 @@ export interface HistoryProvider {
     config: any,
     options: { barMinutes: number; elements: number; beforeTime: number; signal: AbortSignal }
   ): Promise<HistoricalBar[]>;
+  fetchTicks?(
+    symbol: string,
+    config: any,
+    options: { elements: number; beforeTime: number; signal: AbortSignal }
+  ): Promise<Tick[]>;
 }
 
 export const defaultHistoryProvider: HistoryProvider = {
   fetchBars: async () => [],
+  fetchTicks: async () => [],
 };
 
 /**
@@ -177,7 +183,7 @@ export class MarketContext {
     };
     this.profile = new ProfileEngine(this.instrument.tickSize);
     this.vwap = new VWAPEngine();
-    this.tape = new TapeEngine(this.computeDeepTradeThresholdUsd(), 15.0);
+    this.tape = new TapeEngine(this.computeDeepTradeThresholdUsd(), this.computeAbsorptionVolumeThreshold());
 
     // Initialize default footprint engine (1m)
     this.ensureFootprintEngine('1m');
@@ -193,6 +199,15 @@ export class MarketContext {
 
   public computeDeepTradeThresholdUsd(): number {
     return Math.round(this.instrument.pointValue * this.instrument.basePrice * WHALE_LOTS_EQUIVALENT);
+  }
+
+  public computeAbsorptionVolumeThreshold(): number {
+    const root = this.symbol.toUpperCase().split('.')[0];
+    if (root === 'ES' || root === 'MES' || root === 'SPX' || root === 'SPY') return 500;
+    if (root === 'NQ' || root === 'MNQ' || root === 'NDX' || root === 'QQQ') return 100;
+    if (root === 'YM' || root === 'MYM' || root === 'DJI') return 200;
+    if (root === 'RTY' || root === 'M2K' || root === 'RUT') return 150;
+    return Math.max(50, WHALE_LOTS_EQUIVALENT * 5);
   }
 
   public get subscriberCount(): number {
@@ -373,7 +388,7 @@ export class MarketContext {
     // Update subscribers of this symbol
     for (const session of this.subscribers) {
       if (session.isReplay()) continue;
-      session.send(this.buildInitState(session, session.subscribedTimeframe));
+      session.send(this.buildInitState(session, session.getTimeframe(this.symbol)));
     }
   }
 
@@ -481,7 +496,7 @@ export class MarketContext {
       this.liveBuffer.push(tick);
       for (const session of this.subscribers) {
         if (session.isReplay()) continue;
-        session.send({ type: 'TICK', tick });
+        session.send({ type: 'TICK', symbol: this.symbol, tick });
       }
       return;
     }
@@ -502,24 +517,24 @@ export class MarketContext {
       // Send to subscribers subscribed to this timeframe
       for (const session of this.subscribers) {
         if (session.isReplay()) continue;
-        if (session.subscribedTimeframe !== tf) continue;
+        if (session.getTimeframe(this.symbol) !== tf) continue;
 
         if (affectedBars && affectedBars.length > 0) {
           for (const bar of affectedBars) {
-            session.send({ type: 'BAR_UPDATE', bar });
+            session.send({ type: 'BAR_UPDATE', symbol: this.symbol, bar });
           }
         } else {
           if (correctedBar) {
-            session.send({ type: 'BAR_UPDATE', bar: correctedBar });
+            session.send({ type: 'BAR_UPDATE', symbol: this.symbol, bar: correctedBar });
           }
 
           if (closedBar) {
-            session.send({ type: 'BAR_CLOSE', bar: closedBar });
+            session.send({ type: 'BAR_CLOSE', symbol: this.symbol, bar: closedBar });
           }
 
           const lastBarUpdate = this.lastBarUpdateByTf.get(tf) || 0;
           if (now - lastBarUpdate > 100 || correctedBar) {
-            session.send({ type: 'BAR_UPDATE', bar: currentBar });
+            session.send({ type: 'BAR_UPDATE', symbol: this.symbol, bar: currentBar });
           }
         }
       }
@@ -552,24 +567,23 @@ export class MarketContext {
     // Send tick, tape, deep trade and absorption to all subscribers of this symbol
     for (const session of this.subscribers) {
       if (session.isReplay()) continue;
-      session.send({ type: 'TICK', tick });
+      session.send({ type: 'TICK', symbol: this.symbol, tick });
 
       if (now - this.lastSpeedOfTapeUpdate > 250) {
-        session.send({ type: 'SPEED_OF_TAPE', tape: speed });
+        session.send({ type: 'SPEED_OF_TAPE', symbol: this.symbol, tape: speed });
       }
 
       if (deepTrade) {
-        session.send({ type: 'DEEP_TRADE', trade: deepTrade });
+        session.send({ type: 'DEEP_TRADE', symbol: this.symbol, trade: deepTrade });
       }
 
       if (absorption) {
-        session.send({ type: 'ABSORPTION', alert: absorption });
+        session.send({ type: 'ABSORPTION', symbol: this.symbol, alert: absorption });
       }
 
       // Throttled live profile updates (500ms)
       if (now - this.lastProfileUpdate > 500) {
-        session.send({
-          type: 'PROFILE_UPDATE',
+        session.send({ type: 'PROFILE_UPDATE', symbol: this.symbol,
           volumeProfile: this.profile.getVolumeProfile(),
           tpo: this.profile.getTPOProfile(),
         });
@@ -577,8 +591,7 @@ export class MarketContext {
 
       // Throttled live VWAP updates (500ms)
       if (vwapPoint && now - this.lastVwapUpdate > 500) {
-        session.send({
-          type: 'VWAP_UPDATE',
+        session.send({ type: 'VWAP_UPDATE', symbol: this.symbol,
           point: vwapPoint,
         });
       }
@@ -635,7 +648,7 @@ export class MarketContext {
       const snap = this.orderbook.getSnapshot();
       for (const session of this.subscribers) {
         if (session.isReplay()) continue;
-        session.send({ type: 'ORDERBOOK_UPDATE', orderbook: snap });
+        session.send({ type: 'ORDERBOOK_UPDATE', symbol: this.symbol, orderbook: snap });
       }
       this.lastOrderbookUpdate = now;
       alertEngine.evaluateOrderbook(this.symbol, snap);
@@ -651,14 +664,14 @@ export class MarketContext {
 
     const profile: GEXProfile = {
       underlying,
-      spotPrice: snap.spot,
+      spotPrice: snap.spot || 0,
       callWall: snap.walls?.callWall ?? 0,
       putWall: snap.walls?.putWall ?? 0,
       zeroGammaFlip: snap.gammaFlip || 0,
       totalNetGex: snap.totals?.gex ?? 0,
       total0DteGex: 0,
-      regime: snap.regime,
-      levels: (snap.levels || []).map((l: any) => ({
+      regime: snap.regime || 'POSITIVE_GAMMA',
+      levels: (Array.isArray(snap.levels) ? snap.levels : []).map((l: any) => ({
         strike: l.strike,
         callGex: l.callGex || 0,
         putGex: l.putGex || 0,
@@ -677,9 +690,9 @@ export class MarketContext {
     const recentFlow = this.gexEngine.getRecentFlow();
     for (const session of this.subscribers) {
       if (session.isReplay()) continue;
-      session.send({ type: 'GEX_UPDATE', profile });
+      session.send({ type: 'GEX_UPDATE', symbol: this.symbol, profile });
       for (const flow of recentFlow.slice(0, 5)) {
-        session.send({ type: 'OPTIONS_FLOW', trade: flow });
+        session.send({ type: 'OPTIONS_FLOW', symbol: this.symbol, trade: flow });
       }
     }
   }
@@ -697,15 +710,29 @@ export class MarketContext {
 
         if (effectiveProvider === 'databento' && process.env.DATABENTO_API_KEY) {
           try {
-            const stored = marketDataStore.queryTrades({
-              provider: 'databento',
-              symbol: this.symbol,
-              limit: 3000,
-              beforeTime,
-            });
-            if (stored.trades.length > 0) {
-              ticks = stored.trades;
-              source = 'REAL_TICKS';
+            if (this.historyProvider.fetchTicks) {
+              const fetched = await this.historyProvider.fetchTicks(
+                this.symbol,
+                { apiKey: process.env.DATABENTO_API_KEY },
+                { elements: 10000, beforeTime, signal }
+              );
+              if (fetched.length > 0) {
+                ticks = fetched;
+                source = 'REAL_TICKS';
+              }
+            }
+
+            if (ticks.length === 0) {
+              const stored = marketDataStore.queryTrades({
+                provider: 'databento',
+                symbol: this.symbol,
+                limit: 10000,
+                beforeTime,
+              });
+              if (stored.trades.length > 0) {
+                ticks = stored.trades;
+                source = 'REAL_TICKS';
+              }
             }
           } catch (tradesErr) {
             console.warn(`[History] Databento trades load failed for ${symbol}: ${(tradesErr as Error).message}`);
@@ -830,7 +857,7 @@ export class MarketContext {
 
       for (const session of this.subscribers) {
         if (session.isReplay()) continue;
-        session.send(this.buildInitState(session, session.subscribedTimeframe));
+        session.send(this.buildInitState(session, session.getTimeframe(this.symbol)));
       }
     }
   }
@@ -895,7 +922,6 @@ export class MarketContext {
           if (this.historySource !== 'REAL_TICKS') {
             this.historySource = 'REAL_BARS';
           }
-          this.profile.processHistoricalBars(bars);
           this.vwap.processHistoricalBars(bars);
         }
         return bars;
@@ -913,7 +939,6 @@ export class MarketContext {
           this.historyBarsByTf.set(timeframe, stored.bars);
           this.historyBars = stored.bars;
           this.historySource = 'REAL_BARS';
-          this.profile.processHistoricalBars(stored.bars);
           this.vwap.processHistoricalBars(stored.bars);
           return stored.bars;
         }
@@ -981,7 +1006,7 @@ export class MarketContext {
     }
 
     session.subscribedSymbol = this.symbol;
-    session.subscribedTimeframe = timeframe;
+    session.subscriptions.set(this.symbol, timeframe);
     const gen = session.subscriptionGeneration;
     this.ensureFootprintEngine(timeframe);
     this.subscribers.add(session);
@@ -1030,7 +1055,7 @@ export class MarketContext {
           bars.length > 0 &&
           this.subscribers.has(session) &&
           session.subscribedSymbol === this.symbol &&
-          session.subscribedTimeframe === timeframe &&
+          session.getTimeframe(this.symbol) === timeframe &&
           session.subscriptionGeneration === gen &&
           session.isOpen &&
           !session.isReplay()
@@ -1048,7 +1073,7 @@ export class MarketContext {
   }
 
   public changeTimeframe(session: ChartSession, timeframe: string): void {
-    session.subscribedTimeframe = timeframe;
+    session.subscriptions.set(this.symbol, timeframe);
     const gen = session.subscriptionGeneration;
     this.ensureFootprintEngine(timeframe);
     // Prime from the store BEFORE the snapshot is built, otherwise switching timeframe (which does
@@ -1062,8 +1087,8 @@ export class MarketContext {
         if (
           bars.length > 0 &&
           this.subscribers.has(session) &&
-          session.subscribedSymbol === this.symbol &&
-          session.subscribedTimeframe === timeframe &&
+          session.subscriptions.has(this.symbol) &&
+          session.getTimeframe(this.symbol) === timeframe &&
           session.subscriptionGeneration === gen &&
           session.isOpen &&
           !session.isReplay()
@@ -1197,21 +1222,6 @@ export class MarketContextManager {
   ): Promise<void> {
     const gen = generation ?? session.subscriptionGeneration;
 
-    // If currently subscribed to another symbol, remove from old context
-    if (session.subscribedSymbol && session.subscribedSymbol !== symbol) {
-      const oldCtx = this.contexts.get(session.subscribedSymbol);
-      if (oldCtx) {
-        oldCtx.removeSubscriber(session);
-        if (oldCtx.subscriberCount === 0 && oldCtx.symbol !== (process.env.DEFAULT_SYMBOL || 'ES')) {
-          oldCtx.scheduleCleanup(() => {
-            if (this.contexts.get(oldCtx.symbol) === oldCtx) {
-              this.contexts.delete(oldCtx.symbol);
-            }
-          });
-        }
-      }
-    }
-
     const ctx = await this.getOrCreateContext(symbol);
 
     // Guard: check if session is still alive and this request is still the newest generation
@@ -1229,9 +1239,10 @@ export class MarketContextManager {
     ctx.addSubscriber(session, timeframe);
   }
 
-  public unsubscribe(session: ChartSession): void {
-    if (session.subscribedSymbol) {
-      const ctx = this.contexts.get(session.subscribedSymbol);
+  public unsubscribe(session: ChartSession, symbol?: string): void {
+    const targetSymbol = symbol || session.subscribedSymbol;
+    if (targetSymbol) {
+      const ctx = this.contexts.get(targetSymbol);
       if (ctx) {
         ctx.removeSubscriber(session);
         if (ctx.subscriberCount === 0 && ctx.symbol !== (process.env.DEFAULT_SYMBOL || 'ES')) {

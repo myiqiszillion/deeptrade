@@ -265,13 +265,13 @@ test.describe('DeepChart Trading Terminal E2E Verification Suite', () => {
     // Switch between Rules tab and History tab
     const historyTab = modal.locator('button:has-text("History")').first();
     await historyTab.click();
-    await expect(modal).toContainText(/Alert Trigger History/i);
+    await expect(modal).toContainText(/Alert History/i);
 
     const rulesTab = modal.locator('button:has-text("Rules")').first();
     await rulesTab.click();
 
     // Close modal
-    const closeBtn = modal.locator('button:has-text("✕")').first();
+    const closeBtn = modal.locator('button[aria-label="Close modal"]').first();
     await closeBtn.click();
     await expect(modal).not.toBeVisible();
 
@@ -282,7 +282,7 @@ test.describe('DeepChart Trading Terminal E2E Verification Suite', () => {
     await page.goto('/');
 
     // Locate Split toggle button in Chart toolbar
-    const splitBtn = page.locator('button:has-text("Split")').first();
+    const splitBtn = page.locator('button:has-text("Layout:")').first();
     await expect(splitBtn).toBeVisible({ timeout: 5000 });
     await splitBtn.click();
 
@@ -291,7 +291,11 @@ test.describe('DeepChart Trading Terminal E2E Verification Suite', () => {
     await expect(secondaryPane).toBeVisible({ timeout: 5000 });
     await expect(secondaryPane).toContainText(/LINKED/i);
 
-    // Toggle Split off
+    // Toggle Split off by cycling through the rest of the modes (grid3 -> quad4 -> single)
+    await splitBtn.click();
+    await page.waitForTimeout(500); // grid3
+    await splitBtn.click();
+    await page.waitForTimeout(500); // quad4
     await splitBtn.click();
     await expect(secondaryPane).not.toBeVisible();
 

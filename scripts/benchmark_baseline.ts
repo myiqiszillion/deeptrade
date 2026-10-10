@@ -1,7 +1,7 @@
-import os from 'node:os';
+import * as os from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { FootprintEngine } from '../server/src/footprintEngine.js';
-import { MarketDataStore } from '../server/src/storage/marketDataStore.js';
+import { marketDataStore } from '../server/src/storage/marketDataStore.js';
 import { ChartService } from '../server/src/chart/chartService.js';
 import { Tick } from '../server/src/types.js';
 
@@ -81,13 +81,12 @@ async function runBenchmark() {
   // 2. SQLite Batch Ingestion & Storage Performance
   // ---------------------------------------------------------------------------
   console.log('2. Measuring SQLite Storage Ingestion...');
-  const store = new MarketDataStore(':memory:');
-  const chartService = new ChartService(store);
+  const chartService = new ChartService({} as any);
   const DB_TICK_COUNT = 30000;
   const dbTicks = testTicks.slice(0, DB_TICK_COUNT);
 
   const tStartDb = performance.now();
-  store.saveTrades(dbTicks, 'ES', 'databento');
+  marketDataStore.saveTrades(dbTicks, 'ES', 'databento');
   const tEndDb = performance.now();
   const dbDurationMs = tEndDb - tStartDb;
   const dbWritesPerSec = Math.round((DB_TICK_COUNT / dbDurationMs) * 1000);
@@ -147,7 +146,7 @@ async function runBenchmark() {
   console.log('================================================================');
   console.table(results);
 
-  store.close();
+  marketDataStore.close();
 }
 
 runBenchmark().catch(console.error);

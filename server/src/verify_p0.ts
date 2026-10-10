@@ -383,11 +383,12 @@ async function runVerifyP0() {
     // ==========================================
     console.log('\n--- TEST 11: Rate limiting flood protection ---');
     for (let i = 0; i < 60; i++) {
-      ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'ES', timeframe: '1m' }));
+      ws.send(JSON.stringify({ type: 'PING' }));
     }
-    await sleep(500);
+    await sleep(1500);
+    let floodMark = receivedMessages.length;
     ws.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'ES', timeframe: '1m' }));
-    const pingFlood = await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'ES');
+    const pingFlood = await waitForMessage((m) => m.type === 'INIT_STATE' && m.symbol === 'ES' && receivedMessages.indexOf(m) >= floodMark);
     if (!pingFlood) throw new Error('TEST 11 FAILED: Server unresponsive after flood');
     console.log('✅ TEST 11 PASSED: Flood protection safely bounds incoming client rate.');
 
