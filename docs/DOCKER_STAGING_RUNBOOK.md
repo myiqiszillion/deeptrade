@@ -1,58 +1,123 @@
 # DOCKER STAGING RUNBOOK
 
-This runbook is intended for the Release Operator to perform Phase 6 Staging validations, as Docker is unavailable in the automated testing environment.
+This runbook provides step-by-step instructions for the Release Operator to boot and verify the DeepChart staging environment.
 
-## PREREQUISITES
-1. A Linux/macOS or WSL2 staging machine with `docker` and `docker-compose` installed.
-2. A staging `.env` file containing test credentials (NO production keys).
-3. The codebase positioned at the CONDITIONAL RELEASE CANDIDATE commit hash (see `STAGING_RELEASE_MANIFEST.md`).
+## A. Prerequisites
 
-## STEP 1: DOCKER BUILD VALIDATION
-Run the following from the repository root:
-```bash
-docker compose build --no-cache
-```
-**Expected Outcome:**
-- Multi-stage build succeeds.
-- No secrets leaked in build logs.
-- Client React SPA and Server Node.js build without warnings.
+- **Docker Engine / Docker Desktop:** Version 24+ recommended.
+- **Docker Compose:** V2 plugin installed (`docker compose version`).
+- **Architecture:** `amd64` or `arm64` (multi-arch supported by Alpine).
+- **Resources:** At least 2GB RAM and 5GB free disk space.
+- **Node/pnpm:** Not required (multi-stage Docker build handles all compilation).
+- **Network Ports:** Port `80` and `443` available on the host for Caddy.
 
-## STEP 2: STAGING BOOT
-```bash
-docker compose up -d
-docker compose ps
-```
-**Expected Outcome:**
-- Caddy, server, and any supporting containers show status `Up`.
-- `docker compose logs -f server` shows the DeepChart Server successfully started and bound to the correct port.
+## B. Environment Setup
 
-## STEP 3: CADDY ROUTING & SMOKE TESTS
-1. Open a browser and navigate to `http://localhost`.
-2. **Verify:** React SPA loads successfully.
-3. Open Developer Tools -> Network tab.
-4. **Verify:** No 404 errors for JS/CSS assets.
-5. Attempt to login or access a chart.
-6. **Verify:** `/api/v1/*` requests route successfully to the backend.
-7. **Verify:** WebSocket upgrades successfully at `ws://localhost/api/v1/stream`.
+Create a `.env` file in the root directory based on `.env.example`. 
 
-## STEP 4: SQLITE PERSISTENCE
-1. Make a structural change in the application (e.g., create an Alert Rule).
-2. Stop the containers: `docker compose down`
-3. Start the containers again: `docker compose up -d`
-4. **Verify:** The Alert Rule is still present (confirming the volume mount works).
+Required variables:
+- **For backend startup (Required):**
+  - `AUTH_JWT_SECRET`: Must be a secure random string (minimum 32 chars).
+  - `DOMAIN`: E.g., `localhost` or a real domain for TLS.
+- **For authentication (Required):**
+  - `ADMIN_SECRET`: Used for administrative metrics/API access.
+- **For optional features (Optional):**
+  - `DATABENTO_API_KEY`: Required for live market data (Vendor Data).
+  - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`: Required for billing.
+  - `METRICS_TOKEN`: Optional, required if accessing `/metrics` without Admin Secret.
+  - `ENABLE_QUOTE_BOARD`: Set to `1` to enable watchlist quotes.
 
-## STEP 5: VENDOR DATA (Databento)
-If you have a Databento Staging API key:
-1. Update your `.env` with `DATABENTO_API_KEY_LIVE`.
-2. Restart the server.
-3. Load an instrument chart (e.g., `ES`).
-4. **Verify:** Historical bars and MBO/MBP data load.
-5. **Verify:** Databento Live WebSocket streams tick data to the client correctly.
+**Do not write secret values in documentation.**
 
-## STEP 6: DISASTER RECOVERY & ROLLBACK
-- Test full disk scenarios if possible.
-- Ensure you have a backup of your `staging_data` folder before making irreversible changes.
-- Rollback consists of shutting down the containers and rolling back the git hash to the previous stable release, then `docker compose up -d --build`.
+## C. Staging Boot
 
-## SIGN-OFF
-Once all steps are verified and perform gracefully, the release can be promoted from CONDITIONAL RELEASE CANDIDATE to RELEASE CANDIDATE READY.
+1. **Compose Config Validation:**
+   ```bash
+   docker compose config -q
+   ```
+2. **Image Build:**
+   ```bash
+   docker compose build --no-cache
+   ```
+3. **Container Startup:**
+   ```bash
+   docker compose up -d
+   ```
+4. **Healthcheck Commands:**
+   ```bash
+   docker compose ps
+   # Ensure 'app' and 'proxy' are both showing 'Up (healthy)'
+   ```
+5. **Log Inspection:**
+   ```bash
+   docker compose logs -f
+   ```
+
+## D. API & Frontend Verification
+
+1. **SPA Asset Checks:** Open `https://localhost` (or `$DOMAIN`) in a browser. Ensure the UI loads.
+2. **API Health:** `curl -k https://localhost/healthz` (should return 200 OK).
+3. **Authentication Checks:** Attempt to subscribe to a symbol as guest, it should fail with `ENTITLEMENT_DENIED` or `UNAUTHORIZED`.
+4. **WebSocket Connection Checks:** Use the browser network tab to ensure `/api/ws` upgrades successfully to 101 Switching Protocols.
+5. **Caddy Proxy Routing:** Verify `/api/v1/instruments` returns a JSON array.
+6. **CSP Verification:** Check browser console for any Content Security Policy blocking errors.
+7. **Metrics Authorization:** `curl -k https://localhost/metrics` should return 401 Unauthorized unless authorized.
+
+## E. Database Verification
+
+1. **Persistent Volume:**
+   ```bash
+   docker volume inspect deepchart_app-data
+   ```
+2. **Database Startup & WAL Mode:**
+   Inspect logs to verify `[Storage] Initialized SQLite database` and `PRAGMA journal_mode = WAL`.
+3. **Graceful Shutdown & Container Restart:**
+   ```bash
+   docker compose restart app
+   ```
+   Verify logs indicate `Shutdown complete.` before restarting.
+4. **Database Persistence:** Create an alert rule, restart the container, and verify the rule persists.
+5. **Backup & Restore (Manual):**
+   ```bash
+   docker compose exec app node scripts/backup_db.mjs
+   ```
+   Check `./backups/` on the host. Restore by replacing `/app/data/market_data.sqlite` with the backup file.
+6. **Integrity Check:**
+   ```bash
+   docker compose exec app sqlite3 /app/data/market_data.sqlite "PRAGMA integrity_check;"
+   ```
+
+## F. Security Verification
+
+1. **No public .env exposure:** Ensure `https://localhost/.env` returns 404 or 403.
+2. **No database exposure:** Ensure `https://localhost/market_data.sqlite` returns 404.
+3. **No backup exposure:** Ensure `https://localhost/backups` returns 404.
+4. **No metrics exposure without authorization:** `/metrics` requires token.
+5. **No secrets in logs:** Review `docker compose logs` for any accidentally printed secrets.
+6. **JWT validation:** Valid signatures are enforced on WebSocket and HTTP.
+7. **User isolation:** Users can only view and manage their own alerts and sessions.
+8. **WebSocket origin:** WebSocket validates `Origin` header based on `ALLOWED_ORIGINS`.
+
+## G. Troubleshooting
+
+- **Image build fails:** Ensure enough disk space and docker daemon is running.
+- **Node runtime incompatible:** Handled by Docker image, verified as `node:24-alpine`.
+- **SQLite permission denied:** Verify volume permissions or run `chown -R 1000:1000 data/` on host if needed.
+- **Backend unhealthy:** Check logs for `AUTH_JWT_SECRET` missing (process exits immediately if not configured).
+- **Caddy returns 502:** Wait 15s for the backend to pass the healthcheck.
+- **WebSocket connection fails:** Check `DOMAIN` matches the requested host or update `ALLOWED_ORIGINS`.
+- **SPA assets return 404:** Check `Caddy.Dockerfile` built the client successfully.
+- **CSP blocks resources:** Verify CSP headers in `deploy/Caddyfile` or `index.ts`.
+- **Database locked:** Usually indicates another process is accessing the volume or WAL failure. Restart container.
+- **Feed unavailable:** Verify `DATABENTO_API_KEY` is valid.
+
+## H. Rollback
+
+1. **Stop services:**
+   ```bash
+   docker compose down
+   ```
+2. **Restore previous image version:** If tagged, change tag in compose file and run `docker compose up -d`.
+3. **Preserve persistent volume:** `deepchart_app-data` is retained.
+4. **Restore database backup if required:** Replace the sqlite DB in the volume mount with a backup if schema was corrupted.
+5. **Verify health after rollback:** Run `docker compose ps` and `curl -k https://localhost/healthz`.

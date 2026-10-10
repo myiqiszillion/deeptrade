@@ -1888,9 +1888,22 @@ async function gracefulShutdown(signal: string) {
       session.replaySession = null;
     }
   }
+  for (const client of wss.clients) {
+    client.terminate();
+  }
   await contextManager.disposeAll();
+  
+  if (httpServer.closeAllConnections) {
+    httpServer.closeAllConnections();
+  }
+  
   wss.close(() => {
     httpServer.close(() => {
+      try {
+        marketDataStore.close();
+      } catch (err) {
+        console.error('Error closing database', err);
+      }
       console.log('[DeepChart Server] Shutdown complete.');
       process.exit(0);
     });

@@ -30,11 +30,12 @@ This document outlines the current state of DeepChart in preparation for Product
 - [ ] Safe failure handling when data vendor stream terminates
 
 ### 4. Security & Compliance
-- [x] Passwords hashed securely (Argon2 / equivalent)
-- [x] JWT based authentication for API and WebSocket protocols
-- [x] Brute force login prevention
-- [x] Rate limiting on all API endpoints
-- [x] Caddy CSP, CORS, and standard web security headers
+- [x] Passwords hashed securely using `node:crypto` **scrypt** (constant-time verification).
+- [x] JWT based authentication for API and WebSocket. Token revocation is supported via a JTI blocklist persisted in SQLite.
+- [x] Stripe Webhook idempotency is handled via state overwriting (`applyStripeEvent` upserts status/validUntil).
+- [x] Brute force login prevention (LoginGuard with IP+username lockout).
+- [x] Rate limiting on all API endpoints (Sliding Window).
+- [x] Caddy CSP, CORS, and standard web security headers, plus explicit WebSocket Origin enforcement (`ALLOWED_ORIGINS`).
 
 ### 5. Third-Party Services
 - [ ] Databento Live Credentials Active and Entitlements valid

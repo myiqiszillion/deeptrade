@@ -1,4 +1,5 @@
-# Caddy terminates TLS (Let's Encrypt) and proxies both HTTP and WebSocket traffic to the app.
+# Caddy terminates TLS (Let's Encrypt) and proxies API/WS traffic to the app,
+# while serving the frontend SPA static files.
 # Set DOMAIN in .env — a public hostname gets a real certificate automatically.
 {$DOMAIN:localhost} {
 	encode zstd gzip
@@ -12,8 +13,10 @@
 		-Server
 	}
 
-	# The app needs the real client IP for per-IP rate limiting.
-	reverse_proxy app:8080 {
+	@api {
+		path /api/* /healthz /metrics
+	}
+	reverse_proxy @api app:8080 {
 		header_up X-Forwarded-For {remote_host}
 		header_up X-Forwarded-Proto {scheme}
 	}
@@ -24,4 +27,10 @@
 		header Upgrade websocket
 	}
 	reverse_proxy @ws app:8080
+
+	handle {
+		root * /var/www/html
+		try_files {path} /index.html
+		file_server
+	}
 }
