@@ -107,11 +107,14 @@ export async function runAlertDeliveryTests(): Promise<void> {
   } finally {
     // Restore env
     Object.assign(process.env, oldEnv);
-    // If we're the main script, close server to exit
-    if (process.argv[1]?.endsWith('alertDelivery.test.ts')) {
-      const { httpServer } = await import('../../src/index.js');
-      httpServer.close();
-    }
+    try {
+      const { closeServer } = await import('../../src/index.js');
+      await closeServer();
+    } catch {}
+    try {
+      const { marketDataStore } = await import('../../src/storage/marketDataStore.js');
+      marketDataStore.close();
+    } catch {}
   }
 }
 

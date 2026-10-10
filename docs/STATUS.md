@@ -1,53 +1,47 @@
 # Trạng thái hoàn thiện (đọc cái này để biết còn thiếu gì)
 
 > Mục đích: thay cảm giác "hình như còn thiếu gì đó" bằng **danh sách cụ thể**, kèm cách tự kiểm tra.
-> Cập nhật: 2026-10-09. Mọi mục dưới đây đều nói rõ **ai làm** (code hay bạn).
-> Frontend client (`client/`) đã được khôi phục và tích hợp vào pnpm monorepo workspace (Vite 5 + React 19 + TypeScript + Tailwind CSS), hỗ trợ typecheck và build độc lập hoặc toàn bộ repo.
+> Cập nhật: 2026-10-11 (Staging Release Finalization). Mọi mục dưới đây đều nói rõ **ai làm** (code hay Release Operator).
+> Frontend client (`client/`) hoạt động đầy đủ trên pnpm monorepo workspace (Vite 5 + React 19 + TypeScript + Tailwind CSS), hỗ trợ typecheck và build độc lập hoặc toàn bộ repo.
 
-## A. Hoàn thiện — dùng được ngay
+## A. Hoàn thiện — đã kiểm chứng (VERIFIED)
 
 | Hạng mục | Bằng chứng tự kiểm tra |
 |---|---|
 | Auth thật (scrypt, khoá brute-force, thu hồi token, admin bootstrap) | `pnpm test:unit` → passwords/loginGuard; `pnpm test:integration` → authFlow |
 | Gói & quyền (free/pro/elite, entitlement do server cấp) | `GET /api/v1/auth/config`, `POST /api/v1/admin/users/:id/plan` |
-| Thanh toán Stripe (Checkout + webhook có xác thực chữ ký) | `pnpm test:unit` → billing; `GET /api/v1/billing/plans` |
+| Thanh toán Stripe (Checkout + webhook signature + event idempotency deduplication) | `pnpm test:unit` → billing (`evt_dedupe_test_001`, out-of-order stale check); `GET /api/v1/billing/plans` |
 | Bảo vệ chi phí vendor (ngân sách chi tiêu theo tháng) | `DATABENTO_COST_CAP_USD`, `GET /api/v1/monitoring/vendor` |
-| 43 mã CME Group + thêm mã bất kỳ (env) | `pnpm test:unit` → instruments |
-| API instruments trả trạng thái feed **trung thực** (IDLE/NO VENDOR…) | `pnpm test:integration` → historyApi (mục 4b) |
-| History/aggregation/replay/rate limit/CORS/CSP/metrics/maintenance | `pnpm test`, `pnpm verify:p0` (13 case) |
-| Deploy: Docker, compose + Caddy TLS, backup, CI | `docker compose up -d --build`, `pnpm db:backup`, `.github/workflows/ci.yml` |
+| 43+ mã CME Group + thêm mã bất kỳ (env) | `pnpm test:unit` → instruments |
+| API instruments trả trạng thái feed **trung thực** (IDLE/UNAVAILABLE/LIVE) | `pnpm test:integration` → historyApi (mục 4b) |
+| History/aggregation/replay/rate limit/CORS/CSP/metrics/maintenance | `pnpm test`, `pnpm verify:p0` (13/13 assertions PASS) |
+| Order Flow Alert Engine & Delivery Isolation | `pnpm test:unit` → alertEngine/alertsApi; `pnpm test:integration` → alertDelivery (private WS isolation) |
+| E2E Browser Test Suite (Playwright 1.64.0) | **19/19 PASS** (`behavioral.spec.ts`: 4, `memory.spec.ts`: 1, `terminal.spec.ts`: 14), runner exit code 0, deterministic teardown |
+| Deploy Staging: Docker Compose + Caddy TLS + SQLite WAL | `docker compose up -d`, 42/42 Staging Acceptance checks PASS, WAL persistence, hot backup verified |
 
-## B. Đã code xong nhưng **phải do bạn bật/cấp** (không phải lỗi)
+## B. Đã code xong nhưng **phải do Operator bật/cấp** (không phải lỗi)
 
 | Hạng mục | Cần gì | Kiểm tra |
 |---|---|---|
-| Dữ liệu realtime & Full Suite | `DATABENTO_API_KEY` (Databento) | `/healthz` (admin) → `feedStatus`, tab `Options`, `Flow`, `Darkpool`, `GEX` |
-| Bán được hàng | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_PRO/ELITE`, `STRIPE_WEBHOOK_SECRET` | `GET /api/v1/auth/config` → `billingConfigured` |
+| Dữ liệu realtime Live Market Data | `DATABENTO_API_KEY` (Databento live license) | `/healthz` (admin) → `feedStatus`, tab `Options`, `Flow`, `Darkpool`, `GEX` |
+| Bán hàng thật Production | `STRIPE_SECRET_KEY`, `STRIPE_PRICE_PRO/ELITE`, `STRIPE_WEBHOOK_SECRET` | `GET /api/v1/auth/config` → `billingConfigured:true` |
 | Giá cho watchlist | `ENABLE_QUOTE_BOARD=1` (dữ liệu vendor, mặc định tắt) | `GET /api/v1/quotes?symbols=ES` → `enabled:true` |
+| Public production networking | `PROXY_BIND_IP=0.0.0.0`, `DOMAIN=yourdomain.com` | Caddy tự động cấp Let's Encrypt TLS public |
 | Pháp lý (TERMS/PRIVACY/DEPLOY) | Điền `<LEGAL ENTITY>`, email, quốc gia; hoàn tất điều khoản vendor | `grep -r "<LEGAL ENTITY>" TERMS.md PRIVACY.md docs/DEPLOY.md` |
 
-## C. Dở dang — có code/nút nhưng **thiếu phần cuối**
+## C. Giới hạn & ranh giới kỹ thuật đã xác định
 
-| # | Hạng mục | Thiếu chính xác cái gì | Ghi chú |
+| # | Hạng mục | Hiện trạng chính xác | Ghi chú vận hành |
 |---|---|---|---|
-| 1 | **Databento Phase 1 Suite** | Cần cấp `DATABENTO_API_KEY` trong `.env` để kích hoạt toàn bộ realtime CME Futures, OPRA Options, Equities | Đang hoạt động chuẩn Zero-Mock / Fail-Closed |
-| 2 | **Watchlist** | Cột giá chỉ có mã đang xem cho tới khi bạn bật `ENABLE_QUOTE_BOARD=1` | Có cache TTL + tuổi dữ liệu + nút ⏸ |
-| 3 | **`pnpm verify` (verify_e2e.ts)** | Là harness dev cũ: cần server đang chạy + feed thật, không hermetic | Đừng dùng làm test; cổng phát hành là `pnpm test` |
-| 4 | **E2E Browser Test Suite (Playwright)** | **HOÀN THÀNH**: Đã tích hợp Playwright 1.64.0 với 15/15 test cases pass (`terminal.spec.ts` + `behavioral.spec.ts`) | Chạy qua `pnpm test:e2e` |
-| 5 | **Range Volume Profile & Footprint Engine** | **HOÀN THÀNH**: Fixed Range VP tương tác kéo thả trên Canvas, 3 chế độ Footprint (Bid×Ask, Delta, Volume), Unfinished Auction, POC/VAH/VAL | Không suy diễn OHLCV giả, truy vấn trade-level SQLite hoặc Databento |
-| 6 | **Liquidity Heatmap MBP-10 & Feed Observability** | **HOÀN THÀNH**: Widget Heatmap tương tác (Time × Price, Bid/Ask intensity, Walls highlight), giám sát Feed Health (stale threshold >15s, reconnect count, last message/trade ts) | Phân biệt rõ connected vs subscribed vs active vs stale |
+| 1 | **Databento Vendor Verification** | Các thuật toán (Footprint, GEX, VP) đã kiểm chứng qua test fixtures; kết nối dữ liệu vendor thật đang ở trạng thái FAIL-CLOSED | Cần cấp `DATABENTO_API_KEY` của gói trả phí để thông luồng |
+| 2 | **Stripe Webhook Idempotency** | Đã triển khai bảng `webhook_events` và kiểm tra trùng lặp `event.id` + chặn stale update out-of-order | Hoạt động ở test mode; cần operator production secret để live |
+| 3 | **Client Memory Lifecycle** | Đã đo đạc qua Playwright memory test (50 chu kỳ mount/unmount CVD canvas, delta heap 16-23 MB < 50 MB threshold) | Chưa thực hiện sustained 24h profiling dưới tải thực |
+| 4 | **SQLite WAL Hot Backup** | Đã kiểm chứng qua SQLite Online Backup API (`sqlite3 ... ".backup ..."` / `scripts/backup_db.mjs`) | Không được copy file thô (`cp`) khi chưa checkpoint WAL |
+| 5 | **Đơn node (Single-host)** | 1 process backend + SQLite WAL trên local volume | Chưa hỗ trợ scale ngang đa node (cần PG/ClickHouse nếu scale) |
 
-## D. Chưa bắt đầu (có kế hoạch, cần quyết định trước khi làm)
-
-| # | Hạng mục | Vì sao chưa làm | Ước lượng |
-|---|---|---|---|
-| 1 | **Alert** | Cần kênh thông báo + lưu luật + nên làm sau multi-subscription | Vừa |
-| 2 | **Đa node / scale ngang** | SQLite + context trong 1 process; cần Postgres/ClickHouse + sticky session | Rất lớn |
-
-## E. Việc của bạn (checklist ngắn)
+## D. Việc của Operator trước khi Go-Live
 
 - [ ] Điền `TERMS.md`, `PRIVACY.md`, `docs/DEPLOY.md` (thực thể pháp lý, liên hệ).
-- [ ] Điền key: `DATABENTO_API_KEY`, `STRIPE_*`, `ADMIN_*`, `METRICS_TOKEN`, `AUTH_JWT_SECRET`.
-- [ ] Quyết định: bật `ENABLE_QUOTE_BOARD`?
-- [ ] Chọn mục D nào làm tiếp (tôi cần bạn chọn thứ tự vì chúng đổi kiến trúc).
-
+- [ ] Cấu hình secrets sản xuất: `DATABENTO_API_KEY`, `STRIPE_*`, `ADMIN_*`, `METRICS_TOKEN`, `AUTH_JWT_SECRET`.
+- [ ] Đặt `DOMAIN` thành domain production và `PROXY_BIND_IP=0.0.0.0` nếu muốn mở public.
+- [ ] Kiểm tra sao lưu tự động định kỳ với `pnpm db:backup` / cronjob WAL-safe.

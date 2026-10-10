@@ -2,8 +2,15 @@ node_modules
 **/node_modules
 .git
 server/dist
+client/dist
 *.log
 .env
 .env.*
 Dockerfile
 .gitignore
+data
+staging_data
+backups
+test-results
+scratch
+*.sqlite*

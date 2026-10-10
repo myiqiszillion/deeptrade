@@ -1,9 +1,11 @@
 # KNOWN LIMITATIONS
 
-As of Phase 6 (Staging Release), the following limitations are present in DeepChart:
+As of Staging Finalization, the following verified boundaries and operational requirements apply to DeepChart:
 
-1. **Docker Execution Blocked Locally:** Validation of the containerized environment relies entirely on the Release Operator due to `docker` not being installed on the local CI machine.
-2. **Databento Entitlement Mocking:** Live Data vendor integrations are not fully verified against a Live API Key with active subscriptions (BLOCKED). Fail-closed mechanisms have been confirmed through integration testing, but real data throughput is unverified.
-3. **Stripe Test Mode:** Billing operations are entirely verified against mocked implementations or test Stripe keys. No real transactions are validated.
-4. **Single Node Deployment:** The SQLite WAL approach operates strictly as a single-node deployment. Multi-node clustering or horizontally scaling the backend server instances is NOT supported at this time and would corrupt the database or duplicate data streams.
-5. **No Production Database Baseline:** There is no existing production database to migrate. All deployments will currently create fresh databases.
+1. **Docker Staging Verified:** Docker Desktop and Docker Compose staging environment are fully verified (Caddy reverse proxy, backend API, WebSocket, SQLite persistence, and container health checks all passing).
+2. **Databento Live Market Data (BLOCKED - Operator Required):** Live Data vendor integrations operate under fail-closed protection. Connecting to live CME/OPRA market feeds requires the Release Operator to supply a valid `DATABENTO_API_KEY` with active GLBX.MDP3 / OPRA.PILLAR entitlements. Real high-throughput vendor feeds have not been validated against live production exchanges.
+3. **Stripe Production Live Mode (NOT VERIFIED - Test Mode Verified):** Webhook signature validation, event-level deduplication idempotency (`webhook_events`), subscription lifecycle, and expired entitlement revocation are verified. Production live payment charges and live customer portal sessions require operator production keys (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`).
+4. **Analytics Vendor Verification:** Core analytical engines (Footprint delta ladder, Volume Profile, Black-Scholes Greeks, GEX profile) are mathematically verified via synthetic fixtures and fail-closed invariants. Full end-to-end verification against un-sanitized live vendor ticks remains pending live data verification.
+5. **Memory Profiling Scope:** Client memory was validated across 50 mount/unmount cycles in Playwright E2E stress testing (<25 MB delta). Sustained multi-day production profiling under thousands of real concurrent connections is pending live deployment telemetry.
+6. **Single Node SQLite Architecture:** The SQLite WAL approach operates strictly as a single-node host deployment. Multi-node horizontal scaling of backend app instances sharing the SQLite file is unsupported and would risk data corruption.
+7. **WAL-Safe Backup Prerequisite:** Hot backups of SQLite must always use SQLite Online Backup API (`sqlite3 ... ".backup ..."` or `scripts/backup_db.mjs` / `VACUUM INTO`). Plain file copies (`cp`) of `market_data.sqlite` without WAL checkpoints risk inconsistent state.

@@ -428,7 +428,7 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
   });
 }
 
-const httpServer = createServer(async (req, res) => {
+export const httpServer = createServer(async (req, res) => {
   // 1. CORS: echo only trusted origins, plus the standard hardening headers.
   applyCors(req, res);
   applySecurityHeaders(res);
@@ -1511,6 +1511,9 @@ const heartbeatInterval = setInterval(() => {
     extWs.ping();
   });
 }, 30000);
+if (heartbeatInterval && typeof heartbeatInterval.unref === 'function') {
+  heartbeatInterval.unref();
+}
 
 wss.on('close', () => {
   clearInterval(heartbeatInterval);
@@ -1878,8 +1881,7 @@ httpServer.listen(PORT, HOST, () => {
   console.log(`[DeepChart Server] health: http://localhost:${PORT}/healthz | metrics: http://localhost:${PORT}/metrics`);
 });
 
-async function gracefulShutdown(signal: string) {
-  console.log(`[DeepChart Server] Received ${signal}, starting graceful shutdown...`);
+export async function closeServer(): Promise<void> {
   clearInterval(heartbeatInterval);
   maintenance.stop();
   for (const session of sessions.values()) {
@@ -1897,18 +1899,25 @@ async function gracefulShutdown(signal: string) {
     httpServer.closeAllConnections();
   }
   
-  wss.close(() => {
-    httpServer.close(() => {
-      try {
-        marketDataStore.close();
-      } catch (err) {
-        console.error('Error closing database', err);
-      }
-      console.log('[DeepChart Server] Shutdown complete.');
-      process.exit(0);
+  await new Promise<void>((resolve) => {
+    wss.close(() => {
+      httpServer.close(() => {
+        resolve();
+      });
     });
   });
-  setTimeout(() => process.exit(0), 5000).unref();
+}
+
+async function gracefulShutdown(signal: string) {
+  console.log(`[DeepChart Server] Received ${signal}, starting graceful shutdown...`);
+  await closeServer();
+  try {
+    marketDataStore.close();
+  } catch (err) {
+    console.error('Error closing database', err);
+  }
+  console.log('[DeepChart Server] Shutdown complete.');
+  process.exit(0);
 }
 
 process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));

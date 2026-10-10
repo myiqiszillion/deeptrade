@@ -4,40 +4,41 @@ This runbook provides step-by-step instructions for the Release Operator to boot
 
 ## A. Prerequisites
 
-- **Docker Engine / Docker Desktop:** Version 24+ recommended.
-- **Docker Compose:** V2 plugin installed (`docker compose version`).
-- **Architecture:** `amd64` or `arm64` (multi-arch supported by Alpine).
+- **Docker Engine / Docker Desktop:** Version 24+ (Verified: Docker Desktop 4.94.0, Engine 29.8.2 on Linux amd64 WSL2).
+- **Docker Compose:** V2 plugin installed (Verified: v5.5.1).
+- **Architecture:** `amd64` (multi-arch supported by Alpine).
 - **Resources:** At least 2GB RAM and 5GB free disk space.
-- **Node/pnpm:** Not required (multi-stage Docker build handles all compilation).
+- **Node/pnpm:** Not required for container execution (multi-stage Docker build handles all compilation).
 - **Network Ports:** Port `80` and `443` available on the host for Caddy.
 
 ## B. Environment Setup
 
-Create a `.env` file in the root directory based on `.env.example`. 
+Create a `.env` file in the root directory based on `.env.example`.
 
 Required variables:
 - **For backend startup (Required):**
-  - `AUTH_JWT_SECRET`: Must be a secure random string (minimum 32 chars).
-  - `DOMAIN`: E.g., `localhost` or a real domain for TLS.
+  - `AUTH_JWT_SECRET`: Must be a secure random string (minimum 32 chars). Generated dynamically for staging.
+  - `AUTH_REQUIRED`: Set to `1` for production/staging enforcement.
+  - `DOMAIN`: Set to `localhost` for local staging or a fully qualified domain for production.
 - **For authentication (Required):**
   - `ADMIN_SECRET`: Used for administrative metrics/API access.
-- **For optional features (Optional):**
-  - `DATABENTO_API_KEY`: Required for live market data (Vendor Data).
-  - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`: Required for billing.
-  - `METRICS_TOKEN`: Optional, required if accessing `/metrics` without Admin Secret.
+  - `METRICS_TOKEN`: Used for authenticated Prometheus metrics scraping.
+- **For optional features (Vendor Dependent):**
+  - `DATABENTO_API_KEY`: Leave empty for staging test; system runs in Fail-Closed `UNAVAILABLE` mode.
+  - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`: Optional for billing tests.
   - `ENABLE_QUOTE_BOARD`: Set to `1` to enable watchlist quotes.
 
-**Do not write secret values in documentation.**
+**Do not write secret values in documentation or logs.**
 
-## C. Staging Boot
+## C. Staging Boot & Execution
 
 1. **Compose Config Validation:**
    ```bash
-   docker compose config -q
+   docker compose config --quiet
    ```
 2. **Image Build:**
    ```bash
-   docker compose build --no-cache
+   docker compose build
    ```
 3. **Container Startup:**
    ```bash
@@ -46,78 +47,78 @@ Required variables:
 4. **Healthcheck Commands:**
    ```bash
    docker compose ps
-   # Ensure 'app' and 'proxy' are both showing 'Up (healthy)'
+   # Ensure 'app' shows 'Up (healthy)' and 'proxy' is 'Up'
    ```
 5. **Log Inspection:**
    ```bash
-   docker compose logs -f
+   docker compose logs --tail 100
    ```
 
 ## D. API & Frontend Verification
 
-1. **SPA Asset Checks:** Open `https://localhost` (or `$DOMAIN`) in a browser. Ensure the UI loads.
-2. **API Health:** `curl -k https://localhost/healthz` (should return 200 OK).
-3. **Authentication Checks:** Attempt to subscribe to a symbol as guest, it should fail with `ENTITLEMENT_DENIED` or `UNAUTHORIZED`.
-4. **WebSocket Connection Checks:** Use the browser network tab to ensure `/api/ws` upgrades successfully to 101 Switching Protocols.
-5. **Caddy Proxy Routing:** Verify `/api/v1/instruments` returns a JSON array.
-6. **CSP Verification:** Check browser console for any Content Security Policy blocking errors.
-7. **Metrics Authorization:** `curl -k https://localhost/metrics` should return 401 Unauthorized unless authorized.
+1. **SPA Asset Checks:** Open `https://localhost` in browser. Verify UI loads, canvas mounts, no blocking CSP errors.
+2. **API Health:** `curl.exe -k https://localhost/healthz` (returns `{"status":"ok", ...}`).
+3. **Instruments Catalog:** `curl.exe -k https://localhost/api/v1/instruments` (returns 67 instruments).
+4. **Metrics Protection:**
+   - Unauthenticated: `curl.exe -k https://localhost/metrics` (returns 401 Unauthorized).
+   - Authenticated: `curl.exe -k -H "Authorization: Bearer <METRICS_TOKEN>" https://localhost/metrics` (returns 200 with Prometheus stats).
+5. **WebSocket Verification:**
+   - Unauthenticated connection: rejected with code `1008` (Authentication required).
+   - Authenticated connection via subprotocol: `new WebSocket('wss://localhost/', ['deepchart-token', token])` upgrades to 101 Switching Protocols.
+   - Initial state message: receives `INIT_STATE` for `ES`.
+   - Subscription switch: send `{"type":"SUBSCRIBE","symbol":"NQ"}` receives `INIT_STATE` for `NQ`.
+   - PING/PONG: send `{"type":"PING"}` receives `{"type":"PONG"}`.
 
-## E. Database Verification
+## E. Database Persistence & Backup/Restore
 
-1. **Persistent Volume:**
-   ```bash
-   docker volume inspect deepchart_app-data
-   ```
-2. **Database Startup & WAL Mode:**
-   Inspect logs to verify `[Storage] Initialized SQLite database` and `PRAGMA journal_mode = WAL`.
-3. **Graceful Shutdown & Container Restart:**
-   ```bash
-   docker compose restart app
-   ```
-   Verify logs indicate `Shutdown complete.` before restarting.
-4. **Database Persistence:** Create an alert rule, restart the container, and verify the rule persists.
-5. **Backup & Restore (Manual):**
+1. **Persistent Volume:** SQLite database is stored at `/app/data/market_data.sqlite` mapped to Docker volume `app-data`.
+2. **WAL Mode:** Verified via `PRAGMA journal_mode;` returning `wal`.
+3. **Data Retention Across Restart:**
+   - Register a user or create an alert rule via API.
+   - Restart container: `docker compose restart app`
+   - Re-query user or alert rule to verify 100% data retention.
+4. **Online Backup:**
    ```bash
    docker compose exec app node scripts/backup_db.mjs
    ```
-   Check `./backups/` on the host. Restore by replacing `/app/data/market_data.sqlite` with the backup file.
-6. **Integrity Check:**
+   Snapshot is written via `VACUUM INTO` to `/app/backups/market_data-<timestamp>.sqlite` which maps to host `./backups/`.
+5. **Integrity Check:**
    ```bash
-   docker compose exec app sqlite3 /app/data/market_data.sqlite "PRAGMA integrity_check;"
+   docker compose exec app node -e "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync('/app/backups/<snapshot_file>', { readOnly: true }); console.log(db.prepare('PRAGMA integrity_check;').get());"
+   # Must return { integrity_check: 'ok' }
    ```
 
 ## F. Security Verification
 
-1. **No public .env exposure:** Ensure `https://localhost/.env` returns 404 or 403.
-2. **No database exposure:** Ensure `https://localhost/market_data.sqlite` returns 404.
-3. **No backup exposure:** Ensure `https://localhost/backups` returns 404.
-4. **No metrics exposure without authorization:** `/metrics` requires token.
-5. **No secrets in logs:** Review `docker compose logs` for any accidentally printed secrets.
-6. **JWT validation:** Valid signatures are enforced on WebSocket and HTTP.
-7. **User isolation:** Users can only view and manage their own alerts and sessions.
-8. **WebSocket origin:** WebSocket validates `Origin` header based on `ALLOWED_ORIGINS`.
+1. **Path Protection:**
+   - `https://localhost/.env` returns `404 Not Found`.
+   - `https://localhost/market_data.sqlite` returns `404 Not Found`.
+   - `https://localhost/backups` returns `404 Not Found`.
+2. **Security Headers:**
+   - `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+   - `X-Frame-Options: DENY`
+   - `X-Content-Type-Options: nosniff`
+   - `Referrer-Policy: no-referrer`
+   - `Server` header hidden.
+3. **WebSocket Origin Policy:** Connection with non-whitelisted Origin header rejected with `1008 Origin not allowed`.
+4. **User Isolation:** Users can only query and manage their own alerts and sessions.
 
-## G. Troubleshooting
+## G. Automated Test Suite
 
-- **Image build fails:** Ensure enough disk space and docker daemon is running.
-- **Node runtime incompatible:** Handled by Docker image, verified as `node:24-alpine`.
-- **SQLite permission denied:** Verify volume permissions or run `chown -R 1000:1000 data/` on host if needed.
-- **Backend unhealthy:** Check logs for `AUTH_JWT_SECRET` missing (process exits immediately if not configured).
-- **Caddy returns 502:** Wait 15s for the backend to pass the healthcheck.
-- **WebSocket connection fails:** Check `DOMAIN` matches the requested host or update `ALLOWED_ORIGINS`.
-- **SPA assets return 404:** Check `Caddy.Dockerfile` built the client successfully.
-- **CSP blocks resources:** Verify CSP headers in `deploy/Caddyfile` or `index.ts`.
-- **Database locked:** Usually indicates another process is accessing the volume or WAL failure. Restart container.
-- **Feed unavailable:** Verify `DATABENTO_API_KEY` is valid.
+Run the full automated staging test suite:
+```bash
+node scratch/staging_full_verification.mjs
+# Verifies all 42 staging acceptance assertions in under 10 seconds.
+```
 
-## H. Rollback
+## H. Teardown / Rollback
 
-1. **Stop services:**
+1. **Graceful Stop (retaining data):**
+   ```bash
+   docker compose stop
+   ```
+2. **Remove Containers (volume preserved):**
    ```bash
    docker compose down
+   # CAUTION: Never run `docker compose down -v` to prevent volume deletion.
    ```
-2. **Restore previous image version:** If tagged, change tag in compose file and run `docker compose up -d`.
-3. **Preserve persistent volume:** `deepchart_app-data` is retained.
-4. **Restore database backup if required:** Replace the sqlite DB in the volume mount with a backup if schema was corrupted.
-5. **Verify health after rollback:** Run `docker compose ps` and `curl -k https://localhost/healthz`.

@@ -387,6 +387,16 @@ export class MarketDataStore implements IMarketDataStore {
         metadata TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_alert_history_user ON alert_history(user_id, trigger_time DESC);
+
+      CREATE TABLE IF NOT EXISTS webhook_events (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        user_id TEXT,
+        outcome TEXT NOT NULL,
+        processed_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_webhook_events_user ON webhook_events(user_id);
     `);
 
     // Databases created before real accounts existed need the credential columns added.
@@ -1105,6 +1115,45 @@ export class MarketDataStore implements IMarketDataStore {
       }));
     } catch {
       return [];
+    }
+  }
+
+  // Webhook Event Idempotency & Audit Trail
+
+  public hasWebhookEvent(id: string): boolean {
+    try {
+      const row = this.db.prepare('SELECT id FROM webhook_events WHERE id = ?').get(id);
+      return !!row;
+    } catch {
+      return false;
+    }
+  }
+
+  public recordWebhookEvent(id: string, provider: string, eventType: string, userId: string | null, outcome: string): void {
+    try {
+      this.db.prepare(`
+        INSERT OR REPLACE INTO webhook_events (id, provider, event_type, user_id, outcome, processed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(id, provider, eventType, userId, outcome, Date.now());
+    } catch (err) {
+      this.warnWriteFailure(`recordWebhookEvent(${id})`, err);
+    }
+  }
+
+  public getWebhookEvent(id: string): { id: string; provider: string; eventType: string; userId: string | null; outcome: string; processedAt: number } | null {
+    try {
+      const row = this.db.prepare('SELECT id, provider, event_type AS eventType, user_id AS userId, outcome, processed_at AS processedAt FROM webhook_events WHERE id = ?').get(id) as any;
+      if (!row) return null;
+      return {
+        id: row.id,
+        provider: row.provider,
+        eventType: row.eventType,
+        userId: row.userId ?? null,
+        outcome: row.outcome,
+        processedAt: Number(row.processedAt),
+      };
+    } catch {
+      return null;
     }
   }
 

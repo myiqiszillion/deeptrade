@@ -45,6 +45,7 @@ async function startServer(): Promise<ChildProcess> {
       ...process.env,
       PORT: TEST_PORT.toString(),
       DEV_HOOKS: '1',
+      AUTH_REQUIRED: '0',
       DEMO: '0',
       DEFAULT_SYMBOL: 'ES',
     },

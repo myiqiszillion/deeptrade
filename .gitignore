@@ -20,7 +20,12 @@ Thumbs.db
 # Runtime data & SQLite databases
 data/
 server/data/
+backups/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
 test_*.sqlite*
+
+# Test output & artifacts
+test-results/
+playwright-report/

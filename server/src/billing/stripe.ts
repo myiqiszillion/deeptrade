@@ -94,23 +94,51 @@ export async function createCheckoutSession(
 
 /** Map a verified Stripe event onto a subscription change; returns a log/ack description. */
 export function applyStripeEvent(event: StripeEvent): string {
+  const eventId = event.id;
+  if (eventId && marketDataStore.hasWebhookEvent(eventId)) {
+    const existing = marketDataStore.getWebhookEvent(eventId);
+    return `idempotent: already processed (${existing?.outcome || 'ok'})`;
+  }
+
   const type = event.type || '';
   const object = event.data?.object || {};
   const metadata = (object.metadata || {}) as Record<string, string>;
   const userId = metadata.userId || object.client_reference_id;
-  if (!userId || typeof userId !== 'string') return 'ignored: no user reference';
+  if (!userId || typeof userId !== 'string') {
+    if (eventId) {
+      marketDataStore.recordWebhookEvent(eventId, 'stripe', type, null, 'ignored: no user reference');
+    }
+    return 'ignored: no user reference';
+  }
 
   const user = marketDataStore.getUser(userId);
-  if (!user) return 'ignored: unknown user';
+  if (!user) {
+    if (eventId) {
+      marketDataStore.recordWebhookEvent(eventId, 'stripe', type, userId, 'ignored: unknown user');
+    }
+    return 'ignored: unknown user';
+  }
 
   const periodEndSec = object.current_period_end;
   const validUntil = Number.isFinite(periodEndSec) ? Number(periodEndSec) * 1000 : undefined;
   const planId = (metadata.planId || 'pro') as PlanId;
 
+  // Protect against out-of-order replayed stale events:
+  // If subscription was already cancelled and this event was created before the cancellation
+  const currentSub = marketDataStore.getSubscription(user.id);
+  const eventCreatedSec = object.created || (event as any).created;
+  const eventCreatedMs = Number.isFinite(eventCreatedSec) ? Number(eventCreatedSec) * 1000 : undefined;
+
+  let outcome = '';
+
   switch (type) {
     case 'checkout.session.completed':
     case 'customer.subscription.created':
     case 'customer.subscription.updated': {
+      if (currentSub && currentSub.status === 'canceled' && eventCreatedMs && eventCreatedMs < currentSub.updatedAt) {
+        outcome = 'ignored: stale update for canceled subscription';
+        break;
+      }
       const status: SubscriptionStatus = object.status === 'past_due' ? 'past_due' : 'active';
       billingService.applyPlan(user, planId, {
         validUntil,
@@ -118,19 +146,31 @@ export function applyStripeEvent(event: StripeEvent): string {
         providerRef: typeof object.subscription === 'string' ? object.subscription : object.id,
         status,
       });
-      return `plan ${planId} -> ${status}`;
+      outcome = `plan ${planId} -> ${status}`;
+      break;
     }
     case 'customer.subscription.deleted': {
       billingService.cancelSubscription(user.id, { immediate: true });
-      return 'subscription canceled';
+      outcome = 'subscription canceled';
+      break;
     }
     case 'invoice.payment_failed': {
       const existing = marketDataStore.getSubscription(user.id);
-      if (!existing) return 'ignored: no subscription';
+      if (!existing) {
+        outcome = 'ignored: no subscription';
+        break;
+      }
       marketDataStore.saveSubscription({ ...existing, status: 'past_due', updatedAt: Date.now() });
-      return 'marked past_due';
+      outcome = 'marked past_due';
+      break;
     }
     default:
-      return `ignored: unhandled ${type}`;
+      outcome = `ignored: unhandled ${type}`;
   }
+
+  if (eventId) {
+    marketDataStore.recordWebhookEvent(eventId, 'stripe', type, userId, outcome);
+  }
+
+  return outcome;
 }

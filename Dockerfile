@@ -4,6 +4,7 @@ WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY server/package.json server/
+COPY client/package.json client/
 RUN pnpm install --frozen-lockfile
 COPY . .
 # `pnpm build` clears server/dist first (see server/package.json) so stale modules cannot ship.
@@ -16,11 +17,13 @@ ENV NODE_ENV=production
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY server/package.json server/
+COPY client/package.json client/
 RUN pnpm install --prod --frozen-lockfile --filter @deepchart/server...
 COPY --from=build /app/server/dist server/dist
+COPY scripts scripts
 
 # Prepare persistent data directory with proper permissions
-RUN mkdir -p /app/data && chown -R node:node /app/data
+RUN mkdir -p /app/data /app/backups && chown -R node:node /app/data /app/backups
 VOLUME ["/app/data"]
 
 # Run as non-root user for container security

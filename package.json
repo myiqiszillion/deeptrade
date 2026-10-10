@@ -16,7 +16,7 @@
     "test:integration": "pnpm --filter @deepchart/server exec tsx test/integration/index.ts",
     "verify": "pnpm --filter @deepchart/server exec tsx src/verify_e2e.ts",
     "verify:p0": "pnpm --filter @deepchart/server exec tsx src/verify_p0.ts",
-    "test:e2e": "playwright test",
+    "test:e2e": "node scripts/run_e2e.mjs",
     "mcp": "pnpm --filter @deepchart/server exec tsx src/mcp/server.ts",
     "benchmark": "pnpm --filter @deepchart/server exec tsx ../scripts/benchmark_baseline.ts",
     "db:backup": "node scripts/backup_db.mjs"

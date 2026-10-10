@@ -33,30 +33,32 @@ export default defineConfig({
       },
     },
   ],
-  webServer: [
-    {
-      command: 'node ./node_modules/tsx/dist/cli.mjs src/index.ts',
-      cwd: './server',
-      url: 'http://localhost:8080/healthz',
-      reuseExistingServer: true,
-      timeout: 30000,
-      stdout: 'ignore',
-      stderr: 'ignore',
-      env: {
-        NODE_ENV: 'test',
-        PORT: '8080',
-        AUTH_REQUIRED: '0',
-        FUTURES_PROVIDER: 'none',
-      },
-    },
-    {
-      command: 'node ./node_modules/vite/bin/vite.js',
-      cwd: './client',
-      url: 'http://localhost:5173',
-      reuseExistingServer: true,
-      timeout: 30000,
-      stdout: 'ignore',
-      stderr: 'ignore',
-    },
-  ],
+  webServer: process.env.PLAYWRIGHT_MANAGED_WEBSERVER
+    ? [
+        {
+          command: 'node dist/index.js',
+          cwd: './server',
+          url: 'http://localhost:8080/healthz',
+          reuseExistingServer: false,
+          timeout: 30000,
+          stdout: 'ignore',
+          stderr: 'ignore',
+          env: {
+            NODE_ENV: 'test',
+            PORT: '8080',
+            AUTH_REQUIRED: '0',
+            FUTURES_PROVIDER: 'none',
+          },
+        },
+        {
+          command: 'node ./node_modules/vite/bin/vite.js',
+          cwd: './client',
+          url: 'http://localhost:5173',
+          reuseExistingServer: false,
+          timeout: 30000,
+          stdout: 'ignore',
+          stderr: 'ignore',
+        },
+      ]
+    : undefined,
 });

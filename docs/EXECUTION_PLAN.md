@@ -1,10 +1,10 @@
 # DEEPCHART EXECUTION PLAN
 
 ## Phase
-Phase 5 -> Release Candidate (Completed)
+Release Candidate — Verified Staging Finalization
 
 ## Current Task
-Task 10 — Final Quality Gate & Release Candidate
+Final Release Verification & Operator Handoff
 
 ## Completed Tasks
 - [x] Task 0.1 Repository Inspection
@@ -18,30 +18,25 @@ Task 10 — Final Quality Gate & Release Candidate
 - [x] Task 5 — Multi-Asset Workspace Management
 - [x] Task 6 — Trading Analytics & Visualization Quality
 - [x] Task 7 — Observability & Operations (metrics & structured logs in place)
-- [x] Task 8 — Performance & Load Testing (zero-memory leaks verified via e2e/unit & manual profiling of unmounts)
-- [x] Task 9 — Security & Deployment Hardening (CORS, Rate limits, Helm/Docker, auth gating)
-- [x] Task 10 — Final Quality Gate & Release Candidate
-- [x] Task 11 — Staging Acceptance & Final Release Evidence (Phase 5.7)
+- [x] Task 8 — Performance & UI Lifecycle Stress Testing (CVD mount/unmount cycle stress tested, delta <25 MB)
+- [x] Task 9 — Security & Deployment Hardening (CORS, Rate limits, loopback bind safety, auth gating, Stripe idempotency)
+- [x] Task 10 — Final Quality Gate & Staging Verification (Docker Desktop Staging 42/42 checks PASS)
+- [x] Task 11 — Process Teardown Hardening (Forced-success exit removed, Playwright deterministic runner implemented)
 
-## Remaining Tasks
-- Phase 6 — Production Go-Live (Pending Operator Docker / Databento Keys)
+## Remaining Operator Prerequisites
+- Live Market Data: Operator to configure `DATABENTO_API_KEY` for live CME/OPRA streaming.
+- Production Billing: Operator to configure production Stripe keys (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`).
+- Production Domain: Operator to configure `DOMAIN` and `PROXY_BIND_IP=0.0.0.0` for public production.
 
 ## Blocking Issues
-- None
-
-## Modified Files
-- `docs/EXECUTION_PLAN.md`
-- `docs/STATUS.md`
-- `client/src/components/Chart/CVDPanel.tsx` (memory leak fix)
+- Databento Live Data: Blocked pending operator API key (fail-closed behavior active).
+- Stripe Live Mode: Not verified pending operator live production account.
 
 ## Test Evidence
-- `pnpm typecheck:all`: PASS
-- `pnpm test:unit`: PASS
-- `pnpm test:integration`: PASS
-- `pnpm verify:p0`: PASS
-- `pnpm test:e2e`: PASS (16 tests, minimal hang isolated to env)
-- `pnpm build:all`: PASS
-
-## Next Exact Action
-1. Handover to user for final deployment.
-2. User to configure `.env` (DATABENTO_API_KEY, STRIPE_*, METRICS_TOKEN) for production rollout.
+- `pnpm typecheck:all`: PASS (exit code 0)
+- `pnpm test:unit`: PASS (exit code 0)
+- `pnpm test:integration`: PASS (Deterministic cleanup, no `process.exit(0)`, exit code 0)
+- `pnpm verify:p0`: PASS (13/13 assertions, exit code 0)
+- `pnpm test:e2e`: FULL PASS (19/19 tests across behavioral, memory, terminal; exit code 0, clean teardown)
+- `pnpm build:all`: PASS (server + client production bundles, exit code 0)
+- Docker Staging Acceptance: 42/42 checks PASS (Caddy TLS, SPA, REST, WebSocket, WAL persistence, backups)

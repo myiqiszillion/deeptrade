@@ -14,6 +14,7 @@ services:
       HOST: 0.0.0.0
       PORT: 8080
       STORAGE_PATH: /app/data/market_data.sqlite
+      BACKUP_DIR: /app/backups
       LOG_FORMAT: json
       ENABLE_HSTS: '1'
     volumes:
@@ -35,8 +36,8 @@ services:
     depends_on:
       - app
     ports:
-      - '80:80'
-      - '443:443'
+      - '${PROXY_BIND_IP:-127.0.0.1}:80:80'
+      - '${PROXY_BIND_IP:-127.0.0.1}:443:443'
     environment:
       DOMAIN: ${DOMAIN:-localhost}
     volumes:

@@ -5,7 +5,7 @@ import { AccessPolicy } from '../../src/auth/accessPolicy.js';
 import { User } from '../../src/auth/types.js';
 import { billingService } from '../../src/billing/billingService.js';
 import { getPlan, listPlans, PLANS } from '../../src/billing/plans.js';
-import { applyStripeEvent, verifyStripeSignature } from '../../src/billing/stripe.js';
+import { applyStripeEvent, verifyStripeSignature, type StripeEvent } from '../../src/billing/stripe.js';
 import { marketDataStore } from '../../src/storage/marketDataStore.js';
 
 export async function runBillingTests(): Promise<void> {
@@ -122,6 +122,51 @@ export async function runBillingTests(): Promise<void> {
       applyStripeEvent({ type: 'invoice.created', data: { object: { client_reference_id: user.id } } }),
       /ignored/
     );
+
+    // 8. Event-Level Idempotency & Deduplication
+    const dedupeEvent: StripeEvent = {
+      id: 'evt_dedupe_test_001',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          client_reference_id: user.id,
+          metadata: { userId: user.id, planId: 'pro' },
+          status: 'active',
+          current_period_end: Math.floor(Date.now() / 1000) + 2_592_000,
+        },
+      },
+    };
+    const firstRun = applyStripeEvent(dedupeEvent);
+    assert.match(firstRun, /pro/, 'First run applies pro plan');
+    const secondRun = applyStripeEvent(dedupeEvent);
+    assert.match(secondRun, /idempotent/, 'Replayed event with same id is recognized as idempotent');
+    assert.equal(marketDataStore.hasWebhookEvent('evt_dedupe_test_001'), true, 'Webhook event was recorded in SQLite');
+
+    // 9. Out-of-order stale events protection
+    // User cancels subscription
+    applyStripeEvent({
+      id: 'evt_cancel_001',
+      type: 'customer.subscription.deleted',
+      data: { object: { client_reference_id: user.id } },
+    });
+    assert.equal(billingService.getSubscription(user.id)?.status, 'canceled');
+
+    // Stale update event arrived out of order (created 1 hour ago)
+    const staleUpdate: StripeEvent = {
+      id: 'evt_stale_update_001',
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          client_reference_id: user.id,
+          metadata: { userId: user.id, planId: 'elite' },
+          status: 'active',
+          created: Math.floor(Date.now() / 1000) - 3600,
+        },
+      },
+    };
+    const staleResult = applyStripeEvent(staleUpdate);
+    assert.match(staleResult, /ignored: stale update/, 'Stale event does not resurrect canceled subscription');
+    assert.equal(billingService.getSubscription(user.id)?.status, 'canceled', 'Subscription remains canceled');
 
     console.log('  [PASS] All plans, entitlements and Stripe unit tests passed.');
   } finally {

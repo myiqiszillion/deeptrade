@@ -13,20 +13,28 @@
 		-Server
 	}
 
-	@api {
-		path /api/* /healthz /metrics
-	}
-	reverse_proxy @api app:8080 {
-		header_up X-Forwarded-For {remote_host}
-		header_up X-Forwarded-Proto {scheme}
-	}
-
 	# Long-lived WebSocket upgrades on the same origin.
 	@ws {
 		header Connection *Upgrade*
 		header Upgrade websocket
 	}
-	reverse_proxy @ws app:8080
+	handle @ws {
+		reverse_proxy app:8080
+	}
+
+	@api {
+		path /api/* /healthz /metrics
+	}
+	handle @api {
+		reverse_proxy app:8080
+	}
+
+	@blocked {
+		path /.env* /*.sqlite* /backups* /data*
+	}
+	handle @blocked {
+		respond 404
+	}
 
 	handle {
 		root * /var/www/html
