@@ -1120,6 +1120,22 @@ export class MarketDataStore implements IMarketDataStore {
 
   // Webhook Event Idempotency & Audit Trail
 
+  public transaction<T>(fn: () => T): T {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = fn();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        // Rollback error ignored if transaction already rolled back
+      }
+      throw err;
+    }
+  }
+
   public hasWebhookEvent(id: string): boolean {
     try {
       const row = this.db.prepare('SELECT id FROM webhook_events WHERE id = ?').get(id);
@@ -1130,14 +1146,10 @@ export class MarketDataStore implements IMarketDataStore {
   }
 
   public recordWebhookEvent(id: string, provider: string, eventType: string, userId: string | null, outcome: string): void {
-    try {
-      this.db.prepare(`
-        INSERT OR REPLACE INTO webhook_events (id, provider, event_type, user_id, outcome, processed_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(id, provider, eventType, userId, outcome, Date.now());
-    } catch (err) {
-      this.warnWriteFailure(`recordWebhookEvent(${id})`, err);
-    }
+    this.db.prepare(`
+      INSERT INTO webhook_events (id, provider, event_type, user_id, outcome, processed_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, provider, eventType, userId, outcome, Date.now());
   }
 
   public getWebhookEvent(id: string): { id: string; provider: string; eventType: string; userId: string | null; outcome: string; processedAt: number } | null {

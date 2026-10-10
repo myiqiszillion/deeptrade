@@ -30,7 +30,7 @@ async function waitForUrl(url, timeoutMs = 30000) {
 }
 
 async function killProcessTree(proc) {
-  if (!proc || !proc.pid) return;
+  if (!proc || typeof proc.pid !== 'number' || proc.pid <= 0) return;
   if (process.platform === 'win32') {
     await Promise.race([
       new Promise((resolve) => {
@@ -41,7 +41,7 @@ async function killProcessTree(proc) {
         killer.on('close', resolve);
         killer.on('error', resolve);
       }),
-      new Promise((r) => setTimeout(r, 2000)),
+      new Promise((r) => setTimeout(r, 3000)),
     ]);
   } else {
     try {
@@ -50,15 +50,34 @@ async function killProcessTree(proc) {
   }
 }
 
-async function runPlaywright(args) {
+async function runPlaywright(args, timeoutMs = 180000) {
   const cliPath = path.join(root, 'node_modules', '@playwright', 'test', 'cli.js');
   return new Promise((resolve) => {
+    let resolved = false;
     const pw = spawn(process.execPath, [cliPath, 'test', ...args], {
       cwd: root,
       stdio: 'inherit',
     });
-    pw.on('close', (code) => resolve(code ?? 0));
+
+    const timer = setTimeout(async () => {
+      if (resolved) return;
+      resolved = true;
+      console.error(`\n[E2E Runner] Playwright execution timed out after ${timeoutMs}ms for: ${args.join(' ')}`);
+      await killProcessTree(pw);
+      resolve(124);
+    }, timeoutMs);
+
+    pw.on('close', (code) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      resolve(code ?? 0);
+    });
+
     pw.on('error', (err) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
       console.error('[E2E Runner] Failed to spawn Playwright CLI:', err);
       resolve(1);
     });

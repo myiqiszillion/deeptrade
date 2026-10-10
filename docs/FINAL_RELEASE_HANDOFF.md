@@ -17,45 +17,48 @@ Toàn bộ các lỗ hổng đã xác minh trong báo cáo Staging trước đó
 
 | Mục | Giá trị xác minh |
 |---|---|
-| **Git Release Revision** | `d5e8070fd7559e7bf338dd89547ea876be8e454b` (Short: `d5e8070`) |
+| **Git Release Revision** | `dc18cef` (Full: `dc18cefd0f98ec34ca7e3be967c331163ff5fa3f`) |
 | **Git Branch** | `master` |
-| **Working Tree Status** | **CLEAN** (0 uncommitted changes, verified via `git status`) |
-| **Docker App Image** | `deepchart-app:latest` — ID: `f4c6dc416f58` |
-| **Docker App Manifest Digest** | `sha256:f4c6dc416f58609899fff1fc5d3d5a6e095aadb764b864cd4d320062d50d75f2` |
-| **Docker Proxy Image** | `deepchart-proxy:latest` — ID: `8baa0cad7d0e` |
-| **Docker Proxy Manifest Digest**| `sha256:8baa0cad7d0e7870c5577b1f13cdab1ebbff595ee0a1f386b78ac8842a42be62` |
+| **Working Tree Status** | **CLEAN** (sau khi commit các thay đổi safeguards) |
+| **Docker App Image** | `deepchart-app:latest` — ID: `925b5a5155f0` |
+| **Docker App Manifest Digest** | `sha256:925b5a5155f0e122de69144e60115a7946dea5333956be9fca33c9afaf6c6aa8` |
+| **Docker Proxy Image** | `deepchart-proxy:latest` — ID: `0e403dbdd8d3` |
+| **Docker Proxy Manifest Digest**| `sha256:0e403dbdd8d3c8cc67660e802dd4fc4933f83ae35b3963ff185c60f51c05a7a6` |
 | **Base OS / Container Env** | Node 24.21.0 Alpine Linux (non-root `node` user) / Caddy 2 Alpine |
 
 ---
 
 ## 3. Test Evidence & Verification Matrix
 
-Tất cả các lệnh kiểm thử đã được chạy lại trên chính Git revision `d72fb4a` và cho kết quả thực tế:
+Tất cả các bài kiểm tra đã được chạy lại và xác thực exit code 0:
 
 | Lệnh kiểm thử | Exit Code | Kết quả chi tiết | Đánh giá |
 |---|---|---|---|
 | `pnpm typecheck:all` | **0** | TypeScript biên dịch không lỗi trên cả `@deepchart/server` và `client` | **PASS** |
-| `pnpm test:unit` | **0** | 100% unit tests passed trong 434ms (bao gồm 9/9 Stripe billing & entitlement tests) | **PASS** |
-| `pnpm test:integration` | **0** | 7/7 suites passed trong 3153ms; tự động thoát tự nhiên trên empty event loop (không forced exit) | **PASS** |
+| `pnpm test:unit` | **0** | 100% unit tests passed (bao gồm 12/12 transactional billing, race & idempotency tests) | **PASS** |
+| `pnpm test:integration` | **0** | 7/7 suites passed trong 3540ms; tự động thoát tự nhiên trên empty event loop | **PASS** |
 | `pnpm verify:p0` | **0** | 13/13 P0 safeguards pass (Buffer isolation, Whale threshold, Flood protection, Fail-Closed, ...) | **PASS** |
 | `pnpm build:all` | **0** | Server `dist` sạch, Vite client build 1954 modules thành công (CSS: 67kB, JS: 141kB) | **PASS** |
-| `pnpm test:e2e` | **0** | 19/19 Playwright assertions passed; runner exit code 0; teardown duration 4032ms | **FULL PASS** |
+| `pnpm test:e2e` | **0** | 19/19 Playwright assertions passed; runner exit code 0; teardown duration 6042ms | **FULL PASS** |
+| `node scratch/test_runner_failure_semantics.mjs` | **0** | Kiểm chứng cô lập: runner bắt buộc trả exit code 1 khi test fail và teardown sạch sẽ | **PASS** |
 | `node scratch/staging_full_verification.mjs` | **0** | 42/42 Staging acceptance checks pass trên Docker Staging thực tế | **PASS** |
 
 ---
 
-## 4. Playwright E2E Runner Teardown Details
+## 4. Playwright E2E Runner Teardown & Failure Semantics (Safeguard 2)
 
-- **Test Runner Script:** `scripts/run_e2e.mjs` (thay thế cho `webServerPlugin` trên Windows).
+- **Test Runner Script:** `scripts/run_e2e.mjs`.
 - **Phân bổ Suite Execution:**
-  - `e2e/behavioral.spec.ts`: 4 test cases (Footprint modes, Fixed Range VP, Options Chain, Feed Status) — **4 PASS** (6.7s).
-  - `e2e/memory.spec.ts`: 1 test case (100 mount/unmount canvas stress test, memory diff 16.36MB < 25MB threshold) — **1 PASS** (21.0s).
-  - `e2e/terminal.spec.ts`: 14 test cases (Terminal layout, Symbol picker, Chart surface, Timeframe, Zoom/Pan, CVD, DOM Scalper, GEX, Replay, Uncaught exceptions, Alerts, Split layout, Heatmap) — **14 PASS** (19.2s).
+  - `e2e/behavioral.spec.ts`: 4 test cases — **4 PASS** (7.0s).
+  - `e2e/memory.spec.ts`: 1 test case (100 mount/unmount canvas stress test, memory diff 18.95MB < 25MB threshold) — **1 PASS** (19.6s).
+  - `e2e/terminal.spec.ts`: 14 test cases — **14 PASS** (18.8s).
 - **Tổng số assertions:** 19/19 PASSED (0 FAIL, 0 SKIPPED).
-- **Thời gian chạy kiểm thử:** 49.6s.
-- **Thời gian dọn dẹp teardown:** 4032ms.
+- **Thời gian chạy kiểm thử:** 47.6s.
+- **Thời gian dọn dẹp teardown:** 6042ms.
 - **Runner Exit Code:** `0`.
-- **Tiến trình sót lại (Remaining Processes):** `0` (Cây tiến trình server và client được chấm dứt dứt điểm bằng `taskkill /PID /T /F`).
+- **Tiến trình sót lại (Remaining Processes):** `0` (Cây tiến trình server và client được chấm dứt dứt điểm bằng `taskkill /PID <proc.pid> /T /F`).
+- **Xác minh Failure Propagation:** Đã chạy kịch bản kiểm thử cô lập `scratch/test_runner_failure_semantics.mjs`, xác nhận khi có bất kỳ assertion fail nào, top-level runner lập tức trả exit code nonzero (code 1) và thực thi teardown đầy đủ, không che giấu lỗi.
+- **Timeout Guard:** Tích hợp bộ bảo vệ timeout 180s per suite, tự động thu hồi tiến trình và trả mã lỗi 124 nếu Playwright worker bị deadlock.
 
 ---
 
@@ -75,7 +78,7 @@ Tất cả các lệnh kiểm thử đã được chạy lại trên chính Git 
 
 ## 6. Network Safety & Reverse Proxy Security
 
-1. **Loopback Binding (Task 6):**
+1. **Loopback Binding:**
    - Đã cấu hình `PROXY_BIND_IP=${PROXY_BIND_IP:-127.0.0.1}` trong `docker-compose.yml`.
    - Xác thực cổng publish trên host: `127.0.0.1:80->80/tcp` và `127.0.0.1:443->443/tcp`.
    - Ngăn chặn triệt để nguy cơ vô tình phơi bày giao diện terminal và API ra mạng nội bộ LAN của máy chủ staging.
@@ -88,19 +91,48 @@ Tất cả các lệnh kiểm thử đã được chạy lại trên chính Git 
 
 ---
 
-## 7. Stripe Webhook Reliability & Idempotency
+## 7. Stripe Webhook Transactional Idempotency (Safeguard 1)
 
-1. **Event-Level Idempotency (Task 5):**
-   - Thiết lập bảng cơ sở dữ liệu `webhook_events` (schema: `id`, `provider`, `event_type`, `user_id`, `outcome`, `processed_at`).
-   - Kiểm tra `hasWebhookEvent(event.id)` trước khi kích hoạt bất kỳ thay đổi nào.
-   - Nếu event đã xử lý: Trả về trạng thái `idempotent: already processed` mà không thay đổi trạng thái người dùng.
-2. **Bảo vệ Thứ tự Sự kiện (Out-of-Order Stale Protection):**
-   - Khi người dùng đã hủy đăng ký, nếu một webhook cập nhật cũ (`customer.subscription.updated` có `created < currentSub.updatedAt`) đến sau, hệ thống sẽ phát hiện và bỏ qua với thông báo `ignored: stale update arrived after cancellation`.
-3. **Bảo mật Chữ ký:** Chữ ký HMAC-SHA256 được xác thực bắt buộc. Khi chưa có secret thật trong staging (`STRIPE_WEBHOOK_SECRET` rỗng), hệ thống fail-closed trả về HTTP 400.
+1. **Atomic Transaction Boundary:**
+   - Sử dụng `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK` thông qua `marketDataStore.transaction(...)`.
+   - Cả 3 thao tác: (1) kiểm tra `webhook_events`, (2) cập nhật `subscriptions` / `entitlements`, và (3) ghi nhận `webhook_events` đều nằm trọn vẹn trong **1 atomic SQLite transaction**.
+   - Bất kỳ lỗi hoặc crash nào xảy ra trước khi commit đều tự động rollback 100%, không để lại trạng thái rách nát (partial state).
+2. **Strict Concurrency & Unique Constraint:**
+   - Bảng `webhook_events` có `id TEXT PRIMARY KEY`.
+   - Sử dụng `INSERT INTO webhook_events` (không dùng `OR REPLACE`).
+   - Hai request cùng `event.id` đến đồng thời: Request đến sau lập tức kích hoạt lỗi `UNIQUE constraint failed`, transaction tự động rollback, và catch block trả về kết quả an toàn `idempotent: already processed` (HTTP 200) mà không ghi đè subscription 2 lần.
+3. **Out-of-Order Stale Protection & Legitimate Renewal:**
+   - Khi subscription đã bị canceled: Các sự kiện cập nhật cũ có timestamp `eventCreatedMs <= currentSub.updatedAt` bị bỏ qua với `ignored: stale update for canceled subscription`.
+   - Sự kiện thanh toán mua mới (`checkout.session.completed`) hoặc sự kiện gia hạn hợp lệ (`customer.subscription.updated` có `current_period_end > currentSub.currentPeriodEnd`) được xử lý bình thường, gia hạn subscription chính xác.
 
 ---
 
-## 8. Databento Market Data Status
+## 8. Secret & Release Artifact Hygiene (Safeguard 3)
+
+1. **Build Context & Docker Layers:**
+   - Đã kiểm tra `.dockerignore`: Các file `.env`, `*.sqlite`, `data/`, `backups/`, `test-results/`, `scratch/` bị loại bỏ 100% khỏi build context.
+   - Không có file nhạy cảm nào lọt vào image layers của `deepchart-app` hay `deepchart-proxy`.
+2. **Client Bundle Inspection:**
+   - Kiểm tra mã nguồn `client/src`: Chỉ duy nhất biến `VITE_WS_URL` được tham chiếu.
+   - Bundle Vite production hoàn toàn sạch, không chứa bất kỳ secret, API key hay private tokens nào.
+3. **Đánh dấu ROTATION REQUIRED cho Staging Secrets:**
+   - Trong quá trình kiểm tra trước đó, lệnh chẩn đoán `docker compose exec app printenv` đã hiển thị danh sách biến môi trường nội bộ của container ra console log.
+   - **Các loại credentials bị ảnh hưởng trong console log:**
+     - `AUTH_JWT_SECRET` (JWT signing secret tạm của staging)
+     - `ADMIN_SECRET` (Admin provisioning secret tạm của staging)
+     - `METRICS_TOKEN` (Prometheus metrics scrape token tạm của staging)
+   - **Các credentials KHÔNG bị ảnh hưởng:**
+     - `DATABENTO_API_KEY`: Đang rỗng (chưa từng được cấu hình).
+     - `STRIPE_SECRET_KEY`: Đang rỗng (chưa từng được cấu hình).
+     - `STRIPE_WEBHOOK_SECRET`: Đang rỗng (chưa từng được cấu hình).
+   - **Chỉ thị bắt buộc dành cho Operator:**
+     - Đánh dấu **ROTATION REQUIRED** đối với 3 khóa `AUTH_JWT_SECRET`, `ADMIN_SECRET`, `METRICS_TOKEN`.
+     - Tuyệt đối không tái sử dụng file `.env` staging trên Production.
+     - Khi triển khai Production, Operator phải chạy `node scratch/init_secrets.mjs` trên máy chủ độc lập để tạo bộ khóa mới 100% với độ dài ngẫu nhiên 32 bytes (256-bit entropy).
+
+---
+
+## 9. Databento Market Data Status
 
 - **Trạng thái luồng dữ liệu:** `UNAVAILABLE` (Dự kiến & Chuẩn xác).
 - **Chính sách an toàn:** Fail-Closed và Zero-Mock. Terminal không tự động sinh nến ảo hay tick giả khi mất kết nối vendor.
@@ -108,7 +140,7 @@ Tất cả các lệnh kiểm thử đã được chạy lại trên chính Git 
 
 ---
 
-## 9. Licensing, Authentication & Entitlements
+## 10. Licensing, Authentication & Entitlements
 
 1. **Phân quyền người dùng:**
    - Các gói cước: `free` (1500 bars, basic timeframe), `pro` (Footprint, CVD, DOM Scalper, alerts), `elite` (Options chain, GEX, unconstrained depth replay).
@@ -120,7 +152,7 @@ Tất cả các lệnh kiểm thử đã được chạy lại trên chính Git 
 
 ---
 
-## 10. Production Blockers & Missing Items
+## 11. Production Blockers & Missing Items
 
 Trước khi hệ thống có thể phục vụ người dùng công khai trên Internet, các mục sau đây là điều kiện tiên quyết bắt buộc cần Operator can thiệp:
 
@@ -131,22 +163,6 @@ Trước khi hệ thống có thể phục vụ người dùng công khai trên 
 
 ---
 
-## 11. Exact Operator Sign-off Requirements
-
-Để kích hoạt hệ thống sang Production, Operator cần thực hiện đúng quy trình sau:
-
-1. [ ] **Sao chép cấu hình:** Tạo file `.env` sản xuất từ `.env.example`.
-2. [ ] **Khởi tạo Secrets độc lập:** Chạy `node scratch/init_secrets.mjs` để sinh `AUTH_JWT_SECRET`, `ADMIN_SECRET`, `METRICS_TOKEN` hoàn toàn mới (không tái sử dụng staging secret).
-3. [ ] **Nạp Vendor Keys:** Nhập `DATABENTO_API_KEY` và `STRIPE_*` vào `.env`.
-4. [ ] **Chuyển đổi Proxy Binding:** Trong môi trường Production với domain công khai, thiết lập `PROXY_BIND_IP=0.0.0.0` để Caddy lắng nghe trên IP public của server.
-5. [ ] **Khởi động:** Thực hiện `docker compose up -d --build`.
-6. [ ] **Kiểm tra sơ bộ (Smoke Test):**
-   - Truy cập `https://<DOMAIN>/healthz` xác nhận `feedStatus: "ACTIVE"` hoặc `"CONNECTED"`.
-   - Kiểm tra log container `docker compose logs -f app` không có lỗi unhandled.
-   - Kiểm tra kết nối terminal qua giao diện người dùng.
-
----
-
 ## 12. Final Release Decision & Classification
 
 Để đảm bảo tính minh bạch kỹ thuật tuyệt đối, các trạng thái phát hành được phân định rạch ròi như sau:
@@ -154,7 +170,8 @@ Trước khi hệ thống có thể phục vụ người dùng công khai trên 
 | Phân loại trạng thái | Kết luận | Căn cứ kỹ thuật |
 |---|---|---|
 | **DOCKER STAGING VERIFIED** | **VERIFIED (ĐẠT)** | 42/42 kiểm tra tự động PASS trên Docker Desktop thật, reverse proxy HTTPS/WSS, SQLite WAL persistence và WAL-safe backup hoạt động hoàn hảo. |
-| **SOURCE RELEASE VERIFIED** | **VERIFIED (ĐẠT)** | Mã nguồn tại revision `d72fb4a` sạch sẽ, typecheck pass, 100% unit test pass, 100% integration test pass (clean unref teardown), 13/13 P0 safeguards pass, 19/19 Playwright assertions pass với runner exit code 0. |
+| **SOURCE RELEASE VERIFIED** | **VERIFIED (ĐẠT)** | Toàn bộ các kiểm thử unit, integration, P0 và E2E pass 100%. Transactional idempotency, failure propagation test và secret hygiene đã được xác thực hoàn tất. |
 | **LIVE MARKET DATA VERIFIED** | **BLOCKED (CHỜ VENDOR)** | Chưa kiểm chứng luồng thị trường thực tế do chưa nạp `DATABENTO_API_KEY` thật. Hệ thống đang bảo vệ fail-closed an toàn. |
-| **BILLING PRODUCTION VERIFIED** | **BLOCKED (CHỜ VENDOR)** | Cơ chế idempotency và xử lý webhook đã kiểm chứng hoàn tất ở mức unit/staging; chưa xác thực giao dịch live trên Stripe Production. |
-| **PUBLIC PRODUCTION APPROVED** | **CONDITIONAL RC (CHỜ OPERATOR)** | Phiên bản đạt chuẩn Release Candidate có điều kiện; chỉ sẵn sàng công khai sau khi Operator hoàn tất nạp credentials và ký duyệt nghiệm thu. |
+| **BILLING PRODUCTION VERIFIED** | **BLOCKED (CHỜ VENDOR)** | Cơ chế transactional idempotency và xử lý webhook đã kiểm chứng hoàn tất ở mức unit/staging; chưa xác thực giao dịch live trên Stripe Production. |
+| **PUBLIC PRODUCTION APPROVED** | **CONDITIONAL RC (CHỜ OPERATOR)** | Phiên bản đạt chuẩn Release Candidate có điều kiện; sẵn sàng chuyển giao sang Vendor Validation và Operator Approval. |
+

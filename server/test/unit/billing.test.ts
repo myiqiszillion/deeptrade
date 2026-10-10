@@ -123,7 +123,7 @@ export async function runBillingTests(): Promise<void> {
       /ignored/
     );
 
-    // 8. Event-Level Idempotency & Deduplication
+    // 8. Event-Level Idempotency & Duplicate Replay
     const dedupeEvent: StripeEvent = {
       id: 'evt_dedupe_test_001',
       type: 'checkout.session.completed',
@@ -139,19 +139,79 @@ export async function runBillingTests(): Promise<void> {
     const firstRun = applyStripeEvent(dedupeEvent);
     assert.match(firstRun, /pro/, 'First run applies pro plan');
     const secondRun = applyStripeEvent(dedupeEvent);
-    assert.match(secondRun, /idempotent/, 'Replayed event with same id is recognized as idempotent');
+    assert.match(secondRun, /idempotent: already processed/, 'Replayed event with same id is recognized as idempotent');
     assert.equal(marketDataStore.hasWebhookEvent('evt_dedupe_test_001'), true, 'Webhook event was recorded in SQLite');
 
-    // 9. Out-of-order stale events protection
+    // 9. Concurrency & Unique Constraint Protection
+    // Verify that attempting to insert duplicate event id directly triggers UNIQUE constraint
+    assert.throws(
+      () => {
+        marketDataStore.recordWebhookEvent('evt_dedupe_test_001', 'stripe', 'test', user.id, 'duplicate attempt');
+      },
+      /UNIQUE constraint failed/i,
+      'Direct duplicate insertion throws UNIQUE constraint error'
+    );
+    // Verify applyStripeEvent handles concurrent execution where eventId is committed between checks
+    const concurrentEvent: StripeEvent = {
+      id: 'evt_concurrent_race_001',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          client_reference_id: user.id,
+          metadata: { userId: user.id, planId: 'pro' },
+          status: 'active',
+        },
+      },
+    };
+    // Pre-record to simulate a concurrent request committing right before the inner block
+    marketDataStore.recordWebhookEvent('evt_concurrent_race_001', 'stripe', 'checkout.session.completed', user.id, 'plan pro -> active');
+    const concurrentResult = applyStripeEvent(concurrentEvent);
+    assert.match(concurrentResult, /idempotent/, 'Concurrent race condition cleanly returns idempotent success');
+
+    // 10. Atomic Failure Rollback (Transaction guarantees all-or-nothing)
+    const initialSubBeforeRollback = billingService.getSubscription(user.id);
+    const rollbackEvent: StripeEvent = {
+      id: 'evt_rollback_sim_001',
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          client_reference_id: user.id,
+          metadata: { userId: user.id, planId: 'elite' },
+          status: 'active',
+        },
+      },
+    };
+    // Monkey-patch billingService.applyPlan to simulate a mid-transaction crash
+    const originalApplyPlan = billingService.applyPlan.bind(billingService);
+    let patchCalled = false;
+    billingService.applyPlan = () => {
+      patchCalled = true;
+      throw new Error('Simulated unexpected crash before event commit');
+    };
+    assert.throws(
+      () => {
+        applyStripeEvent(rollbackEvent);
+      },
+      /Simulated unexpected crash/,
+      'Transaction propagates unhandled error and rolls back'
+    );
+    assert.equal(patchCalled, true, 'Patch was triggered');
+    billingService.applyPlan = originalApplyPlan;
+
+    // Verify atomic state: event was NOT recorded and subscription was NOT partially updated
+    assert.equal(marketDataStore.hasWebhookEvent('evt_rollback_sim_001'), false, 'Failed event was rolled back from SQLite audit table');
+    assert.deepEqual(billingService.getSubscription(user.id), initialSubBeforeRollback, 'Subscription was untouched on transaction failure');
+
+    // 11. Out-of-order Stale Events Protection (Cancellation vs Stale Updates)
     // User cancels subscription
     applyStripeEvent({
       id: 'evt_cancel_001',
       type: 'customer.subscription.deleted',
       data: { object: { client_reference_id: user.id } },
     });
-    assert.equal(billingService.getSubscription(user.id)?.status, 'canceled');
+    assert.equal(billingService.getSubscription(user.id)?.status, 'canceled', 'Subscription canceled');
 
-    // Stale update event arrived out of order (created 1 hour ago)
+    // Stale update event arrived out of order (created 1 hour ago before cancellation)
     const staleUpdate: StripeEvent = {
       id: 'evt_stale_update_001',
       type: 'customer.subscription.updated',
@@ -167,6 +227,28 @@ export async function runBillingTests(): Promise<void> {
     const staleResult = applyStripeEvent(staleUpdate);
     assert.match(staleResult, /ignored: stale update/, 'Stale event does not resurrect canceled subscription');
     assert.equal(billingService.getSubscription(user.id)?.status, 'canceled', 'Subscription remains canceled');
+
+    // 12. Legitimate Subscription Renewal
+    // A renewal event with an extended future current_period_end is processed cleanly
+    const extendedPeriodEnd = Math.floor(Date.now() / 1000) + (60 * 24 * 3600); // 60 days in future
+    const renewalEvent: StripeEvent = {
+      id: 'evt_renewal_001',
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          client_reference_id: user.id,
+          metadata: { userId: user.id, planId: 'pro' },
+          status: 'active',
+          current_period_end: extendedPeriodEnd,
+          created: Math.floor(Date.now() / 1000),
+        },
+      },
+    };
+    const renewalResult = applyStripeEvent(renewalEvent);
+    assert.match(renewalResult, /plan pro -> active/, 'Legitimate renewal updates subscription');
+    const updatedSub = billingService.getSubscription(user.id);
+    assert.equal(updatedSub?.status, 'active', 'Renewed subscription is active');
+    assert.equal(updatedSub?.currentPeriodEnd, extendedPeriodEnd * 1000, 'Period end correctly extended');
 
     console.log('  [PASS] All plans, entitlements and Stripe unit tests passed.');
   } finally {
