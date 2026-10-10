@@ -40,6 +40,8 @@ export default defineConfig({
       url: 'http://localhost:8080/healthz',
       reuseExistingServer: true,
       timeout: 30000,
+      stdout: 'ignore',
+      stderr: 'ignore',
       env: {
         NODE_ENV: 'test',
         PORT: '8080',
@@ -53,6 +55,8 @@ export default defineConfig({
       url: 'http://localhost:5173',
       reuseExistingServer: true,
       timeout: 30000,
+      stdout: 'ignore',
+      stderr: 'ignore',
     },
   ],
 });
