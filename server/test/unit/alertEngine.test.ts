@@ -152,6 +152,8 @@ export async function runAlertEngineTests() {
       val: 5690.0,
       totalVolume: 10000,
       levels: [],
+      provenance: 'EXACT',
+      isEstimated: false,
     };
 
     deliveredAlerts.length = 0;

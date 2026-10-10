@@ -7,6 +7,9 @@ import { bsGreeks } from '../../src/options/blackScholes.js';
 import { buildPricedChain } from '../../src/options/chain.js';
 import { GEXEngine } from '../../src/gexEngine.js';
 import { Tick } from '../../src/types.js';
+import { FUTURES_INSTRUMENTS } from '../../src/futuresConfig.js';
+import { ReplaySession } from '../../src/replaySession.js';
+import { ChartSession } from '../../src/session.js';
 
 export async function runBehavioralContractTests(): Promise<void> {
   console.log('[integration/behavioral_contracts.test] Running behavioral & data integrity tests...');
@@ -71,9 +74,9 @@ export async function runBehavioralContractTests(): Promise<void> {
   }
 
   // =========================================================================
-  // GROUP B: Volume Profile API & Zero-Inference Integrity
+  // GROUP B: Volume Profile API & Completeness / Provenance Contracts
   // =========================================================================
-  console.log('  Testing Group B: Volume Profile & Fail-Closed Queries...');
+  console.log('  Testing Group B: Volume Profile Completeness & Provenance...');
   {
     const client = new DatabentoHttpClient({ apiKey: '' });
     const chartService = new ChartService(client);
@@ -84,32 +87,106 @@ export async function runBehavioralContractTests(): Promise<void> {
     assert.equal(emptyResult.status, 'unavailable', 'Status must be unavailable');
     assert.equal(emptyResult.totalVolume, 0, 'Total volume must be 0');
     assert.equal(emptyResult.levels.length, 0, 'Levels array must be empty');
+    assert.equal(emptyResult.provenance, 'UNAVAILABLE', 'Empty profile provenance must be UNAVAILABLE');
+    assert.equal(emptyResult.coverage, 'UNKNOWN', 'Empty profile coverage must be UNKNOWN');
+    assert.equal(emptyResult.isEstimated, false, 'Empty profile isEstimated must be false');
 
-    // Case 2: Ingest real trade records into SQLite and query range
-    const t0 = 1700000100000;
+    // Case 2: Ingest real trade records into SQLite and query range WITHOUT checkpoint metadata
+    // Strict distinction: trades exist -> EXACT, but without checkpoint metadata -> coverage must be UNKNOWN!
+    const t0 = 2000000000000;
     const testTrades: Tick[] = [
-      { id: 'b1', timestamp: t0, price: 5000.00, size: 10, side: 'buy' },
-      { id: 'b2', timestamp: t0 + 1000, price: 5000.25, size: 50, side: 'sell' },
-      { id: 'b3', timestamp: t0 + 2000, price: 5000.50, size: 20, side: 'buy' },
+      { id: `case2_1_${t0}`, timestamp: t0, price: 5000.00, size: 10, side: 'buy' },
+      { id: `case2_2_${t0}`, timestamp: t0 + 1000, price: 5000.25, size: 50, side: 'sell' },
+      { id: `case2_3_${t0}`, timestamp: t0 + 2000, price: 5000.50, size: 20, side: 'buy' },
     ];
     marketDataStore.saveTrades(testTrades, 'ES', 'databento');
 
-    const rangeResult = await chartService.getVolumeProfileRange('ES', t0 - 500, t0 + 5000);
-    assert.equal(rangeResult.available, true, 'Range with trades must be available');
-    assert.equal(rangeResult.status, 'ok', 'Status must be ok');
-    assert.equal(rangeResult.totalVolume, 80, 'Total volume must equal 10 + 50 + 20 = 80');
-    assert.equal(rangeResult.poc, 5000.25, 'POC must be 5000.25 (volume 50)');
+    const unverifiedResult = await chartService.getVolumeProfileRange('ES', t0 - 500, t0 + 5000);
+    assert.equal(unverifiedResult.available, true, 'Range with trades must be available');
+    assert.equal(unverifiedResult.status, 'ok', 'Status must be ok');
+    assert.equal(unverifiedResult.totalVolume, 80, 'Total volume must equal 10 + 50 + 20 = 80');
+    assert.equal(unverifiedResult.poc, 5000.25, 'POC must be 5000.25 (volume 50)');
+    assert.equal(unverifiedResult.provenance, 'EXACT', 'Range with raw trades must have provenance EXACT');
+    assert.equal(unverifiedResult.coverage, 'UNKNOWN', 'Without checkpoint, coverage must fail-closed to UNKNOWN');
+    assert.ok(unverifiedResult.coverageReason?.includes('unverified'), 'Reason must document unverified coverage');
+    assert.equal(unverifiedResult.requestedStart, t0 - 500);
+    assert.equal(unverifiedResult.requestedEnd, t0 + 5000);
+    assert.equal(unverifiedResult.actualDataStart, t0);
+    assert.equal(unverifiedResult.actualDataEnd, t0 + 2000);
 
     // Value Area: 70% of 80 is 56. The POC alone has 50, so VAH/VAL encompass the primary volume distribution
-    assert.ok(rangeResult.vah >= rangeResult.val, 'VAH must be >= VAL');
-    assert.ok(rangeResult.vah >= rangeResult.poc, 'VAH must be >= POC');
-    assert.ok(rangeResult.val <= rangeResult.poc, 'VAL must be <= POC');
+    assert.ok(unverifiedResult.vah >= unverifiedResult.val, 'VAH must be >= VAL');
+    assert.ok(unverifiedResult.vah >= unverifiedResult.poc, 'VAH must be >= POC');
+    assert.ok(unverifiedResult.val <= unverifiedResult.poc, 'VAL must be <= POC');
 
-    // Case 3: Out of boundary timestamp range
-    const outResult = await chartService.getVolumeProfileRange('ES', t0 + 500000, t0 + 600000);
+    // Case 3: Complete checkpoint recorded -> verified EXACT + COMPLETE
+    const t1 = 2100000000000;
+    const trades1: Tick[] = [
+      { id: `case3_1_${t1}`, timestamp: t1, price: 5000.25, size: 30, side: 'buy' },
+      { id: `case3_2_${t1}`, timestamp: t1 + 1000, price: 5000.50, size: 15, side: 'sell' },
+    ];
+    marketDataStore.saveTrades(trades1, 'ES', 'databento');
+    marketDataStore.recordCheckpoint('ES', 'databento', t1 - 1000, t1 + 6000, 'COMPLETE');
+    const verifiedComplete = await chartService.getVolumeProfileRange('ES', t1 - 800, t1 + 5500);
+    assert.equal(verifiedComplete.provenance, 'EXACT');
+    assert.equal(verifiedComplete.coverage, 'COMPLETE', 'Range within verified checkpoint must be COMPLETE');
+    assert.equal(verifiedComplete.coverageReason, undefined);
+
+    // Case 4: Partial historical backfill (requested range extends beyond verified checkpoint window)
+    const t2 = 2200000000000;
+    marketDataStore.saveTrades([{ id: `case4_1_${t2}`, timestamp: t2, price: 5000.0, size: 20, side: 'buy' }], 'ES', 'databento');
+    marketDataStore.recordCheckpoint('ES', 'databento', t2, t2 + 3000, 'COMPLETE');
+    const partialBackfill = await chartService.getVolumeProfileRange('ES', t2 - 50000, t2 + 2500);
+    assert.equal(partialBackfill.provenance, 'EXACT');
+    assert.equal(partialBackfill.coverage, 'PARTIAL', 'Range extending before checkpoint window must be PARTIAL');
+    assert.ok(partialBackfill.coverageReason?.includes('extends beyond verified ingestion window'));
+
+    // Case 5: Feed reconnect gap recorded overlapping requested range
+    const t3 = 2300000000000;
+    marketDataStore.saveTrades([{ id: `case5_1_${t3}`, timestamp: t3, price: 5000.0, size: 10, side: 'buy' }], 'ES', 'databento');
+    marketDataStore.recordCheckpoint('ES', 'databento', t3 - 1000, t3 + 5000, 'COMPLETE');
+    marketDataStore.recordGap('ES', 'databento', t3 + 500, t3 + 800, 'Socket drop during live session');
+    const gapResult = await chartService.getVolumeProfileRange('ES', t3 - 900, t3 + 4500);
+    assert.equal(gapResult.provenance, 'EXACT');
+    assert.equal(gapResult.coverage, 'PARTIAL', 'Feed gap in range must force PARTIAL coverage');
+    assert.ok(gapResult.coverageReason?.includes('Feed gap detected in range'));
+
+    // Case 6: Session with valid zero-trade interval (verified complete checkpoint with 0 trades and no gaps)
+    const t4 = 2400000000000;
+    marketDataStore.recordCheckpoint('ES', 'databento', t4 - 1000, t4 + 5000, 'COMPLETE');
+    const zeroTradeResult = await chartService.getVolumeProfileRange('ES', t4, t4 + 4000);
+    assert.equal(zeroTradeResult.available, true, 'Zero-trade interval in complete session is available');
+    assert.equal(zeroTradeResult.status, 'no_data', 'Status is no_data');
+    assert.equal(zeroTradeResult.totalVolume, 0, 'Total volume is 0');
+    assert.equal(zeroTradeResult.provenance, 'EXACT', 'Zero trades in verified session retains provenance EXACT');
+    assert.equal(zeroTradeResult.coverage, 'COMPLETE', 'Zero trades in verified session has coverage COMPLETE');
+
+    // Case 7: Out of boundary timestamp range with no checkpoint
+    const t5 = 2500000000000;
+    const outResult = await chartService.getVolumeProfileRange('ES', t5 + 500000, t5 + 600000);
     assert.equal(outResult.available, false, 'Non-matching range must be unavailable');
+    assert.equal(outResult.provenance, 'UNAVAILABLE', 'Out-of-range profile provenance must be UNAVAILABLE');
+    assert.equal(outResult.coverage, 'UNKNOWN');
 
-    console.log('    [PASS] Group B: Volume Profile integrity verified.');
+    // Case 8: Replay session preserves EXACT provenance
+    const t6 = 2600000000000;
+    const mockWs = { readyState: 1, bufferedAmount: 0, sentMessages: [] as any[], send(s: string) { this.sentMessages.push(JSON.parse(s)); }, close() {} };
+    const chartSession = new ChartSession(mockWs as any);
+    const replayTicks: Tick[] = [
+      { id: `case8_1_${t6}`, timestamp: t6 + 100, price: 5000.25, size: 10, side: 'buy' },
+      { id: `case8_2_${t6}`, timestamp: t6 + 200, price: 5000.50, size: 25, side: 'sell' },
+    ];
+    const replaySession = new ReplaySession(chartSession, 'ES', FUTURES_INSTRUMENTS.ES, '1m', replayTicks);
+    // Before replay starts, profile is UNAVAILABLE
+    assert.equal(replaySession.profileEngine.getVolumeProfile().provenance, 'UNAVAILABLE');
+    // Step through ticks
+    replaySession.step();
+    replaySession.step();
+    const replayProfile = replaySession.profileEngine.getVolumeProfile();
+    assert.equal(replayProfile.provenance, 'EXACT', 'ReplaySession profile engine produces EXACT provenance');
+    assert.equal(replayProfile.totalVolume, 35);
+
+    console.log('    [PASS] Group B: Volume Profile completeness & provenance verified.');
   }
 
   // =========================================================================

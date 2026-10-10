@@ -70,11 +70,38 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
             Market Profile (TPO)
           </button>
         </div>
-        {currentPrice > 0 && (
-          <span className="text-[10px] text-amber-400/90 font-mono">
-            {formatPrice(currentPrice, tickSize)}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {activeTab === 'VP' && (
+            <span
+              className={`px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider border ${
+                sortedVpLevels.length === 0 || volumeProfile.provenance === 'UNAVAILABLE'
+                  ? 'bg-slate-500/20 text-slate-400 border-slate-500/30'
+                  : volumeProfile.isEstimated || volumeProfile.provenance === 'ESTIMATED'
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                  : volumeProfile.coverage === 'PARTIAL'
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                  : volumeProfile.coverage === 'COMPLETE'
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                  : 'bg-sky-500/20 text-sky-300 border-sky-500/30'
+              }`}
+            >
+              {sortedVpLevels.length === 0 || volumeProfile.provenance === 'UNAVAILABLE'
+                ? 'UNAVAILABLE'
+                : volumeProfile.isEstimated || volumeProfile.provenance === 'ESTIMATED'
+                ? 'ESTIMATED'
+                : volumeProfile.coverage === 'COMPLETE'
+                ? 'EXACT · COMPLETE'
+                : volumeProfile.coverage === 'PARTIAL'
+                ? 'EXACT · PARTIAL'
+                : 'EXACT · UNVERIFIED'}
+            </span>
+          )}
+          {currentPrice > 0 && (
+            <span className="text-[10px] text-amber-400/90 font-mono">
+              {formatPrice(currentPrice, tickSize)}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Profile Metrics Bar */}
@@ -105,14 +132,51 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
         </div>
       </div>
 
+      {/* Provenance Status Bar */}
+      {activeTab === 'VP' && sortedVpLevels.length > 0 && (
+        volumeProfile.isEstimated || volumeProfile.provenance === 'ESTIMATED' ? (
+          <div className="px-3 py-1 bg-amber-500/10 border-b border-amber-500/20 text-amber-300/90 text-[10px] flex items-center justify-between font-sans">
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+              {volumeProfile.coverageReason || 'Estimated profile (synthetic OHLCV bar distribution)'}
+            </span>
+            <span className="text-[9px] px-1 bg-amber-500/20 rounded font-mono font-bold uppercase">Heuristic</span>
+          </div>
+        ) : volumeProfile.coverage === 'PARTIAL' ? (
+          <div className="px-3 py-1 bg-amber-500/10 border-b border-amber-500/20 text-amber-300/90 text-[10px] flex items-center justify-between font-sans">
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+              {volumeProfile.coverageReason || 'Exact trades · Incomplete requested range (partial backfill or feed gap)'}
+            </span>
+            <span className="text-[9px] px-1 bg-amber-500/20 rounded font-mono font-bold uppercase">Partial</span>
+          </div>
+        ) : volumeProfile.coverage === 'COMPLETE' ? (
+          <div className="px-3 py-1 bg-emerald-500/10 border-b border-emerald-500/20 text-emerald-300/90 text-[10px] flex items-center justify-between font-sans">
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              Exact volume-at-price aggregated from verified complete raw trades
+            </span>
+            <span className="text-[9px] px-1 bg-emerald-500/20 rounded font-mono font-bold uppercase">Verified Complete</span>
+          </div>
+        ) : (
+          <div className="px-3 py-1 bg-sky-500/10 border-b border-sky-500/20 text-sky-300/90 text-[10px] flex items-center justify-between font-sans">
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
+              {volumeProfile.coverageReason || 'Exact trades · Range coverage unverified (no ingestion checkpoint)'}
+            </span>
+            <span className="text-[9px] px-1 bg-sky-500/20 rounded font-mono font-bold uppercase">Unverified</span>
+          </div>
+        )
+      )}
+
       {/* Main Profile View */}
       <div className="flex-1 overflow-y-auto font-mono text-[10px] custom-scrollbar flex flex-col">
         {activeTab === 'VP' ? (
-          sortedVpLevels.length === 0 ? (
+          sortedVpLevels.length === 0 || volumeProfile.provenance === 'UNAVAILABLE' ? (
             <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-500 font-sans text-xs gap-2 my-auto">
               <span className="font-semibold text-slate-400 text-[11px]">VOLUME PROFILE UNAVAILABLE</span>
               <span className="text-[10px] text-slate-500 max-w-[200px]">
-                No volume distribution data available yet for this instrument session.
+                No trade-level volume distribution data available yet for this instrument session.
               </span>
             </div>
           ) : (

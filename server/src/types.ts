@@ -119,12 +119,19 @@ export interface VolumeProfileLevel {
   delta: number;
 }
 
+export type ProfileProvenance = 'EXACT' | 'ESTIMATED' | 'UNAVAILABLE';
+export type ProfileCoverage = 'COMPLETE' | 'PARTIAL' | 'UNKNOWN';
+
 export interface VolumeProfileData {
   poc: number;
   vah: number;
   val: number;
   totalVolume: number;
   levels: VolumeProfileLevel[];
+  provenance: ProfileProvenance;
+  coverage?: ProfileCoverage;
+  coverageReason?: string;
+  isEstimated?: boolean;
 }
 
 export interface TPOBracket {

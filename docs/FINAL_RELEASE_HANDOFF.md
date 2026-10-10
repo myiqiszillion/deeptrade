@@ -132,10 +132,16 @@ Tất cả các bài kiểm tra đã được chạy lại và xác thực exit 
 
 ---
 
-## 9. Databento Market Data Status
+## 9. Databento Market Data Status & Volume Profile Provenance Contract
 
-- **Trạng thái luồng dữ liệu:** `UNAVAILABLE` (Dự kiến & Chuẩn xác).
+- **Trạng thái luồng dữ liệu:** `UNAVAILABLE` (Dự kiến & Chuẩn xác khi chưa cấp key live; fail-closed an toàn).
 - **Chính sách an toàn:** Fail-Closed và Zero-Mock. Terminal không tự động sinh nến ảo hay tick giả khi mất kết nối vendor.
+- **Hợp đồng Phân định Exact vs Complete:**
+  1. **Provenance (`EXACT` | `ESTIMATED` | `UNAVAILABLE`):** Xác định độ chính xác trong thuật toán tính toán volume-at-price. `EXACT` khi toàn bộ volume/delta đến từ raw trades có phân loại aggressor bên mua/bên bán. `ESTIMATED` khi phân bổ từ nến OHLCV qua heuristic. `UNAVAILABLE` khi không có dữ liệu.
+  2. **Coverage (`COMPLETE` | `PARTIAL` | `UNKNOWN`):** Xác định tính đầy đủ của dữ liệu trong toàn bộ khoảng thời gian requested `[startTime, endTime]`. Sự hiện diện của ít nhất 1 trade trong database **KHÔNG ĐƯỢC COI LÀ COMPLETE**. Nếu thiếu checkpoint metadata xác thực quá trình ingestion hoàn tất, hệ thống bắt buộc fail-closed trả về `coverage: 'UNKNOWN'`.
+  3. **Quy tắc suy giảm:** Chạm giới hạn truy vấn (25,000 trades limit hit), tồn tại feed reconnect gap (`gaps` table), hoặc requested range vượt ra ngoài khoảng checkpoint đều bị đánh dấu `PARTIAL` kèm `coverageReason`.
+  4. **Bảo toàn khoảng lặng 0 trades (Zero-Trade Interval):** Khoảng thời gian không có giao dịch trong phiên được xác thực hoàn tất và không có feed gap vẫn được xác nhận `available: true`, `status: 'no_data'`, `provenance: 'EXACT'`, `coverage: 'COMPLETE'`, `totalVolume: 0` (không ngộ nhận là PARTIAL).
+  5. **Hiển thị giao diện người dùng:** Badge hiển thị rõ rệt `EXACT · COMPLETE`, `EXACT · PARTIAL`, `EXACT · UNVERIFIED`, `ESTIMATED`, và `UNAVAILABLE`. Không cho phép dữ liệu Estimated hoặc Incomplete được ngụy tạo thành Exact + Complete.
 - **Khối thuật toán phân tích:** Các mô-đun Footprint Aggregator, CVD Calculator, Fixed-Range Volume Profile, DOM Scalper, Liquidity Heatmap và Options Chain Greeks đã được kiểm chứng hoạt động đúng theo toán học và chuẩn dữ liệu chuẩn hóa, hiện đang trong tư thế sẵn sàng đón luồng trực tiếp ngay khi key được nạp.
 
 ---

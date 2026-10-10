@@ -283,6 +283,9 @@ export const App: React.FC = () => {
     val: 0,
     totalVolume: 0,
     levels: [],
+    provenance: 'UNAVAILABLE',
+    coverage: 'UNKNOWN',
+    isEstimated: false,
   });
   const [tpoProfile, setTpoProfile] = useState<TPOProfileData>({
     poc: 0,
@@ -626,7 +629,7 @@ export const App: React.FC = () => {
         if (data.symbol !== symbolRef.current) {
           symbolRef.current = data.symbol;
           setBars([]);
-          setVolumeProfile({ poc: 0, vah: 0, val: 0, totalVolume: 0, levels: [] });
+          setVolumeProfile({ poc: 0, vah: 0, val: 0, totalVolume: 0, levels: [], provenance: 'UNAVAILABLE', coverage: 'UNKNOWN', isEstimated: false });
           setTpoProfile({ poc: 0, vah: 0, val: 0, initialBalance: { high: 0, low: 0 }, brackets: [], priceLevels: {} });
         }
         pendingTicksRef.current = [];
@@ -814,7 +817,7 @@ export const App: React.FC = () => {
     setFeedStatus('UNAVAILABLE');
     setHistorySource('NONE');
     setOrderbook({ bids: [], asks: [], timestamp: 0, lastUpdateId: 0 });
-    setVolumeProfile({ poc: 0, vah: 0, val: 0, totalVolume: 0, levels: [] });
+    setVolumeProfile({ poc: 0, vah: 0, val: 0, totalVolume: 0, levels: [], provenance: 'UNAVAILABLE', coverage: 'UNKNOWN', isEstimated: false });
     setTpoProfile({ poc: 0, vah: 0, val: 0, initialBalance: { high: 0, low: 0 }, brackets: [], priceLevels: {} });
     setCurrentCVD(0);
     setVwapPoints([]);

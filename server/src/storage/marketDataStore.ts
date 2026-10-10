@@ -58,6 +58,16 @@ interface GapRecord {
   createdAt: number;
 }
 
+export interface IngestionCheckpointRecord {
+  symbol: string;
+  provider: string;
+  startTs: number;
+  endTs: number;
+  status: 'COMPLETE' | 'PARTIAL';
+  reason?: string;
+  updatedAt: number;
+}
+
 /** Instrument spec as stored from a vendor definition record (`schema=definition`). */
 export interface InstrumentSpecRow {
   root: string;
@@ -82,6 +92,7 @@ export class MarketDataStore implements IMarketDataStore {
   private insertTradeStmt: any;
   private insertBarStmt: any;
   private insertGapStmt: any;
+  private insertCheckpointStmt: any;
   private insertOptionDefStmt: any;
   private insertOptionStatStmt: any;
   private insertDepthStmt: any;
@@ -187,6 +198,19 @@ export class MarketDataStore implements IMarketDataStore {
 
       CREATE INDEX IF NOT EXISTS idx_gaps_lookup ON gaps(symbol, from_ts DESC);
       CREATE INDEX IF NOT EXISTS idx_gaps_to_ts ON gaps(to_ts);
+
+      CREATE TABLE IF NOT EXISTS ingestion_checkpoints (
+        symbol TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        start_ts INTEGER NOT NULL,
+        end_ts INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        reason TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (symbol, provider, start_ts, end_ts)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_checkpoints_lookup ON ingestion_checkpoints(symbol, end_ts DESC);
 
       -- Metered vendor spend ledger. One row per provider+month so a restart cannot silently forget the total.
       CREATE TABLE IF NOT EXISTS vendor_usage (
@@ -425,6 +449,12 @@ export class MarketDataStore implements IMarketDataStore {
     this.insertGapStmt = this.db.prepare(`
       INSERT INTO gaps (symbol, provider, from_ts, to_ts, reason, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    this.insertCheckpointStmt = this.db.prepare(`
+      INSERT OR REPLACE INTO ingestion_checkpoints (
+        symbol, provider, start_ts, end_ts, status, reason, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
     this.insertOptionDefStmt = this.db.prepare(`
@@ -964,6 +994,75 @@ export class MarketDataStore implements IMarketDataStore {
     }));
   }
 
+  /**
+   * Record an ingestion checkpoint verifying backfill or real-time coverage for a range.
+   */
+  public recordCheckpoint(
+    symbol: string,
+    provider: string,
+    startTs: number,
+    endTs: number,
+    status: 'COMPLETE' | 'PARTIAL',
+    reason?: string
+  ): void {
+    try {
+      this.insertCheckpointStmt.run(symbol, provider, startTs, endTs, status, reason ?? null, Date.now());
+    } catch (err) {
+      this.warnWriteFailure(`recordCheckpoint(${provider}/${symbol})`, err);
+    }
+  }
+
+  /**
+   * Get recorded ingestion checkpoints overlapping a timestamp window.
+   */
+  public getCheckpoints(symbol: string, startTs = 0, endTs = Number.MAX_SAFE_INTEGER): IngestionCheckpointRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT symbol, provider, start_ts, end_ts, status, reason, updated_at
+      FROM ingestion_checkpoints
+      WHERE symbol = ? AND end_ts >= ? AND start_ts <= ?
+      ORDER BY start_ts ASC
+    `);
+
+    const rows = stmt.all(symbol, startTs, endTs) as Array<{
+      symbol: string;
+      provider: string;
+      start_ts: number;
+      end_ts: number;
+      status: string;
+      reason: string | null;
+      updated_at: number;
+    }>;
+
+    return rows.map((r) => ({
+      symbol: r.symbol,
+      provider: r.provider,
+      startTs: Number(r.start_ts),
+      endTs: Number(r.end_ts),
+      status: (r.status === 'COMPLETE' ? 'COMPLETE' : 'PARTIAL') as 'COMPLETE' | 'PARTIAL',
+      reason: r.reason || undefined,
+      updatedAt: Number(r.updated_at),
+    }));
+  }
+
+  /**
+   * Query the earliest and latest recorded trade timestamps for a symbol.
+   */
+  public getTradeTimeBounds(symbol: string, provider?: string): { minTs: number; maxTs: number; count: number } | null {
+    const sql = provider
+      ? `SELECT MIN(ts) as min_ts, MAX(ts) as max_ts, COUNT(*) as cnt FROM trades WHERE symbol = ? AND provider = ?`
+      : `SELECT MIN(ts) as min_ts, MAX(ts) as max_ts, COUNT(*) as cnt FROM trades WHERE symbol = ?`;
+
+    const row = this.db.prepare(sql).get(...(provider ? [symbol, provider] : [symbol])) as any;
+    if (!row || !row.cnt || row.cnt === 0 || row.min_ts === null) {
+      return null;
+    }
+    return {
+      minTs: Number(row.min_ts),
+      maxTs: Number(row.max_ts),
+      count: Number(row.cnt),
+    };
+  }
+
   // User Management
 
   /**
@@ -1313,6 +1412,7 @@ export class MarketDataStore implements IMarketDataStore {
       const cutoff = now - olderThanMs;
       statements.push(`DELETE FROM trades WHERE ts < ${cutoff};`);
       statements.push(`DELETE FROM gaps WHERE to_ts < ${cutoff};`);
+      statements.push(`DELETE FROM ingestion_checkpoints WHERE end_ts < ${cutoff};`);
       statements.push(`DELETE FROM depth_snapshots WHERE exchange_ts < ${cutoff};`);
     }
 
@@ -1341,6 +1441,7 @@ export class MarketDataStore implements IMarketDataStore {
       const cutoff = now - olderThanMs;
       tables.push({ table: 'trades', where: `ts < ${cutoff}` });
       tables.push({ table: 'gaps', where: `to_ts < ${cutoff}` });
+      tables.push({ table: 'ingestion_checkpoints', where: `end_ts < ${cutoff}` });
       tables.push({ table: 'depth_snapshots', where: `exchange_ts < ${cutoff}` });
     }
     if (barsOlderThanMs > 0) {

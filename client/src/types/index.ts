@@ -157,12 +157,19 @@ export interface VolumeProfileLevel {
   delta: number;
 }
 
+export type ProfileProvenance = 'EXACT' | 'ESTIMATED' | 'UNAVAILABLE';
+export type ProfileCoverage = 'COMPLETE' | 'PARTIAL' | 'UNKNOWN';
+
 export interface VolumeProfileData {
   poc: number;
   vah: number;
   val: number;
   totalVolume: number;
   levels: VolumeProfileLevel[];
+  provenance?: ProfileProvenance;
+  coverage?: ProfileCoverage;
+  coverageReason?: string;
+  isEstimated?: boolean;
 }
 
 export interface TPOBracket {
@@ -401,6 +408,10 @@ export interface VolumeProfileRangeData extends VolumeProfileData {
   symbol: string;
   startTime: number;
   endTime: number;
+  requestedStart?: number;
+  requestedEnd?: number;
+  actualDataStart?: number | null;
+  actualDataEnd?: number | null;
   available?: boolean;
   status?: 'ok' | 'unavailable' | 'no_data';
   message?: string;

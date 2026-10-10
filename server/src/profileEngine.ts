@@ -1,10 +1,14 @@
-import { TPOBracket, TPOProfileData, VolumeProfileData, VolumeProfileLevel, Tick, HistoricalBar, classifyAggressorSide } from './types.js';
+import { TPOBracket, TPOProfileData, VolumeProfileData, VolumeProfileLevel, Tick, HistoricalBar, classifyAggressorSide, ProfileProvenance, ProfileCoverage } from './types.js';
 import { normalizeToTick } from './priceMath.js';
 
 export class ProfileEngine {
   private tickSize: number;
   private volumeLevels = new Map<number, { buyVol: number; sellVol: number; unknownVol?: number }>();
   private totalVolume = 0;
+  private provenance: ProfileProvenance = 'UNAVAILABLE';
+  private coverage: ProfileCoverage = 'UNKNOWN';
+  private coverageReason?: string;
+  private hasEstimatedData = false;
 
   // TPO state
   private tpoBracketDurationMs = 30 * 60 * 1000; // 30 minutes per bracket
@@ -23,11 +27,39 @@ export class ProfileEngine {
   public reset(sessionStartTime = 0) {
     this.volumeLevels.clear();
     this.totalVolume = 0;
+    this.provenance = 'UNAVAILABLE';
+    this.coverage = 'UNKNOWN';
+    this.coverageReason = undefined;
+    this.hasEstimatedData = false;
     this.sessionStartTime = sessionStartTime;
     this.tpoPriceLevels.clear();
     this.brackets = [];
     this.ibHigh = -Infinity;
     this.ibLow = Infinity;
+  }
+
+  public setCoverage(coverage: ProfileCoverage, reason?: string): void {
+    this.coverage = coverage;
+    this.coverageReason = reason;
+  }
+
+  public getCoverage(): ProfileCoverage {
+    return this.coverage;
+  }
+
+  public getCoverageReason(): string | undefined {
+    return this.coverageReason;
+  }
+
+  public getProvenance(): ProfileProvenance {
+    if (this.volumeLevels.size === 0 || this.totalVolume === 0) {
+      return 'UNAVAILABLE';
+    }
+    return this.provenance;
+  }
+
+  public isEstimatedProfile(): boolean {
+    return this.getProvenance() === 'ESTIMATED';
   }
 
   private normalizePrice(price: number): number {
@@ -36,6 +68,10 @@ export class ProfileEngine {
 
   public processHistoricalBars(bars: HistoricalBar[]): void {
     if (!bars || bars.length === 0) return;
+    this.hasEstimatedData = true;
+    this.provenance = 'ESTIMATED';
+    this.coverage = 'PARTIAL';
+    this.coverageReason = 'Profile generated from synthetic OHLCV distribution';
     const sorted = [...bars].sort((a, b) => a.time - b.time);
     if (this.sessionStartTime === 0) {
       this.sessionStartTime = sorted[0].time;
@@ -102,6 +138,14 @@ export class ProfileEngine {
   }
 
   public processTick(tick: Tick) {
+    // Invariant: Once seeded with synthetic OHLCV volume, incoming ticks cannot convert profile to EXACT
+    if (this.hasEstimatedData) {
+      this.provenance = 'ESTIMATED';
+      this.coverage = 'PARTIAL';
+      this.coverageReason = 'Composite profile contains estimated OHLCV volume mixed with raw trades';
+    } else {
+      this.provenance = 'EXACT';
+    }
     const normPrice = this.normalizePrice(tick.price);
 
     // 1. Update Volume Profile
@@ -160,8 +204,18 @@ export class ProfileEngine {
   }
 
   public getVolumeProfile(): VolumeProfileData {
-    if (this.volumeLevels.size === 0) {
-      return { poc: 0, vah: 0, val: 0, totalVolume: 0, levels: [] };
+    if (this.volumeLevels.size === 0 || this.totalVolume === 0) {
+      return {
+        poc: 0,
+        vah: 0,
+        val: 0,
+        totalVolume: 0,
+        levels: [],
+        provenance: this.provenance,
+        coverage: this.coverage,
+        coverageReason: this.coverageReason || 'No volume data available',
+        isEstimated: false,
+      };
     }
 
     const sortedPrices = Array.from(this.volumeLevels.keys()).sort((a, b) => a - b);
@@ -226,6 +280,10 @@ export class ProfileEngine {
       val: Math.min(poc, val),
       totalVolume: this.totalVolume,
       levels,
+      provenance: this.provenance,
+      coverage: this.coverage,
+      coverageReason: this.coverageReason,
+      isEstimated: this.provenance === 'ESTIMATED',
     };
   }
 

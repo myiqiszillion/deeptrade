@@ -37,6 +37,7 @@ const { runChartRoutesTests } = await import('./chartRoutes.test.js');
 const { runDepthStorageTests } = await import('./depthStorage.test.js');
 const { runAlertEngineTests } = await import('./alertEngine.test.js');
 const { runAlertsApiTests } = await import('./alertsApi.test.js');
+const { runProfileEngineTests } = await import('./profileEngine.test.js');
 
 async function main() {
   console.log('======================================================');
@@ -71,6 +72,7 @@ async function main() {
   await runDepthStorageTests();
   await runAlertEngineTests();
   await runAlertsApiTests();
+  await runProfileEngineTests();
 
   const elapsed = Date.now() - start;
   console.log('\n======================================================');

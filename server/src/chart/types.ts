@@ -4,6 +4,7 @@
  * Covers standard TradingView UDF (Universal Datafeed) API specification
  * and Institutional Order Flow chart extensions powered by Databento.
  */
+import { ProfileProvenance, ProfileCoverage } from '../types.js';
 
 export interface UdfConfig {
   supported_resolutions: string[];
@@ -117,6 +118,10 @@ export interface VolumeProfileResponse {
     sellVolume: number;
     delta: number;
   }>;
+  provenance: ProfileProvenance;
+  coverage?: ProfileCoverage;
+  coverageReason?: string;
+  isEstimated?: boolean;
 }
 
 export interface VolumeProfileRangeRequest {
@@ -128,9 +133,16 @@ export interface VolumeProfileRangeRequest {
 export interface VolumeProfileRangeResponse extends VolumeProfileResponse {
   startTime: number;
   endTime: number;
+  requestedStart: number;
+  requestedEnd: number;
+  actualDataStart?: number | null;
+  actualDataEnd?: number | null;
   available?: boolean;
   status?: 'ok' | 'unavailable' | 'no_data';
   message?: string;
+  provenance: ProfileProvenance;
+  coverage: ProfileCoverage;
+  coverageReason?: string;
 }
 
 export interface VwapPointResponse {

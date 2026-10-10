@@ -11,7 +11,7 @@ import { FUTURES_INSTRUMENTS } from '../futuresConfig.js';
 import { FootprintEngine } from '../footprintEngine.js';
 import { ProfileEngine } from '../profileEngine.js';
 import { VWAPEngine } from '../vwapEngine.js';
-import { Tick } from '../types.js';
+import { Tick, ProfileCoverage } from '../types.js';
 import {
   parseTradingViewResolution,
   aggregateBars,
@@ -581,6 +581,10 @@ export class ChartService {
       vah: vp.vah,
       val: vp.val,
       levels: vp.levels,
+      provenance: vp.provenance,
+      coverage: vp.coverage,
+      coverageReason: vp.coverageReason,
+      isEstimated: vp.isEstimated,
     };
   }
 
@@ -684,13 +688,15 @@ export class ChartService {
     const tickSize = spec.tickSize || 0.25;
     const profileEngine = new ProfileEngine(tickSize, startTime);
 
+    const limit = 25000;
     // 1. Try real recorded ticks in range from SQLite storage
     let ticks = marketDataStore.queryTradesRange({
       symbol,
       startTime,
       endTime,
-      limit: 25000,
+      limit,
     });
+    let queryLimitHit = ticks.length >= limit;
 
     // 2. If storage has no trades and Databento client is configured, fetch historical trades on-demand
     if (ticks.length === 0 && this.client.configured) {
@@ -701,7 +707,7 @@ export class ChartService {
           [querySymbol],
           startTime,
           endTime,
-          25000
+          limit
         );
         if (fetchedTrades && fetchedTrades.length > 0) {
           marketDataStore.saveTrades(
@@ -715,6 +721,15 @@ export class ChartService {
             symbol,
             'databento'
           );
+          const isCompleteFetch = fetchedTrades.length < limit;
+          marketDataStore.recordCheckpoint(
+            symbol,
+            'databento',
+            startTime,
+            endTime,
+            isCompleteFetch ? 'COMPLETE' : 'PARTIAL',
+            isCompleteFetch ? undefined : `Vendor trade query reached limit of ${limit} trades`
+          );
           ticks = fetchedTrades.map((t) => ({
             id: t.tradeId || `${t.timestamp}_${t.price}_${t.size}`,
             timestamp: t.timestamp,
@@ -722,19 +737,55 @@ export class ChartService {
             size: t.size,
             side: t.side,
           }));
+          queryLimitHit = fetchedTrades.length >= limit;
         }
       } catch (err: any) {
         console.warn(`[ChartService] Range volume profile vendor trade fetch failed: ${err?.message}`);
       }
     }
 
-    // 3. Strict Fail-Closed: Do NOT infer price volume distribution from OHLCV bars without volume-at-price data.
-    // If trade-level data is missing, return clear unavailable status.
+    // Evaluate gaps and checkpoints for the requested range
+    const overlappingGaps = marketDataStore.getGaps(symbol, startTime, endTime);
+    const checkpoints = marketDataStore.getCheckpoints(symbol, startTime, endTime);
+
+    // 3. Strict Fail-Closed / Zero-Trade Session verification
     if (ticks.length === 0) {
+      const coveringCompleteChk = checkpoints.find(
+        (c) => c.startTs <= startTime && c.endTs >= endTime && c.status === 'COMPLETE'
+      );
+      if (coveringCompleteChk && overlappingGaps.length === 0) {
+        // Valid zero-trade interval within verified covered session
+        return {
+          symbol,
+          startTime,
+          endTime,
+          requestedStart: startTime,
+          requestedEnd: endTime,
+          actualDataStart: null,
+          actualDataEnd: null,
+          totalVolume: 0,
+          poc: 0,
+          vah: 0,
+          val: 0,
+          levels: [],
+          available: true,
+          status: 'no_data',
+          message: 'Zero trades occurred in verified covered range',
+          provenance: 'EXACT',
+          coverage: 'COMPLETE',
+          coverageReason: 'Zero trades recorded in verified complete session range',
+          isEstimated: false,
+        };
+      }
+
       return {
         symbol,
         startTime,
         endTime,
+        requestedStart: startTime,
+        requestedEnd: endTime,
+        actualDataStart: null,
+        actualDataEnd: null,
         totalVolume: 0,
         poc: 0,
         vah: 0,
@@ -743,6 +794,10 @@ export class ChartService {
         available: false,
         status: 'unavailable',
         message: 'Trade-level volume-at-price data is unavailable for the selected range',
+        provenance: 'UNAVAILABLE',
+        coverage: 'UNKNOWN',
+        coverageReason: 'No trade-level data or verified ingestion checkpoint available for requested range',
+        isEstimated: false,
       };
     }
 
@@ -756,11 +811,53 @@ export class ChartService {
       profileEngine.processTick(t);
     }
 
+    const actualDataStart = ticks[0].timestamp;
+    const actualDataEnd = ticks[ticks.length - 1].timestamp;
+
+    // 5. Determine coverage metadata
+    let coverage: ProfileCoverage = 'UNKNOWN';
+    let coverageReason: string | undefined;
+
+    if (queryLimitHit) {
+      coverage = 'PARTIAL';
+      coverageReason = `Query trade limit of ${limit} reached; volume profile is truncated`;
+    } else if (overlappingGaps.length > 0) {
+      coverage = 'PARTIAL';
+      coverageReason = `Feed gap detected in range: ${overlappingGaps.map((g) => g.reason).join('; ')}`;
+    } else if (checkpoints.length > 0) {
+      const partialChk = checkpoints.find((c) => c.status === 'PARTIAL');
+      if (partialChk) {
+        coverage = 'PARTIAL';
+        coverageReason = partialChk.reason || 'Ingestion checkpoint marked partial by vendor';
+      } else {
+        const coveringChk = checkpoints.find(
+          (c) => c.startTs <= startTime && c.endTs >= endTime && c.status === 'COMPLETE'
+        );
+        if (coveringChk) {
+          coverage = 'COMPLETE';
+          coverageReason = undefined;
+        } else {
+          const earliestChk = Math.min(...checkpoints.map((c) => c.startTs));
+          const latestChk = Math.max(...checkpoints.map((c) => c.endTs));
+          coverage = 'PARTIAL';
+          coverageReason = `Requested range [${startTime}, ${endTime}] extends beyond verified ingestion window [${earliestChk}, ${latestChk}]`;
+        }
+      }
+    } else {
+      // No checkpoint metadata exists to verify range completeness
+      coverage = 'UNKNOWN';
+      coverageReason = 'Coverage metadata not recorded for range; completeness unverified';
+    }
+
     const vp = profileEngine.getVolumeProfile();
     const result: VolumeProfileRangeResponse = {
       symbol,
       startTime,
       endTime,
+      requestedStart: startTime,
+      requestedEnd: endTime,
+      actualDataStart,
+      actualDataEnd,
       totalVolume: vp.totalVolume,
       poc: vp.poc,
       vah: vp.vah,
@@ -768,6 +865,10 @@ export class ChartService {
       levels: vp.levels,
       available: vp.totalVolume > 0,
       status: vp.totalVolume > 0 ? 'ok' : 'no_data',
+      provenance: vp.totalVolume > 0 ? vp.provenance : 'UNAVAILABLE',
+      coverage,
+      coverageReason,
+      isEstimated: vp.isEstimated || false,
     };
 
     // Store in cache (clean up expired keys if cache grows large)

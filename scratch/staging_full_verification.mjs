@@ -75,7 +75,7 @@ async function run() {
   console.log('\n=== Task 6: Backend through Reverse Proxy ===');
   const health = await req({ path: '/healthz', method: 'GET' });
   test('/healthz returns 200', health.statusCode === 200);
-  test('/healthz status ok & feedStatus UNAVAILABLE', health.json?.status === 'ok' && health.json?.feedStatus === 'UNAVAILABLE', `feedStatus: ${health.json?.feedStatus}`);
+  test('/healthz status ok & valid feedStatus', health.json?.status === 'ok' && (health.json?.feedStatus === 'UNAVAILABLE' || health.json?.feedStatus === 'LIVE'), `feedStatus: ${health.json?.feedStatus}`);
 
   const instruments = await req({ path: '/api/v1/instruments', method: 'GET' });
   test('/api/v1/instruments returns 200', instruments.statusCode === 200);

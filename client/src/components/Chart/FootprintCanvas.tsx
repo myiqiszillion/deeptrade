@@ -1412,22 +1412,57 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
         ctx.strokeRect(clampedStartX, 0, boxWidth, chartHeight);
 
         // Header badge
-        const badgeW = Math.min(260, Math.max(160, boxWidth - 8));
+        const isUnavailable = fixedRangeProfile.available === false || fixedRangeProfile.status === 'unavailable' || (fixedRangeProfile.totalVolume === 0 && fixedRangeProfile.coverage !== 'COMPLETE');
+        const isZeroTradeComplete = fixedRangeProfile.totalVolume === 0 && fixedRangeProfile.coverage === 'COMPLETE';
+        const isEstimated = !isUnavailable && !isZeroTradeComplete && (fixedRangeProfile.isEstimated || fixedRangeProfile.provenance === 'ESTIMATED');
+        const badgeW = Math.min(360, Math.max(180, boxWidth - 8));
         ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
         ctx.fillRect(clampedStartX + 4, 8, badgeW, 22);
-        ctx.strokeStyle = '#38BDF8';
+        ctx.strokeStyle = isUnavailable
+          ? '#94A3B8'
+          : isEstimated
+          ? '#F59E0B'
+          : fixedRangeProfile.coverage === 'COMPLETE'
+          ? '#10B981'
+          : fixedRangeProfile.coverage === 'PARTIAL'
+          ? '#F59E0B'
+          : '#38BDF8';
         ctx.strokeRect(clampedStartX + 4, 8, badgeW, 22);
 
-        ctx.fillStyle = '#38BDF8';
         ctx.font = 'bold 9px JetBrains Mono, monospace';
         ctx.textAlign = 'left';
 
-        if (fixedRangeProfile.available === false || fixedRangeProfile.status === 'unavailable' || fixedRangeProfile.totalVolume === 0) {
+        if (isUnavailable) {
+          ctx.fillStyle = '#94A3B8';
+          ctx.fillText('RANGE VP [UNAVAILABLE]: NO TRADE DATA', clampedStartX + 10, 23);
+        } else if (isZeroTradeComplete) {
+          ctx.fillStyle = '#10B981';
+          ctx.fillText('RANGE VP [EXACT · COMPLETE]: ZERO TRADES (VERIFIED)', clampedStartX + 10, 23);
+        } else if (isEstimated) {
           ctx.fillStyle = '#F59E0B';
-          ctx.fillText('RANGE VP: NO TRADE DATA', clampedStartX + 10, 23);
-        } else {
           ctx.fillText(
-            `RANGE VP · POC ${formatPrice(fixedRangeProfile.poc, tickSize)} · ${formatVolume(fixedRangeProfile.totalVolume)}V`,
+            `RANGE VP [ESTIMATED] · POC ${formatPrice(fixedRangeProfile.poc, tickSize)} · ${formatVolume(fixedRangeProfile.totalVolume)}V`,
+            clampedStartX + 10,
+            23
+          );
+        } else if (fixedRangeProfile.coverage === 'COMPLETE') {
+          ctx.fillStyle = '#10B981';
+          ctx.fillText(
+            `RANGE VP [EXACT · COMPLETE] · POC ${formatPrice(fixedRangeProfile.poc, tickSize)} · ${formatVolume(fixedRangeProfile.totalVolume)}V`,
+            clampedStartX + 10,
+            23
+          );
+        } else if (fixedRangeProfile.coverage === 'PARTIAL') {
+          ctx.fillStyle = '#F59E0B';
+          ctx.fillText(
+            `RANGE VP [EXACT · PARTIAL] · POC ${formatPrice(fixedRangeProfile.poc, tickSize)} · ${formatVolume(fixedRangeProfile.totalVolume)}V`,
+            clampedStartX + 10,
+            23
+          );
+        } else {
+          ctx.fillStyle = '#38BDF8';
+          ctx.fillText(
+            `RANGE VP [EXACT · UNVERIFIED] · POC ${formatPrice(fixedRangeProfile.poc, tickSize)} · ${formatVolume(fixedRangeProfile.totalVolume)}V`,
             clampedStartX + 10,
             23
           );
@@ -1700,7 +1735,17 @@ export const FootprintCanvas: React.FC<FootprintCanvasProps> = ({
       {/* Floating Clear Range VP Button */}
       {fixedRangeProfile && onClearFixedRange && (
         <div className="absolute top-3 left-4 z-20 flex items-center gap-2 bg-[#0F172A]/90 border border-sky-500/40 rounded px-2.5 py-1 shadow-lg font-mono text-[10px]">
-          <span className="text-sky-400 font-bold">Range VP Active</span>
+          <span className="text-sky-400 font-bold">
+            {fixedRangeProfile.provenance === 'UNAVAILABLE'
+              ? 'Range VP [UNAVAILABLE]'
+              : fixedRangeProfile.isEstimated || fixedRangeProfile.provenance === 'ESTIMATED'
+              ? 'Range VP [ESTIMATED]'
+              : fixedRangeProfile.coverage === 'COMPLETE'
+              ? 'Range VP [EXACT · COMPLETE]'
+              : fixedRangeProfile.coverage === 'PARTIAL'
+              ? 'Range VP [EXACT · PARTIAL]'
+              : 'Range VP [EXACT · UNVERIFIED]'}
+          </span>
           <button
             onClick={(e) => {
               e.stopPropagation();
