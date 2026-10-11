@@ -292,7 +292,7 @@ export async function runDatabentoLiveTests(): Promise<void> {
   // 3. TASK 1: DBN Protocol Constants Validation (Strict Vendor Enums)
   {
     assert.equal(DBN_CONSTANTS.RTYPE_MBP10, 0x0A, 'MBP-10 rtype must equal 0x0A (10 decimal) per Databento official spec');
-    assert.equal(DBN_CONSTANTS.RTYPE_TBBO, 0x02, 'TBBO rtype must equal 0x02 per Databento official spec');
+    assert.equal(DBN_CONSTANTS.RTYPE_TBBO, 0x01, 'TBBO uses Mbp1Msg rtype 0x01 per Databento official spec');
     assert.equal(DBN_CONSTANTS.RTYPE_MBP1, 0x01, 'MBP-1 rtype must equal 0x01');
     assert.equal(DBN_CONSTANTS.RTYPE_MBP0, 0x00, 'MBP-0 rtype must equal 0x00');
     assert.equal(DBN_CONSTANTS.RTYPE_ERROR, 0x15, 'ErrorMsg rtype must equal 0x15 (21 decimal) per Databento official spec');
@@ -307,10 +307,11 @@ export async function runDatabentoLiveTests(): Promise<void> {
     assert.equal(SYSTEM_CODES.SUBSCRIPTION_ACK, 1);
     assert.equal(SYSTEM_CODES.SLOW_READER_WARNING, 2);
     assert.equal(SYSTEM_CODES.REPLAY_COMPLETED, 3);
-    // Ensure erroneous old values 0x19 and 0x1B are not active constants
+    // Ensure erroneous old values 0x02, 0x19 and 0x1B are not active constants
+    assert.notEqual(DBN_CONSTANTS.RTYPE_TBBO, 0x02, '0x02 must NOT be active TBBO rtype (official spec is 0x01 Mbp1Msg)');
     assert.notEqual(DBN_CONSTANTS.RTYPE_SYSTEM, 0x1B, '0x1B must NOT be active SystemMsg rtype');
     assert.notEqual(DBN_CONSTANTS.RTYPE_ERROR, 0x19, '0x19 must NOT be active ErrorMsg rtype');
-    console.log('  PASS  DBN Constants verify official rtypes: SystemMsg 0x17, ErrorMsg 0x15, SymbolMapping 0x16, MBP-10 0x0A, MBP-0 0x00');
+    console.log('  PASS  DBN Constants verify official rtypes: SystemMsg 0x17, ErrorMsg 0x15, SymbolMapping 0x16, MBP-10 0x0A, MBP-0 0x00, MBP-1/TBBO 0x01');
   }
 
   // 4. TASK 1: Full 10-Level DBN MBP-10 Binary Fixture Decoder Test
@@ -370,12 +371,12 @@ export async function runDatabentoLiveTests(): Promise<void> {
     console.log('  PASS  Sentinel UNDEF_PRICE and UNDEF_ORDER_SIZE correctly filtered');
   }
 
-  // 6. TASK 1: TBBO (0x02) and MBP-1 (0x01) Decoder Test
+  // 6. TASK 1: TBBO and MBP-1 Decoder Test (Both using literal rtype = 0x01 Mbp1Msg layout)
   {
     // Build MBP-1 buffer (80 bytes)
     const mbp1Buf = Buffer.alloc(80);
     mbp1Buf.writeUInt8(20, 0); // 20 words = 80 bytes
-    mbp1Buf.writeUInt8(0x01, 1); // RTYPE_MBP1
+    mbp1Buf.writeUInt8(0x01, 1); // Literal rtype 0x01 (Mbp1Msg)
     mbp1Buf.writeUInt16LE(1, 2);
     mbp1Buf.writeUInt32LE(10252, 4);
     mbp1Buf.writeBigUInt64LE(1711033200000000000n, 8);
@@ -393,21 +394,40 @@ export async function runDatabentoLiveTests(): Promise<void> {
     mbp1Buf.writeUInt32LE(4, 72);
     mbp1Buf.writeUInt32LE(5, 76);
 
-    const { parsed: p1, recLen: l1 } = parseDbnRecord(mbp1Buf, 'ES.c.0');
+    // 6a: Test MBP-1 with literal rtype 0x01
+    const { parsed: p1, recLen: l1 } = parseDbnRecord(mbp1Buf, 'ES.c.0', 'databento', 2, { schema: 'mbp-1' });
     assert.equal(l1, 80);
     assert.ok(p1?.depth);
+    assert.equal(p1.rtype, 0x01, 'MBP-1 record has literal rtype 0x01');
+    assert.equal(p1.schema, 'mbp-1', 'Distinguished as mbp-1 schema via context');
     assert.equal((p1.depth as any).bids[0].price, 5199.75);
     assert.equal((p1.depth as any).asks[0].price, 5200.00);
 
-    // Now test TBBO (0x02) with same 80-byte layout
+    // 6b: REGRESSION TEST: TBBO uses literal rtype = 0x01 (NOT 0x02) per official Databento spec
+    // Both mbp-1 and tbbo share the Mbp1Msg layout and rtype 0x01
     const tbboBuf = Buffer.from(mbp1Buf);
-    tbboBuf.writeUInt8(0x02, 1); // RTYPE_TBBO = 0x02
-    const { parsed: pTbbo, recLen: lTbbo } = parseDbnRecord(tbboBuf, 'ES.c.0');
+    assert.equal(tbboBuf.readUInt8(1), 0x01, 'TBBO buffer must have literal rtype = 0x01');
+    const { parsed: pTbbo, recLen: lTbbo } = parseDbnRecord(tbboBuf, 'ES.c.0', 'databento', 2, { schema: 'tbbo' });
     assert.equal(lTbbo, 80);
     assert.ok(pTbbo?.depth);
-    assert.equal(pTbbo.rtype, 0x02);
+    assert.equal(pTbbo.rtype, 0x01, 'TBBO rtype must equal literal 0x01 (Mbp1Msg) per Databento official spec');
+    assert.equal(pTbbo.schema, 'tbbo', 'TBBO schema disambiguated via subscription context / metadata');
     assert.equal((pTbbo.depth as any).bids[0].price, 5199.75);
-    console.log('  PASS  TBBO (0x02) and MBP-1 (0x01) decoded correctly');
+    assert.ok(pTbbo.trade, 'TBBO record with action=T must produce trade event');
+    assert.equal(pTbbo.trade.price, 5200.00);
+    assert.equal(pTbbo.trade.size, 10);
+    assert.equal(pTbbo.trade.side, 'SELL');
+
+    // 6c: Reject erroneous 0x02 rtype (must NOT parse as depth or trade)
+    const bogusBuf = Buffer.from(mbp1Buf);
+    bogusBuf.writeUInt8(0x02, 1); // 0x02 is NOT a valid TBBO or MBP-1 rtype
+    const { parsed: pBogus } = parseDbnRecord(bogusBuf, 'ES.c.0');
+    assert.ok(pBogus);
+    assert.equal(pBogus.rtype, 0x02);
+    assert.equal(pBogus.depth, undefined, 'rtype 0x02 must NOT parse as depth');
+    assert.equal(pBogus.trade, undefined, 'rtype 0x02 must NOT parse as trade');
+
+    console.log('  PASS  TBBO (literal rtype 0x01) and MBP-1 (literal rtype 0x01) decoded and distinguished via context; 0x02 rejected');
   }
 
   // 7. TASK 1: TCP Fragmentation Handling Test
@@ -830,6 +850,70 @@ export async function runDatabentoLiveTests(): Promise<void> {
     assert.equal(resV1Err.parsed?.error, 'v1 generic error');
 
     console.log('  PASS  DBN Version Compatibility verified for both DBN v1 legacy and DBN v2 current formats');
+  }
+
+  // 19. TASK 1 Regression Test: TBBO WebSocket Dispatch (literal rtype 1, dual onTrade + onDepth dispatch)
+  {
+    const trades: MarketTrade[] = [];
+    const depths: MarketDepthEvent[] = [];
+    let mockWs: MockWebSocket | null = null;
+
+    class TbboTestWebSocket extends MockWebSocket {
+      constructor(url: string, opts?: any) {
+        super(url, opts);
+        mockWs = this;
+      }
+    }
+
+    const client = new DatabentoLiveClient({
+      symbol: 'ES',
+      schema: 'tbbo',
+      apiKey: 'test-tbbo-key',
+      gatewayUrl: 'wss://live.databento.com/v0',
+      WebSocketClass: TbboTestWebSocket as any,
+      handlers: {
+        onTrade: (t) => trades.push(t),
+        onDepth: (d) => depths.push(d),
+        onStatus: () => {},
+        onError: () => {},
+      },
+    });
+
+    await client.connect();
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.ok(mockWs);
+    const ws: MockWebSocket = mockWs;
+    assert.ok(ws.url.includes('schema=tbbo'), `WebSocket URL must contain schema=tbbo, got ${ws.url}`);
+
+    // Receive a TBBO JSON message:
+    // Schema is 'tbbo', rtype is 1 (Mbp1Msg), action is 'T' (Trade), with both trade & top-of-book fields
+    ws.emitMessage({
+      schema: 'tbbo',
+      rtype: 1, // Literal rtype 1 (NOT 2)
+      action: 'T',
+      side: 'A',
+      price: 5200000000000,
+      size: 10,
+      bid_px_00: 5199750000000,
+      ask_px_00: 5200000000000,
+      bid_sz_00: 40,
+      ask_sz_00: 50,
+      ts_event: 1711033200000000000,
+    });
+
+    // TBBO must dispatch BOTH trade and top-of-book depth
+    assert.equal(trades.length, 1, 'TBBO record must dispatch onTrade');
+    assert.equal(trades[0].price, 5200.00);
+    assert.equal(trades[0].size, 10);
+    assert.equal(trades[0].side, 'BUY');
+
+    assert.equal(depths.length, 1, 'TBBO record must dispatch onDepth');
+    assert.equal((depths[0] as any).bids[0].price, 5199.75);
+    assert.equal((depths[0] as any).asks[0].price, 5200.00);
+
+    await client.disconnect();
+    console.log('  PASS  TBBO WebSocket dispatch: literal rtype 1, dual onTrade + onDepth dispatched without rtype 2');
   }
 
   console.log('  [PASS] All DatabentoLiveClient unit tests passed.');

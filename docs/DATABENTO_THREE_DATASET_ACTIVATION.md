@@ -63,13 +63,12 @@ Tài khoản Databento hiện đã có sẵn 3 gói Standard subscriptions hoạ
 - **Lỗi nghiêm trọng trước sửa**: Bản mô tả và code cũ gán `RTYPE_MBP10 = 0x02`.
 - **Theo Databento Official Specification**:
   - `0x00` (0): `MBP-0` (Trades schema, 48 bytes).
-  - `0x01` (1): `MBP-1` (Top of book schema, 80 bytes).
-  - `0x02` (2): `TBBO` (Trade with best bid and offer, 80 bytes, cấu trúc `Mbp1Msg`).
+  - `0x01` (1): `MBP-1` & `TBBO` (Cả hai đều sử dụng cấu trúc `Mbp1Msg`, 80 bytes, `rtype = 0x01`. Schema được phân biệt qua metadata/subscription context, không có `RType::Tbbo = 0x02` độc lập).
   - `0x0A` (10 decimal): `MBP-10` (Market-by-price 10 levels depth, 368 bytes, cấu trúc `Mbp10Msg`).
-- **Hệ quả của lỗi cũ**: Do định nghĩa `RTYPE_MBP10 = 0x02`, decoder khi nhận packet DBN live MBP-10 thực từ sàn (mang `rtype = 0x0A`) đã bỏ qua toàn bộ gói tin L2, khiến độ sâu sổ lệnh không bao giờ được cập nhật!
+- **Hệ quả của lỗi cũ**: Do định nghĩa `RTYPE_MBP10 = 0x02` trước đây và gán nhầm `RTYPE_TBBO = 0x02`, decoder khi nhận packet DBN live MBP-10 thực từ sàn (mang `rtype = 0x0A`) đã bỏ qua gói tin L2, và TBBO bị phân kỳ khỏi chuẩn `Mbp1Msg` (0x01).
 - **Đã khắc phục hoàn toàn trong `server/src/databento/liveClient.ts`**:
-  - Định nghĩa chính xác `RTYPE_MBP10 = 0x0A` (10 decimal) và `RTYPE_TBBO = 0x02`.
-  - Cập nhật nhánh dispatch nhận diện đầy đủ `rtype = 0x0A` cho `MBP-10`, `0x01` cho `MBP-1`, `0x02` cho `TBBO`, và `0x00` cho `Trades`.
+  - Định nghĩa chính xác `RTYPE_MBP10 = 0x0A` (10 decimal), `RTYPE_MBP1 = 0x01`, và `RTYPE_TBBO = 0x01`.
+  - Cập nhật nhánh dispatch nhận diện đầy đủ `rtype = 0x0A` cho `MBP-10`, `0x01` cho `MBP-1` & `TBBO` (phân biệt bằng subscription context/metadata), và `0x00` cho `Trades`. Loại bỏ hoàn toàn `0x02`.
 
 ### 3.2. Cấu trúc Nhị phân & Offsets của MBP-10 Record (368 Bytes)
 1. **Record Header (16 bytes, Little-Endian)**:

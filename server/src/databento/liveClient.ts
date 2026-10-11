@@ -32,8 +32,8 @@ export const DBN_CONSTANTS = {
   SYSTEM_MSG_SIZE: 320,
   ERROR_MSG_SIZE: 320,
   RTYPE_MBP0: 0x00, // Trades schema (MBP-0, 48 bytes)
-  RTYPE_MBP1: 0x01, // mbp-1 schema (80 bytes)
-  RTYPE_TBBO: 0x02, // tbbo schema (top-of-book on trade, 80 bytes)
+  RTYPE_MBP1: 0x01, // mbp-1 schema (Mbp1Msg, 80 bytes)
+  RTYPE_TBBO: 0x01, // tbbo schema (uses Mbp1Msg layout with rtype 0x01 per official Databento spec, 80 bytes)
   RTYPE_MBP10: 0x0A, // mbp-10 schema (10 levels book depth, 368 bytes - Databento official spec)
   RTYPE_ERROR: 0x15, // ErrorMsg (official Databento DBN enum: 21 decimal)
   RTYPE_SYMBOL_MAPPING: 0x16, // SymbolMappingMsg (official Databento DBN enum: 22 decimal)
@@ -53,6 +53,7 @@ export interface ParsedDbnRecord {
   publisherId: number;
   instrumentId: number;
   tsMs: number;
+  schema?: 'trades' | 'mbp-1' | 'mbp-10' | 'tbbo' | string;
   trade?: MarketTrade;
   depth?: MarketDepthEvent;
   error?: string;
@@ -79,7 +80,8 @@ export function parseDbnRecord(
   buffer: Buffer,
   activeSymbol: string,
   sourceProvider = 'databento',
-  dbnVersion = 2
+  dbnVersion = 2,
+  context?: { schema?: 'trades' | 'mbp-1' | 'mbp-10' | 'tbbo' | string; [key: string]: any }
 ): { parsed: ParsedDbnRecord | null; recLen: number } {
   if (buffer.length < DBN_CONSTANTS.HEADER_SIZE) {
     return { parsed: null, recLen: 0 };
@@ -113,6 +115,7 @@ export function parseDbnRecord(
   };
 
   if (rtype === DBN_CONSTANTS.RTYPE_MBP0 && recLen >= DBN_CONSTANTS.TRADE_MSG_SIZE) {
+    result.schema = 'trades';
     const rawPrice = buffer.readBigInt64LE(16);
     const size = buffer.readUInt32LE(24);
     const action = String.fromCharCode(buffer[28]);
@@ -135,6 +138,9 @@ export function parseDbnRecord(
       };
     }
   } else if ((rtype === DBN_CONSTANTS.RTYPE_MBP1 || rtype === DBN_CONSTANTS.RTYPE_TBBO) && recLen >= DBN_CONSTANTS.MBP1_MSG_SIZE) {
+    // Both mbp-1 and tbbo schemas emit Mbp1Msg with literal rtype = 0x01.
+    // Disambiguate schema by metadata or subscription context, defaulting to 'mbp-1'.
+    result.schema = context?.schema === 'tbbo' ? 'tbbo' : (context?.schema || 'mbp-1');
     const rawTradePx = buffer.readBigInt64LE(16);
     const tradeSz = buffer.readUInt32LE(24);
     const action = String.fromCharCode(buffer[28]);
@@ -193,6 +199,7 @@ export function parseDbnRecord(
       };
     }
   } else if (rtype === DBN_CONSTANTS.RTYPE_MBP10 && recLen >= DBN_CONSTANTS.MBP10_MSG_SIZE) {
+    result.schema = 'mbp-10';
     const rawTradePx = buffer.readBigInt64LE(16);
     const tradeSz = buffer.readUInt32LE(24);
     const action = String.fromCharCode(buffer[28]);
@@ -318,7 +325,7 @@ export function parseDbnRecord(
 interface DatabentoLiveOptions {
   symbol: string;
   dataset?: string;
-  schema?: 'trades' | 'mbp-1' | 'mbp-10';
+  schema?: 'trades' | 'mbp-1' | 'mbp-10' | 'tbbo';
   apiKey?: string;
   gatewayUrl?: string;
   handlers: FeedHandlers;
@@ -329,7 +336,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
   public readonly provider = 'databento';
   public readonly symbol: string;
   private readonly dataset: string;
-  private readonly schema: 'trades' | 'mbp-1' | 'mbp-10';
+  private readonly schema: 'trades' | 'mbp-1' | 'mbp-10' | 'tbbo';
   private readonly apiKey: string;
   private readonly gatewayUrl: string;
   private readonly handlers: FeedHandlers;
@@ -460,7 +467,14 @@ export class DatabentoLiveClient implements MarketDataFeed {
       this.handlers.onError(new Error(parsed.message || parsed.error));
       return;
     }
-    if (parsed.action === 'T' || parsed.schema === 'trades' || parsed.rtype === 0 || parsed.rtype === 2) {
+
+    const effectiveSchema = parsed.schema || this.schema;
+    const isTradeAction = parsed.action === 'T';
+    const isTradesSchema = effectiveSchema === 'trades' || parsed.rtype === DBN_CONSTANTS.RTYPE_MBP0;
+    const isTbbo = effectiveSchema === 'tbbo';
+    const hasTradeData = isTradeAction || isTradesSchema || (isTbbo && (parsed.price !== undefined || parsed.px !== undefined));
+
+    if (hasTradeData) {
       try {
         const norm = normalizeTrade(parsed as DbTradeRecord);
         const mt: MarketTrade = {
@@ -477,9 +491,17 @@ export class DatabentoLiveClient implements MarketDataFeed {
       } catch (e: any) {
         console.warn(`[DatabentoLive:${this.symbol}] trade normalize failed: ${e?.message}`);
       }
-      return;
+      // Pure trades schema with no depth fields finishes after emitting trade
+      if (effectiveSchema === 'trades' && !parsed.bids && !parsed.asks && parsed.bid_px_00 === undefined) {
+        return;
+      }
     }
-    if (parsed.bids || parsed.asks || parsed.bid_px_00 !== undefined || parsed.ask_px_00 !== undefined || parsed.rtype === 1 || parsed.rtype === 10 || parsed.schema === 'mbp-1' || parsed.schema === 'mbp-10' || parsed.rtype === 3) {
+
+    const hasDepthData = parsed.bids || parsed.asks || parsed.bid_px_00 !== undefined || parsed.ask_px_00 !== undefined;
+    const isDepthSchema = effectiveSchema === 'mbp-1' || effectiveSchema === 'mbp-10' || effectiveSchema === 'tbbo' ||
+      parsed.rtype === DBN_CONSTANTS.RTYPE_MBP1 || parsed.rtype === DBN_CONSTANTS.RTYPE_MBP10;
+
+    if (hasDepthData || (isDepthSchema && !hasTradeData)) {
       try {
         if (Array.isArray(parsed.bids) || Array.isArray(parsed.asks)) {
           const ev: MarketDepthEvent = {
@@ -491,7 +513,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
             sourceProvider: this.provider,
           };
           this.handlers.onDepth(ev);
-        } else {
+        } else if (parsed.bid_px_00 !== undefined || parsed.ask_px_00 !== undefined) {
           const norm = normalizeQuote(parsed as DbMbp1Record);
           const ev: MarketDepthEvent = {
             kind: 'snapshot',
@@ -575,13 +597,17 @@ export class DatabentoLiveClient implements MarketDataFeed {
             stypeIn = 'raw_symbol';
           }
 
-          const depthSchema = this.schema === 'mbp-10' ? 'mbp-10' : 'mbp-1';
-          const subTrades = `schema=trades|stype_in=${stypeIn}|symbols=${liveSymbol}|snapshot=0|is_last=0\n`;
-          const subMbp = `schema=${depthSchema}|stype_in=${stypeIn}|symbols=${liveSymbol}|snapshot=0|is_last=1\n`;
+          if (this.schema === 'tbbo') {
+            const subTbbo = `schema=tbbo|stype_in=${stypeIn}|symbols=${liveSymbol}|snapshot=0|is_last=1\n`;
+            socket.write(subTbbo);
+          } else {
+            const depthSchema = this.schema === 'mbp-10' ? 'mbp-10' : 'mbp-1';
+            const subTrades = `schema=trades|stype_in=${stypeIn}|symbols=${liveSymbol}|snapshot=0|is_last=0\n`;
+            const subMbp = `schema=${depthSchema}|stype_in=${stypeIn}|symbols=${liveSymbol}|snapshot=0|is_last=1\n`;
+            socket.write(subTrades);
+            socket.write(subMbp);
+          }
           const startSession = 'start_session=1\n';
-
-          socket.write(subTrades);
-          socket.write(subMbp);
           socket.write(startSession);
 
           phase = 'dbn_header';
@@ -618,7 +644,9 @@ export class DatabentoLiveClient implements MarketDataFeed {
       // Phase 4: Records
       if (phase === 'records') {
         while (buffer.length >= DBN_CONSTANTS.HEADER_SIZE) {
-          const { parsed, recLen } = parseDbnRecord(buffer, this.symbol, this.provider, this.dbnVersion);
+          const { parsed, recLen } = parseDbnRecord(buffer, this.symbol, this.provider, this.dbnVersion, {
+            schema: this.schema,
+          });
           if (recLen === 0 || recLen < DBN_CONSTANTS.HEADER_SIZE) {
             buffer = buffer.subarray(1);
             continue;

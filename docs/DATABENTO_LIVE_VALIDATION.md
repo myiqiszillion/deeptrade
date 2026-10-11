@@ -124,7 +124,7 @@ Xác minh bảng thông số nội bộ của DeepChart khớp hoàn toàn với
   - Giá: `int64` fixed-point chia cho `1e9` (ví dụ `5850250000000n` -> `5850.25`).
   - Khối lượng: `uint32` size.
   - Bên chủ động (Aggressor side): `B` -> `BUY`, `A` -> `SELL` (nguyên bản sàn `EXCHANGE_NATIVE`).
-- **MBP-10 Depth (`rtype = 0x02`, length = 368 bytes):**
+- **MBP-10 Depth (`rtype = 0x0A`, length = 368 bytes):**
   - Đủ 10 bậc giá bid và ask.
   - Quy tắc tính toàn vẹn: Bids giảm dần đơn điệu (`bid[0] > bid[1] > ... > bid[9]`), Asks tăng dần đơn điệu (`ask[0] < ask[1] < ... < ask[9]`).
 
