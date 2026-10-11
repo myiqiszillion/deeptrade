@@ -6,6 +6,9 @@ import {
   parseExtraInstruments,
   tickValueFor,
 } from '../../src/futuresConfig.js';
+import { instrumentMaster } from '../../src/instruments/master.js';
+import { futuresSymbolResolver } from '../../src/symbols/futuresResolver.js';
+import { symbolEngine } from '../../src/symbols/engine.js';
 
 /** Roots the product promises out of the box (CME Group liquid universe served by GLBX.MDP3). */
 const REQUIRED_ROOTS = [
@@ -130,6 +133,81 @@ export async function runInstrumentCatalogTests(): Promise<void> {
   assert.ok(parsed.errors.every((error) => error.includes('must be')), 'errors explain what is wrong');
   assert.equal(parseExtraInstruments(undefined).instruments.length, 0, 'no env var -> no extras');
   assert.equal(parseExtraInstruments('   ').errors.length, 0, 'blank env var is not an error');
+
+  // Temporal correctness and futures rollover
+  {
+    instrumentMaster.upsert([
+      {
+        instrumentId: 20001,
+        dataset: 'GLBX.MDP3',
+        publisherId: 1,
+        rawSymbol: 'ESM4',
+        securityType: 'F',
+        asset: 'ES',
+        exchange: 'CME',
+        activation: '2024-03-01T00:00:00.000Z',
+        expiration: '2024-06-14T13:30:00.000Z',
+        currency: 'USD',
+        tickSize: 0.25,
+        multiplier: 50,
+        isContinuous: false,
+      },
+      {
+        instrumentId: 20002,
+        dataset: 'GLBX.MDP3',
+        publisherId: 1,
+        rawSymbol: 'ESU4',
+        securityType: 'F',
+        asset: 'ES',
+        exchange: 'CME',
+        activation: '2024-06-15T00:00:00.000Z',
+        expiration: '2024-09-20T13:30:00.000Z',
+        currency: 'USD',
+        tickSize: 0.25,
+        multiplier: 50,
+        isContinuous: false,
+      },
+      {
+        instrumentId: 20001, // Identical ID on another dataset (OPRA)
+        dataset: 'OPRA.PILLAR',
+        publisherId: 2,
+        rawSymbol: 'SPY240614C00500000',
+        securityType: 'O',
+        asset: 'SPY',
+        underlying: 'SPY',
+        exchange: 'OPRA',
+        activation: '2024-03-01T00:00:00.000Z',
+        expiration: '2024-06-14T20:00:00.000Z',
+        currency: 'USD',
+        tickSize: 0.01,
+        multiplier: 100,
+        isContinuous: false,
+      },
+    ]);
+
+    // Cross-dataset routing with same ID
+    const cmeRec = instrumentMaster.getByInstrumentId(20001, 'GLBX.MDP3');
+    const opraRec = instrumentMaster.getByInstrumentId(20001, 'OPRA.PILLAR');
+    assert.ok(cmeRec && opraRec, 'Both records retrieved by dataset');
+    assert.equal(cmeRec.rawSymbol, 'ESM4');
+    assert.equal(opraRec.rawSymbol, 'SPY240614C00500000');
+
+    // Temporal resolution with asOf
+    const marchLookup = instrumentMaster.getByInstrumentId(20001, 'GLBX.MDP3', '2024-04-01');
+    assert.equal(marchLookup?.rawSymbol, 'ESM4');
+
+    const frontJune = await futuresSymbolResolver.frontMonth('ES', '2024-04-01');
+    assert.equal(frontJune?.rawSymbol, 'ESM4', 'Before June expiry, front month is ESM4');
+
+    const frontJuly = await futuresSymbolResolver.frontMonth('ES', '2024-07-01');
+    assert.equal(frontJuly?.rawSymbol, 'ESU4', 'After June expiry, rollover advances front month to ESU4');
+
+    const secondJune = await futuresSymbolResolver.secondMonth('ES', '2024-04-01');
+    assert.equal(secondJune?.rawSymbol, 'ESU4', 'Second month is ESU4');
+
+    const resolved = await symbolEngine.resolve({ rawSymbol: 'ESM4', dataset: 'GLBX.MDP3', asOf: '2024-04-01' });
+    assert.equal(resolved?.instrumentId, 20001);
+  }
 
   console.log(`  [PASS] CME instrument catalog unit tests passed (${symbols.length} instruments).`);
 }

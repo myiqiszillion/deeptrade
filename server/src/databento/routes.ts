@@ -163,7 +163,7 @@ export function createDatabentoRouter(ctx: DatabentoRouteContext) {
       if (subpath === 'symbology/resolve') {
         if (req.method === 'POST') {
           const body = await readJsonBody(req);
-          const dataset = body.dataset || 'DBEQ.BASIC';
+          const dataset = body.dataset || 'EQUS.MINI';
           const symbols = body.symbols || [];
           const stypeIn = body.stypeIn || body.stype_in || 'raw_symbol';
           const stypeOut = body.stypeOut || body.stype_out || 'instrument_id';
@@ -173,7 +173,7 @@ export function createDatabentoRouter(ctx: DatabentoRouteContext) {
           const result = await client.resolveSymbology(dataset, symbols, stypeIn, stypeOut, startDate, endDate);
           return sendJson(res, 200, result);
         } else {
-          const dataset = url.searchParams.get('dataset') || 'DBEQ.BASIC';
+          const dataset = url.searchParams.get('dataset') || 'EQUS.MINI';
           const symbols = (url.searchParams.get('symbols') || 'SPY').split(',');
           const stypeIn = url.searchParams.get('stype_in') || 'raw_symbol';
           const stypeOut = url.searchParams.get('stype_out') || 'instrument_id';

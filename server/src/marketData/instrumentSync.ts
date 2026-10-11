@@ -24,6 +24,7 @@ interface SyncResult {
 const DATASET_META: Record<string, { exchange: string; instrumentClass: string }> = {
   'GLBX.MDP3': { exchange: 'CME', instrumentClass: 'F' },
   'OPRA.PILLAR': { exchange: 'OPRA', instrumentClass: 'O' },
+  'EQUS.MINI': { exchange: 'XNAS', instrumentClass: 'S' },
   'DBEQ.BASIC': { exchange: 'XNAS', instrumentClass: 'S' },
   'XNAS.ITCH': { exchange: 'XNAS', instrumentClass: 'S' },
 };
@@ -114,6 +115,9 @@ const DEFAULT_DATASET_PARAMS: Record<string, Record<string, any>> = {
   'OPRA.PILLAR': {
     symbols: 'SPY.OPT',
     stype_in: 'parent',
+  },
+  'EQUS.MINI': {
+    symbols: 'SPY,QQQ,AAPL,NVDA,TSLA,MSFT,AMZN',
   },
   'DBEQ.BASIC': {
     symbols: 'SPY,QQQ,AAPL,NVDA,TSLA,MSFT,AMZN',

@@ -489,7 +489,7 @@ export const httpServer = createServer(async (req, res) => {
         databento: {
           configured: Boolean(process.env.DATABENTO_API_KEY),
           opraDataset: process.env.DATABENTO_OPRA_DATASET || 'OPRA.PILLAR',
-          equitiesDataset: process.env.DATABENTO_EQUITIES_DATASET || 'DBEQ.BASIC',
+          equitiesDataset: process.env.DATABENTO_EQUITIES_DATASET || 'EQUS.MINI',
           cmeDataset: process.env.DATABENTO_CME_DATASET || 'GLBX.MDP3',
           costCapUsd: parseFloat(process.env.DATABENTO_COST_CAP_USD || '50'),
           vendorUsage: marketDataStore.listVendorUsage('databento', 3),
@@ -851,7 +851,7 @@ export const httpServer = createServer(async (req, res) => {
           try {
             const startDate = new Date(Date.now() - 86400000 * 3).toISOString().slice(0, 10);
             const resolved = await databentoClient.request<any>('/symbology.resolve', {
-              dataset: 'DBEQ.BASIC',
+              dataset: 'EQUS.MINI',
               symbols: qUpper,
               stype_in: 'raw_symbol',
               stype_out: 'instrument_id',
@@ -861,7 +861,7 @@ export const httpServer = createServer(async (req, res) => {
             if (map && map.length > 0) {
               results.push({
                 instrumentId: Number(map[0].s) || 1,
-                dataset: 'DBEQ.BASIC',
+                dataset: 'EQUS.MINI',
                 publisherId: 1,
                 rawSymbol: qUpper,
                 securityType: 'S',

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, unlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { MarketDataStore } from '../../src/storage/marketDataStore.js';
 import { sampleHistoricalBars } from '../fixtures/bars.js';
 import { sampleTicks } from '../fixtures/trades.js';
@@ -100,6 +101,112 @@ export async function runMarketDataStoreTests(): Promise<void> {
     assert.equal(reopenedStore.getUser('u_p1')?.username, 'persistent1');
     assert.equal(reopenedStore.isTokenJtiRevoked('jti_p1'), true);
     reopenedStore.close();
+
+    // 7. TASK 1: SQLite Migration Safety & Legacy Database Compatibility
+    const LEGACY_DB = resolve(process.cwd(), 'test_legacy_migration.sqlite');
+    if (existsSync(LEGACY_DB)) unlinkSync(LEGACY_DB);
+    try {
+      // Create legacy database with single-column PRIMARY KEY (instrument_id)
+      const legacyRaw = new DatabaseSync(LEGACY_DB);
+      legacyRaw.exec(`
+        CREATE TABLE instrument_master (
+          instrument_id INTEGER PRIMARY KEY,
+          dataset TEXT NOT NULL,
+          publisher_id INTEGER NOT NULL,
+          raw_symbol TEXT NOT NULL,
+          security_type TEXT NOT NULL,
+          asset TEXT NOT NULL,
+          underlying TEXT,
+          exchange TEXT NOT NULL,
+          venue TEXT,
+          activation TEXT,
+          expiration TEXT,
+          strike REAL,
+          option_type TEXT,
+          currency TEXT NOT NULL DEFAULT 'USD',
+          tick_size REAL NOT NULL,
+          multiplier INTEGER NOT NULL DEFAULT 1,
+          figi TEXT, isin TEXT, cusip TEXT,
+          parent_instrument_id INTEGER,
+          is_continuous INTEGER NOT NULL DEFAULT 0,
+          continuous_root TEXT,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX idx_master_dataset ON instrument_master(dataset, asset);
+        CREATE UNIQUE INDEX idx_master_raw ON instrument_master(dataset, raw_symbol);
+
+        INSERT INTO instrument_master (
+          instrument_id, dataset, publisher_id, raw_symbol, security_type, asset,
+          exchange, tick_size, updated_at
+        ) VALUES (10252, 'GLBX.MDP3', 1, 'ESM4', 'F', 'ES', 'CME', 0.25, 1711033200000);
+      `);
+      legacyRaw.close();
+
+      // Verify old schema has pk=1 on instrument_id and pk=0 on dataset
+      const preCheck = new DatabaseSync(LEGACY_DB);
+      const preCols = preCheck.prepare('PRAGMA table_info(instrument_master)').all() as Array<{ name: string; pk: number }>;
+      assert.equal(preCols.find(c => c.name === 'instrument_id')?.pk, 1);
+      assert.equal(preCols.find(c => c.name === 'dataset')?.pk, 0);
+      preCheck.close();
+
+      // Now start MarketDataStore on the legacy DB - should trigger automatic safe migration
+      const migratedStore = new MarketDataStore(LEGACY_DB);
+
+      // Verify columns after migration: both dataset and instrument_id must have pk > 0
+      const postCols = (migratedStore as any).db.prepare('PRAGMA table_info(instrument_master)').all() as Array<{ name: string; pk: number }>;
+      const dsPk = postCols.find((c: any) => c.name === 'dataset')?.pk;
+      const idPk = postCols.find((c: any) => c.name === 'instrument_id')?.pk;
+      assert.ok((dsPk ?? 0) > 0, `dataset must be part of composite primary key (got pk=${dsPk})`);
+      assert.ok((idPk ?? 0) > 0, `instrument_id must be part of composite primary key (got pk=${idPk})`);
+
+      // Verify existing rows preserved
+      const existingRow = (migratedStore as any).db.prepare('SELECT * FROM instrument_master WHERE dataset = ? AND instrument_id = ?').get('GLBX.MDP3', 10252) as any;
+      assert.ok(existingRow, 'Legacy instrument row must be preserved');
+      assert.equal(existingRow.raw_symbol, 'ESM4');
+
+      // Verify schema_migrations table updated
+      const migrationEntry = (migratedStore as any).db.prepare("SELECT * FROM schema_migrations WHERE name = 'instrument_master_composite_pk'").get();
+      assert.ok(migrationEntry, 'Migration record must be written');
+
+      // Verify idempotency: restart on migrated DB
+      migratedStore.close();
+      const idempotentStore = new MarketDataStore(LEGACY_DB);
+      const idempCols = (idempotentStore as any).db.prepare('PRAGMA table_info(instrument_master)').all() as Array<{ name: string; pk: number }>;
+      assert.ok((idempCols.find((c: any) => c.name === 'dataset')?.pk ?? 0) > 0);
+      assert.ok((idempCols.find((c: any) => c.name === 'instrument_id')?.pk ?? 0) > 0);
+
+      // 8. TASK 2: Multi-Dataset Instrument ID Uniqueness & Multi-Dataset Isolation
+      // Same instrument_id (10252) can now coexist across different datasets without collision
+      (idempotentStore as any).db.prepare(`
+        INSERT INTO instrument_master (
+          instrument_id, dataset, publisher_id, raw_symbol, security_type, asset,
+          exchange, tick_size, updated_at
+        ) VALUES (10252, 'OPRA.PILLAR', 2, 'SPY240621C00500000', 'O', 'SPY', 'OPRA', 0.01, 1711033200000)
+      `).run();
+
+      const cmeRow = (idempotentStore as any).db.prepare('SELECT * FROM instrument_master WHERE dataset = ? AND instrument_id = ?').get('GLBX.MDP3', 10252) as any;
+      const opraRow = (idempotentStore as any).db.prepare('SELECT * FROM instrument_master WHERE dataset = ? AND instrument_id = ?').get('OPRA.PILLAR', 10252) as any;
+      assert.ok(cmeRow && opraRow, 'Both datasets must hold the same instrument_id simultaneously');
+      assert.equal(cmeRow.raw_symbol, 'ESM4');
+      assert.equal(cmeRow.dataset, 'GLBX.MDP3');
+      assert.equal(opraRow.raw_symbol, 'SPY240621C00500000');
+      assert.equal(opraRow.dataset, 'OPRA.PILLAR');
+
+      // Add rollover fixture for temporal correctness
+      (idempotentStore as any).db.prepare(`
+        INSERT INTO instrument_master (
+          instrument_id, dataset, publisher_id, raw_symbol, security_type, asset,
+          exchange, activation, expiration, tick_size, updated_at
+        ) VALUES (10389, 'GLBX.MDP3', 1, 'ESU4', 'F', 'ES', 'CME', '2024-06-15T00:00:00.000Z', '2024-09-20T13:30:00.000Z', 0.25, 1711033200000)
+      `).run();
+
+      const esInstruments = (idempotentStore as any).db.prepare('SELECT * FROM instrument_master WHERE dataset = ? AND asset = ? ORDER BY expiration ASC').all('GLBX.MDP3', 'ES') as any[];
+      assert.equal(esInstruments.length, 2);
+
+      idempotentStore.close();
+    } finally {
+      if (existsSync(LEGACY_DB)) unlinkSync(LEGACY_DB);
+    }
 
     console.log('  [PASS] All MarketDataStore unit tests passed.');
   } finally {

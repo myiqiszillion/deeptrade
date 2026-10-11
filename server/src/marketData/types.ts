@@ -38,9 +38,10 @@ export interface MarketTrade {
   qualityFlags?: TradeQualityFlags;
 }
 
-interface DepthLevel {
+export interface DepthLevel {
   price: number;
   size: number;
+  count?: number;
 }
 
 /** A full L2 replacement for one symbol. */

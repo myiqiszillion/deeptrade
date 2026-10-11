@@ -8,7 +8,7 @@ export async function runDatabentoConfigTests(): Promise<void> {
   {
     const cfg = resolveDatabentoConfig({} as any);
     assert.equal(cfg.opraDataset, 'OPRA.PILLAR');
-    assert.equal(cfg.equitiesDataset, 'DBEQ.BASIC');
+    assert.equal(cfg.equitiesDataset, 'EQUS.MINI');
     assert.equal(cfg.cmeDataset, 'GLBX.MDP3');
     assert.equal(cfg.costCapUsd, 50);
     assert.equal(cfg.histBaseUrl, 'https://hist.databento.com/v0');

@@ -30,15 +30,63 @@ export class InstrumentMaster {
     }
     return n;
   }
-  getByInstrumentId(id: number): InstrumentMasterRecord | null {
+  getByInstrumentId(id: number, dataset?: string, asOf?: string | number | Date): InstrumentMasterRecord | null {
     try {
+      let asOfIso: string | undefined;
+      if (asOf) {
+        asOfIso = typeof asOf === 'string' ? asOf : (asOf instanceof Date ? asOf.toISOString() : new Date(asOf).toISOString());
+      }
+      if (dataset) {
+        if (asOfIso) {
+          const rows = (marketDataStore as any).db?.prepare(
+            'SELECT * FROM instrument_master WHERE dataset = ? AND instrument_id = ?'
+          )?.all(dataset, id) as any[];
+          if (rows && rows.length > 0) {
+            const matched = rows.find((r: any) =>
+              (!r.activation || r.activation <= asOfIso!) &&
+              (!r.expiration || r.expiration >= asOfIso!)
+            );
+            if (matched) return mapRow(matched);
+            return mapRow(rows[0]);
+          }
+        }
+        const row = (marketDataStore as any).db?.prepare('SELECT * FROM instrument_master WHERE dataset = ? AND instrument_id = ?')?.get(dataset, id) as any;
+        if (row) return mapRow(row);
+      }
+      if (asOfIso) {
+        const rows = (marketDataStore as any).db?.prepare(
+          'SELECT * FROM instrument_master WHERE instrument_id = ?'
+        )?.all(id) as any[];
+        if (rows && rows.length > 0) {
+          const matched = rows.find((r: any) =>
+            (!r.activation || r.activation <= asOfIso!) &&
+            (!r.expiration || r.expiration >= asOfIso!)
+          );
+          if (matched) return mapRow(matched);
+          return mapRow(rows[0]);
+        }
+      }
       const row = (marketDataStore as any).db?.prepare('SELECT * FROM instrument_master WHERE instrument_id = ?')?.get(id) as any;
       if (!row) return null;
       return mapRow(row);
     } catch { return null; }
   }
-  getByRawSymbol(dataset: string, rawSymbol: string): InstrumentMasterRecord | null {
+  getByRawSymbol(dataset: string, rawSymbol: string, asOf?: string | number | Date): InstrumentMasterRecord | null {
     try {
+      if (asOf) {
+        const asOfIso = typeof asOf === 'string' ? asOf : (asOf instanceof Date ? asOf.toISOString() : new Date(asOf).toISOString());
+        const rows = (marketDataStore as any).db?.prepare(
+          'SELECT * FROM instrument_master WHERE dataset = ? AND raw_symbol = ?'
+        )?.all(dataset, rawSymbol) as any[];
+        if (rows && rows.length > 0) {
+          const matched = rows.find((r: any) =>
+            (!r.activation || r.activation <= asOfIso) &&
+            (!r.expiration || r.expiration >= asOfIso)
+          );
+          if (matched) return mapRow(matched);
+          return mapRow(rows[0]);
+        }
+      }
       const row = (marketDataStore as any).db?.prepare('SELECT * FROM instrument_master WHERE dataset = ? AND raw_symbol = ?')?.get(dataset, rawSymbol) as any;
       if (!row) return null;
       return mapRow(row);

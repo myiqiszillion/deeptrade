@@ -24,6 +24,7 @@ async function main() {
   console.log('\n======================================================');
   console.log(`🎉 ALL INTEGRATION TESTS PASSED SUCCESSFULLY IN ${elapsed}ms`);
   console.log('======================================================\n');
+  process.exit(0);
 }
 
 main().catch((err) => {

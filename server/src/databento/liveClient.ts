@@ -21,7 +21,7 @@ import {
 import { DbTradeRecord, DbMbp1Record } from './types.js';
 import { resolveDatabentoConfig } from './config.js';
 
-const DBN_CONSTANTS = {
+export const DBN_CONSTANTS = {
   MAGIC: 'DBN',
   UNDEF_PRICE: 9223372036854775807n,
   UNDEF_ORDER_SIZE: 4294967295,
@@ -29,15 +29,16 @@ const DBN_CONSTANTS = {
   TRADE_MSG_SIZE: 48,
   MBP1_MSG_SIZE: 80,
   MBP10_MSG_SIZE: 368,
-  RTYPE_MBP0: 0x00, // Trades schema
-  RTYPE_MBP1: 0x01, // mbp-1 schema
-  RTYPE_MBP10: 0x02, // mbp-10 schema
+  RTYPE_MBP0: 0x00, // Trades schema (MBP-0, 48 bytes)
+  RTYPE_MBP1: 0x01, // mbp-1 schema (80 bytes)
+  RTYPE_TBBO: 0x02, // tbbo schema (top-of-book on trade, 80 bytes)
+  RTYPE_MBP10: 0x0A, // mbp-10 schema (10 levels book depth, 368 bytes - Databento official spec)
   RTYPE_ERROR: 0x19,
   RTYPE_SYMBOL_MAPPING: 0x1a,
   RTYPE_SYSTEM: 0x1b,
 } as const;
 
-interface ParsedDbnRecord {
+export interface ParsedDbnRecord {
   rtype: number;
   publisherId: number;
   instrumentId: number;
@@ -56,7 +57,7 @@ function buildCramAuthResponse(challenge: string, apiKey: string, dataset: strin
   return `auth=${auth}|dataset=${dataset}|encoding=dbn|ts_out=0|compression=none|client=DeepChart/1.0.0\n`;
 }
 
-function parseDbnRecord(
+export function parseDbnRecord(
   buffer: Buffer,
   activeSymbol: string,
   sourceProvider = 'databento'
@@ -67,7 +68,10 @@ function parseDbnRecord(
 
   const lengthWords = buffer[0];
   const recLen = lengthWords * 4;
-  if (recLen < DBN_CONSTANTS.HEADER_SIZE || buffer.length < recLen) {
+  if (recLen < DBN_CONSTANTS.HEADER_SIZE || recLen > 1024) {
+    return { parsed: null, recLen: 0 };
+  }
+  if (buffer.length < recLen) {
     return { parsed: null, recLen };
   }
 
@@ -106,26 +110,36 @@ function parseDbnRecord(
         sequenceId: sequence,
       };
     }
-  } else if (rtype === DBN_CONSTANTS.RTYPE_MBP1 && recLen >= DBN_CONSTANTS.MBP1_MSG_SIZE) {
+  } else if ((rtype === DBN_CONSTANTS.RTYPE_MBP1 || rtype === DBN_CONSTANTS.RTYPE_TBBO) && recLen >= DBN_CONSTANTS.MBP1_MSG_SIZE) {
     const rawTradePx = buffer.readBigInt64LE(16);
     const tradeSz = buffer.readUInt32LE(24);
     const action = String.fromCharCode(buffer[28]);
     const sideChar = String.fromCharCode(buffer[29]);
     const sequence = buffer.readUInt32LE(44);
 
-    const bids: Array<{ price: number; size: number }> = [];
-    const asks: Array<{ price: number; size: number }> = [];
+    const bids: Array<{ price: number; size: number; count?: number }> = [];
+    const asks: Array<{ price: number; size: number; count?: number }> = [];
 
     const bPx = buffer.readBigInt64LE(48);
     const aPx = buffer.readBigInt64LE(56);
     const bSz = buffer.readUInt32LE(64);
     const aSz = buffer.readUInt32LE(68);
+    const bCt = buffer.readUInt32LE(72);
+    const aCt = buffer.readUInt32LE(76);
 
     if (bPx !== DBN_CONSTANTS.UNDEF_PRICE && bPx > 0n && bSz > 0 && bSz !== DBN_CONSTANTS.UNDEF_ORDER_SIZE) {
-      bids.push({ price: Number(bPx) / 1e9, size: bSz });
+      bids.push({
+        price: Number(bPx) / 1e9,
+        size: bSz,
+        count: bCt !== DBN_CONSTANTS.UNDEF_ORDER_SIZE ? bCt : undefined,
+      });
     }
     if (aPx !== DBN_CONSTANTS.UNDEF_PRICE && aPx > 0n && aSz > 0 && aSz !== DBN_CONSTANTS.UNDEF_ORDER_SIZE) {
-      asks.push({ price: Number(aPx) / 1e9, size: aSz });
+      asks.push({
+        price: Number(aPx) / 1e9,
+        size: aSz,
+        count: aCt !== DBN_CONSTANTS.UNDEF_ORDER_SIZE ? aCt : undefined,
+      });
     }
 
     if (bids.length > 0 || asks.length > 0) {
@@ -135,6 +149,68 @@ function parseDbnRecord(
         bids,
         asks,
         sourceProvider,
+        updateId: sequence > 0 ? sequence : undefined,
+      };
+    }
+
+    const isValidTradePx = rawTradePx !== DBN_CONSTANTS.UNDEF_PRICE && rawTradePx > 0n;
+    const isValidTradeSz = tradeSz !== DBN_CONSTANTS.UNDEF_ORDER_SIZE && tradeSz > 0;
+
+    if (action === 'T' && isValidTradePx && isValidTradeSz) {
+      const side = sideChar === 'B' ? 'BUY' : sideChar === 'A' ? 'SELL' : 'UNKNOWN';
+      result.trade = {
+        ts: tsMs,
+        price: Number(rawTradePx) / 1e9,
+        size: tradeSz,
+        side,
+        aggressorProvenance: 'EXCHANGE_NATIVE',
+        sourceProvider,
+        sequenceId: sequence,
+      };
+    }
+  } else if (rtype === DBN_CONSTANTS.RTYPE_MBP10 && recLen >= DBN_CONSTANTS.MBP10_MSG_SIZE) {
+    const rawTradePx = buffer.readBigInt64LE(16);
+    const tradeSz = buffer.readUInt32LE(24);
+    const action = String.fromCharCode(buffer[28]);
+    const sideChar = String.fromCharCode(buffer[29]);
+    const sequence = buffer.readUInt32LE(44);
+
+    const bids: Array<{ price: number; size: number; count?: number }> = [];
+    const asks: Array<{ price: number; size: number; count?: number }> = [];
+
+    for (let i = 0; i < 10; i++) {
+      const lvlOffset = 48 + i * 32;
+      const bPx = buffer.readBigInt64LE(lvlOffset + 0);
+      const aPx = buffer.readBigInt64LE(lvlOffset + 8);
+      const bSz = buffer.readUInt32LE(lvlOffset + 16);
+      const aSz = buffer.readUInt32LE(lvlOffset + 20);
+      const bCt = buffer.readUInt32LE(lvlOffset + 24);
+      const aCt = buffer.readUInt32LE(lvlOffset + 28);
+
+      if (bPx !== DBN_CONSTANTS.UNDEF_PRICE && bPx > 0n && bSz > 0 && bSz !== DBN_CONSTANTS.UNDEF_ORDER_SIZE) {
+        bids.push({
+          price: Number(bPx) / 1e9,
+          size: bSz,
+          count: bCt !== DBN_CONSTANTS.UNDEF_ORDER_SIZE ? bCt : undefined,
+        });
+      }
+      if (aPx !== DBN_CONSTANTS.UNDEF_PRICE && aPx > 0n && aSz > 0 && aSz !== DBN_CONSTANTS.UNDEF_ORDER_SIZE) {
+        asks.push({
+          price: Number(aPx) / 1e9,
+          size: aSz,
+          count: aCt !== DBN_CONSTANTS.UNDEF_ORDER_SIZE ? aCt : undefined,
+        });
+      }
+    }
+
+    if (bids.length > 0 || asks.length > 0) {
+      result.depth = {
+        kind: 'snapshot',
+        ts: tsMs,
+        bids,
+        asks,
+        sourceProvider,
+        updateId: sequence > 0 ? sequence : undefined,
       };
     }
 
@@ -166,7 +242,7 @@ function parseDbnRecord(
 interface DatabentoLiveOptions {
   symbol: string;
   dataset?: string;
-  schema?: 'trades' | 'mbp-1';
+  schema?: 'trades' | 'mbp-1' | 'mbp-10';
   apiKey?: string;
   gatewayUrl?: string;
   handlers: FeedHandlers;
@@ -177,7 +253,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
   public readonly provider = 'databento';
   public readonly symbol: string;
   private readonly dataset: string;
-  private readonly schema: 'trades' | 'mbp-1';
+  private readonly schema: 'trades' | 'mbp-1' | 'mbp-10';
   private readonly apiKey: string;
   private readonly gatewayUrl: string;
   private readonly handlers: FeedHandlers;
@@ -307,7 +383,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
       this.handlers.onError(new Error(parsed.message || parsed.error));
       return;
     }
-    if (parsed.action === 'T' || parsed.schema === 'trades' || parsed.rtype === 2) {
+    if (parsed.action === 'T' || parsed.schema === 'trades' || parsed.rtype === 0 || parsed.rtype === 2) {
       try {
         const norm = normalizeTrade(parsed as DbTradeRecord);
         const mt: MarketTrade = {
@@ -326,18 +402,30 @@ export class DatabentoLiveClient implements MarketDataFeed {
       }
       return;
     }
-    if (parsed.bid_px_00 !== undefined || parsed.ask_px_00 !== undefined || parsed.rtype === 3) {
+    if (parsed.bids || parsed.asks || parsed.bid_px_00 !== undefined || parsed.ask_px_00 !== undefined || parsed.rtype === 1 || parsed.rtype === 10 || parsed.schema === 'mbp-1' || parsed.schema === 'mbp-10' || parsed.rtype === 3) {
       try {
-        const norm = normalizeQuote(parsed as DbMbp1Record);
-        const ev: MarketDepthEvent = {
-          kind: 'snapshot',
-          ts: norm.timestamp,
-          bids: norm.bidPrice > 0 ? [{ price: norm.bidPrice, size: norm.bidSize }] : [],
-          asks: norm.askPrice > 0 ? [{ price: norm.askPrice, size: norm.askSize }] : [],
-          receiveTs: Date.now(),
-          sourceProvider: this.provider,
-        };
-        this.handlers.onDepth(ev);
+        if (Array.isArray(parsed.bids) || Array.isArray(parsed.asks)) {
+          const ev: MarketDepthEvent = {
+            kind: 'snapshot',
+            ts: parsed.ts || parsed.timestamp || Date.now(),
+            bids: parsed.bids || [],
+            asks: parsed.asks || [],
+            receiveTs: Date.now(),
+            sourceProvider: this.provider,
+          };
+          this.handlers.onDepth(ev);
+        } else {
+          const norm = normalizeQuote(parsed as DbMbp1Record);
+          const ev: MarketDepthEvent = {
+            kind: 'snapshot',
+            ts: norm.timestamp,
+            bids: norm.bidPrice > 0 ? [{ price: norm.bidPrice, size: norm.bidSize }] : [],
+            asks: norm.askPrice > 0 ? [{ price: norm.askPrice, size: norm.askSize }] : [],
+            receiveTs: Date.now(),
+            sourceProvider: this.provider,
+          };
+          this.handlers.onDepth(ev);
+        }
       } catch (e: any) {
         console.warn(`[DatabentoLive:${this.symbol}] quote normalize failed: ${e?.message}`);
       }
@@ -410,8 +498,9 @@ export class DatabentoLiveClient implements MarketDataFeed {
             stypeIn = 'raw_symbol';
           }
 
+          const depthSchema = this.schema === 'mbp-10' ? 'mbp-10' : 'mbp-1';
           const subTrades = `schema=trades|stype_in=${stypeIn}|symbols=${liveSymbol}|snapshot=0|is_last=0\n`;
-          const subMbp = `schema=mbp-1|stype_in=${stypeIn}|symbols=${liveSymbol}|snapshot=0|is_last=1\n`;
+          const subMbp = `schema=${depthSchema}|stype_in=${stypeIn}|symbols=${liveSymbol}|snapshot=0|is_last=1\n`;
           const startSession = 'start_session=1\n';
 
           socket.write(subTrades);

@@ -30,7 +30,7 @@ export function resolveDatabentoConfig(env: NodeJS.ProcessEnv = process.env): Da
     histBaseUrl: (env.DATABENTO_HIST_URL || 'https://hist.databento.com/v0').replace(/\/+$/, ''),
     liveBaseUrl: (env.DATABENTO_LIVE_URL || 'wss://live.databento.com/v0').replace(/\/+$/, ''),
     opraDataset: (env.DATABENTO_OPRA_DATASET || 'OPRA.PILLAR').trim(),
-    equitiesDataset: (env.DATABENTO_EQUITIES_DATASET || 'DBEQ.BASIC').trim(),
+    equitiesDataset: (env.DATABENTO_EQUITIES_DATASET || 'EQUS.MINI').trim(),
     cmeDataset: (env.DATABENTO_CME_DATASET || 'GLBX.MDP3').trim(),
     costCapUsd: parseCostCap(env.DATABENTO_COST_CAP_USD),
     timeoutMs: parseInt(env.DATABENTO_TIMEOUT_MS || '15000', 10),

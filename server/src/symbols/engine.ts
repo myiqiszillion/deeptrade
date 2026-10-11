@@ -12,13 +12,13 @@ import { marketDataStore } from '../storage/marketDataStore.js';
 import { parseOsiSymbol } from '../databento/normalizer.js';
 
 export class SymbolEngine {
-  async resolve(q: { rawSymbol?: string; instrumentId?: number; parent?: string; continuous?: string; figi?: string; isin?: string; dataset?: string }): Promise<SymbolRecord | null> {
+  async resolve(q: { rawSymbol?: string; instrumentId?: number; parent?: string; continuous?: string; figi?: string; isin?: string; dataset?: string; asOf?: string | number | Date }): Promise<SymbolRecord | null> {
     if (q.instrumentId != null) {
-      const r = instrumentMaster.getByInstrumentId(q.instrumentId);
+      const r = instrumentMaster.getByInstrumentId(q.instrumentId, q.dataset, q.asOf);
       return r ? toRecord(r) : null;
     }
     if (q.rawSymbol && q.dataset) {
-      const r = instrumentMaster.getByRawSymbol(q.dataset, q.rawSymbol);
+      const r = instrumentMaster.getByRawSymbol(q.dataset, q.rawSymbol, q.asOf);
       if (r) return toRecord(r);
     }
     if (q.rawSymbol) {
@@ -118,13 +118,13 @@ export const symbolEngine = new SymbolEngine();
 
 export class SymbologyResolver {
   constructor(private engine: SymbolEngine = symbolEngine) {}
-  async resolve(req: { symbols: string[]; dataset: string; stypeIn: SymbologyKind; stypeOut: SymbologyKind }): Promise<Map<string, SymbolRecord>> {
+  async resolve(req: { symbols: string[]; dataset: string; stypeIn: SymbologyKind; stypeOut: SymbologyKind; asOf?: string | number | Date }): Promise<Map<string, SymbolRecord>> {
     if (!supportsSymbology(req.dataset, req.stypeIn as any) || !supportsSymbology(req.dataset, req.stypeOut as any)) {
       throw new Error(`Symbology ${req.stypeIn}→${req.stypeOut} not available for ${req.dataset}`);
     }
     const m = new Map<string, SymbolRecord>();
     for (const s of req.symbols) {
-      const rec = await this.engine.resolve({ rawSymbol: s, dataset: req.dataset });
+      const rec = await this.engine.resolve({ rawSymbol: s, dataset: req.dataset, asOf: req.asOf });
       if (rec) m.set(s, rec);
     }
     return m;

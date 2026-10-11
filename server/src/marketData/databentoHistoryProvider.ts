@@ -99,10 +99,16 @@ export function createDatabentoHistoryProvider(client?: DatabentoHttpClient): Hi
       const start = new Date(end.getTime() - 48 * 3600_000);
 
       let querySymbol = symbol;
+      let stypeIn: string | undefined = undefined;
 
       if (dataset === cfg.cmeDataset) {
         if (!querySymbol.includes('.')) {
           querySymbol = `${querySymbol}.c.0`;
+        }
+        if (querySymbol.includes('.c.') || querySymbol.includes('.v.')) {
+          stypeIn = 'continuous';
+        } else if (querySymbol.endsWith('.FUT')) {
+          stypeIn = 'parent';
         }
       }
 
@@ -112,7 +118,8 @@ export function createDatabentoHistoryProvider(client?: DatabentoHttpClient): Hi
           querySymbol,
           start as any,
           end as any,
-          options.elements
+          options.elements,
+          stypeIn
         );
         return trades.map(t => ({
           timestamp: t.timestamp,

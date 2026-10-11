@@ -224,7 +224,8 @@ export class DatabentoHttpClient {
     symbols: string | string[],
     start: number | string | Date,
     end?: number | string | Date,
-    limit?: number
+    limit?: number,
+    stypeIn?: string
   ): Promise<NormalizedTrade[]> {
     const rawRecords = await this.request<DbTradeRecord>('/timeseries.get_range', {
       dataset,
@@ -233,6 +234,7 @@ export class DatabentoHttpClient {
       start: this.formatTimeArg(start),
       end: this.formatTimeArg(end),
       limit,
+      stype_in: stypeIn,
     });
 
     return rawRecords.map((r) => normalizeTrade(r));
@@ -246,7 +248,8 @@ export class DatabentoHttpClient {
     symbols: string | string[],
     start: number | string | Date,
     end?: number | string | Date,
-    limit?: number
+    limit?: number,
+    stypeIn?: string
   ): Promise<NormalizedQuote[]> {
     const rawRecords = await this.request<DbMbp1Record>('/timeseries.get_range', {
       dataset,
@@ -255,6 +258,7 @@ export class DatabentoHttpClient {
       start: this.formatTimeArg(start),
       end: this.formatTimeArg(end),
       limit,
+      stype_in: stypeIn,
     });
 
     return rawRecords.map((r) => normalizeQuote(r));
@@ -436,7 +440,8 @@ export class DatabentoHttpClient {
     schema: string,
     symbols: string | string[],
     start: number | string | Date,
-    end?: number | string | Date
+    end?: number | string | Date,
+    stypeIn?: string
   ): Promise<{ costUsd: number; sizeBytes: number; recordCount: number }> {
     const res = await this.request<any>('/metadata.get_cost', {
       dataset,
@@ -444,6 +449,7 @@ export class DatabentoHttpClient {
       symbols: Array.isArray(symbols) ? symbols.join(',') : symbols,
       start: this.formatTimeArg(start),
       end: this.formatTimeArg(end),
+      stype_in: stypeIn,
     });
     const r = res[0] || res;
     return {
@@ -483,7 +489,8 @@ export class DatabentoHttpClient {
     symbols: string | string[],
     start: number | string | Date,
     end?: number | string | Date,
-    limit?: number
+    limit?: number,
+    stypeIn?: string
   ): Promise<any[]> {
     return this.request('/timeseries.get_range', {
       dataset,
@@ -492,6 +499,7 @@ export class DatabentoHttpClient {
       start: this.formatTimeArg(start),
       end: this.formatTimeArg(end),
       limit,
+      stype_in: stypeIn,
     });
   }
 
