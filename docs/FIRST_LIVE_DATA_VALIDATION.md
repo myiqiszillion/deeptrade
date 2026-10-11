@@ -28,8 +28,8 @@ Harness `scripts/verify_databento_live.mjs` là công cụ smoke test độc l�
 > **Quy chuẩn 6 Giai Đoạn Giao Thức (6 Protocol Stages):**
 > 1. `AUTHENTICATED`: CRAM-SHA256 handshake thành công (`success=1`).
 > 2. `DBN METADATA RECEIVED`: Đã nhận và bóc tách DBN Metadata Header framing (8 + metaLen bytes).
-> 3. `SUBSCRIPTION ACK RECEIVED`: Đã nhận `SystemMsg` record với `code = 1` (`SUBSCRIPTION_ACK`).
-> 4. `ERROR RECORD RECEIVED`: Bắt và phân lập bản tin lỗi `ErrorMsg` (rtype `0x19` / `0x15`).
+> 3. `SUBSCRIPTION ACK RECEIVED`: Đã nhận `SystemMsg` record với rtype `0x17` và `code = 1` (`SUBSCRIPTION_ACK`).
+> 4. `ERROR RECORD RECEIVED`: Bắt và phân lập bản tin lỗi `ErrorMsg` (rtype `0x15`).
 > 5. `REAL MARKET RECORDS RECEIVED`: Bản tin dữ liệu thị trường thực tế (trade/depth) loại trừ heartbeat và system.
 > 6. `DECODER VERIFIED`: Production `parseDbnRecord` giải mã thành công cấu trúc bản tin chuẩn xác.
 

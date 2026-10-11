@@ -303,11 +303,12 @@ async function runHarness() {
   let authSuccess = false;                 // 1. AUTHENTICATED
   let dbnMetadataReceived = false;         // 2. DBN METADATA RECEIVED
   let subscriptionAckReceived = false;     // 3. SUBSCRIPTION ACK RECEIVED (SystemMsg code=1)
-  let errorRecordReceived = false;         // 4. ERROR RECORD RECEIVED (ErrorMsg rtype=0x19/0x15)
+  let errorRecordReceived = false;         // 4. ERROR RECORD RECEIVED (ErrorMsg rtype=0x15)
   let realMarketRecordsReceived = 0;       // 5. REAL MARKET RECORDS RECEIVED (trade/depth count)
   let decoderVerified = false;             // 6. DECODER VERIFIED (parsed trade/depth structurally valid)
 
   // Additional Telemetry
+  let dbnVersion = 2;
   let metadataLen = 0;
   let heartbeatCount = 0;
   let lastHeartbeatTs = 0;
@@ -421,12 +422,13 @@ async function runHarness() {
       // Phase 4: DBN Stream Header (Stream/Container Metadata)
       if (phase === 'dbn_header') {
         if (buffer.length >= 8 && buffer.subarray(0, 3).toString('ascii') === DBN_CONSTANTS.MAGIC) {
+          dbnVersion = buffer.readUInt8(3);
           const metaLen = buffer.readUInt32LE(4);
           if (buffer.length >= 8 + metaLen) {
             buffer = buffer.subarray(8 + metaLen);
             dbnMetadataReceived = true;
             metadataLen = metaLen;
-            console.log(`[LSG] ✅ [STAGE 2: DBN METADATA RECEIVED] Header parsed (metaLen: ${metaLen} bytes).`);
+            console.log(`[LSG] ✅ [STAGE 2: DBN METADATA RECEIVED] Header parsed (DBN v${dbnVersion}, metaLen: ${metaLen} bytes).`);
             console.log('      (Note: DBN metadata header is stream framing, NOT subscription ACK)');
             phase = 'records';
           }
@@ -442,7 +444,7 @@ async function runHarness() {
       if (phase === 'records') {
         while (buffer.length >= DBN_CONSTANTS.HEADER_SIZE) {
           // Use production decoder function directly
-          const { parsed, recLen } = parseDbnRecord(buffer, opts.symbol, 'databento');
+          const { parsed, recLen } = parseDbnRecord(buffer, opts.symbol, 'databento', dbnVersion);
 
           if (recLen === 0 || recLen < DBN_CONSTANTS.HEADER_SIZE) {
             buffer = buffer.subarray(1);
@@ -468,8 +470,8 @@ async function runHarness() {
               }
             }
 
-            // Stage 4: ERROR RECORD RECEIVED (ErrorMsg rtype=0x19/0x15)
-            if (parsed.error || parsed.rtype === DBN_CONSTANTS.RTYPE_ERROR || parsed.rtype === 0x15) {
+            // Stage 4: ERROR RECORD RECEIVED (ErrorMsg rtype=0x15)
+            if (parsed.error || parsed.rtype === DBN_CONSTANTS.RTYPE_ERROR) {
               errorRecordReceived = true;
               lastErrorText = parsed.error || 'Gateway ErrorMsg received';
               parseErrors++;
@@ -531,6 +533,10 @@ async function runHarness() {
                   instrumentId: parsed.instrumentId,
                 });
               }
+            }
+
+            if (!parsed.trade && !parsed.depth && !parsed.system && !parsed.error) {
+              console.log(`[LSG Telemetry] Handled non-market administrative record rtype=0x${parsed.rtype.toString(16).padStart(2, '0')} (instrumentId: ${parsed.instrumentId})`);
             }
 
             // Cap check: only cap on real market records

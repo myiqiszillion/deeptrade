@@ -35,9 +35,10 @@ export const DBN_CONSTANTS = {
   RTYPE_MBP1: 0x01, // mbp-1 schema (80 bytes)
   RTYPE_TBBO: 0x02, // tbbo schema (top-of-book on trade, 80 bytes)
   RTYPE_MBP10: 0x0A, // mbp-10 schema (10 levels book depth, 368 bytes - Databento official spec)
-  RTYPE_ERROR: 0x19,
-  RTYPE_SYMBOL_MAPPING: 0x1a,
-  RTYPE_SYSTEM: 0x1b,
+  RTYPE_ERROR: 0x15, // ErrorMsg (official Databento DBN enum: 21 decimal)
+  RTYPE_SYMBOL_MAPPING: 0x16, // SymbolMappingMsg (official Databento DBN enum: 22 decimal)
+  RTYPE_SYSTEM: 0x17, // SystemMsg (official Databento DBN enum: 23 decimal)
+  RTYPE_STATISTICS: 0x18, // StatisticsMsg (official Databento DBN enum: 24 decimal)
 } as const;
 
 export const SYSTEM_CODES = {
@@ -55,6 +56,8 @@ export interface ParsedDbnRecord {
   trade?: MarketTrade;
   depth?: MarketDepthEvent;
   error?: string;
+  errorCode?: number;
+  isLast?: number;
   system?: {
     code: number;
     msg: string;
@@ -75,9 +78,15 @@ function buildCramAuthResponse(challenge: string, apiKey: string, dataset: strin
 export function parseDbnRecord(
   buffer: Buffer,
   activeSymbol: string,
-  sourceProvider = 'databento'
+  sourceProvider = 'databento',
+  dbnVersion = 2
 ): { parsed: ParsedDbnRecord | null; recLen: number } {
   if (buffer.length < DBN_CONSTANTS.HEADER_SIZE) {
+    return { parsed: null, recLen: 0 };
+  }
+
+  // Guard against interpreting stream metadata framing ('DBN' magic) as record or subscription ACK
+  if (buffer.length >= 3 && buffer[0] === 0x44 && buffer[1] === 0x42 && buffer[2] === 0x4E) {
     return { parsed: null, recLen: 0 };
   }
 
@@ -244,36 +253,31 @@ export function parseDbnRecord(
         sequenceId: sequence,
       };
     }
-  } else if (rtype === DBN_CONSTANTS.RTYPE_SYSTEM || rtype === 0x17) {
+  } else if (rtype === DBN_CONSTANTS.RTYPE_SYSTEM) {
     let code = 0;
     let msg = '';
-    if (recLen >= 320) {
+    if (dbnVersion >= 2 && recLen >= DBN_CONSTANTS.SYSTEM_MSG_SIZE) {
+      // DBN v2+: msg[303] (bytes 16..318), code uint8 at byte 319 (total 320 bytes)
       code = buffer.readUInt8(319);
       const nullIdx = buffer.subarray(16, 319).indexOf(0);
       msg = (nullIdx !== -1 ? buffer.subarray(16, 16 + nullIdx) : buffer.subarray(16, 319))
         .toString('utf8')
         .trim();
     } else {
-      const lastByte = buffer.readUInt8(recLen - 1);
+      // DBN v1 legacy fallback: msg without explicit trailing code
       const nullIdx = buffer.subarray(16, recLen).indexOf(0);
-      const rawText = (nullIdx !== -1 ? buffer.subarray(16, 16 + nullIdx) : buffer.subarray(16, recLen))
+      msg = (nullIdx !== -1 ? buffer.subarray(16, 16 + nullIdx) : buffer.subarray(16, recLen))
         .toString('utf8')
         .trim();
-      if (lastByte <= 3 && recLen > 17 && buffer[recLen - 2] === 0) {
-        code = lastByte;
-        msg = rawText;
-      } else {
-        msg = rawText;
-        const lower = msg.toLowerCase();
-        if (lower.includes('subscribed') || lower.includes('subscription')) {
-          code = SYSTEM_CODES.SUBSCRIPTION_ACK;
-        } else if (lower.includes('heartbeat')) {
-          code = SYSTEM_CODES.HEARTBEAT;
-        } else if (lower.includes('slow reader')) {
-          code = SYSTEM_CODES.SLOW_READER_WARNING;
-        } else if (lower.includes('replay')) {
-          code = SYSTEM_CODES.REPLAY_COMPLETED;
-        }
+      const lower = msg.toLowerCase();
+      if (lower.includes('subscribed') || lower.includes('subscription')) {
+        code = SYSTEM_CODES.SUBSCRIPTION_ACK;
+      } else if (lower.includes('heartbeat')) {
+        code = SYSTEM_CODES.HEARTBEAT;
+      } else if (lower.includes('slow reader')) {
+        code = SYSTEM_CODES.SLOW_READER_WARNING;
+      } else if (lower.includes('replay')) {
+        code = SYSTEM_CODES.REPLAY_COMPLETED;
       }
     }
     result.system = {
@@ -282,14 +286,30 @@ export function parseDbnRecord(
       isHeartbeat: code === SYSTEM_CODES.HEARTBEAT,
       isSubscriptionAck: code === SYSTEM_CODES.SUBSCRIPTION_ACK,
     };
-  } else if (rtype === DBN_CONSTANTS.RTYPE_ERROR || rtype === 0x15) {
-    const textLimit = recLen >= 320 ? 318 : recLen;
-    const nullIdx = buffer.subarray(16, textLimit).indexOf(0);
-    const errText = (nullIdx !== -1
-      ? buffer.subarray(16, 16 + nullIdx)
-      : buffer.subarray(16, textLimit)
-    ).toString('utf8').trim();
+  } else if (rtype === DBN_CONSTANTS.RTYPE_ERROR) {
+    let errCode = 0;
+    let isLast = 1;
+    let errText = '';
+    if (dbnVersion >= 2 && recLen >= DBN_CONSTANTS.ERROR_MSG_SIZE) {
+      // DBN v2+: err[302] (bytes 16..317), code uint8 at byte 318, is_last uint8 at byte 319 (total 320 bytes)
+      const nullIdx = buffer.subarray(16, 318).indexOf(0);
+      errText = (nullIdx !== -1
+        ? buffer.subarray(16, 16 + nullIdx)
+        : buffer.subarray(16, 318)
+      ).toString('utf8').trim();
+      errCode = buffer.readUInt8(318);
+      isLast = buffer.readUInt8(319);
+    } else {
+      // DBN v1 legacy compatibility
+      const nullIdx = buffer.subarray(16, recLen).indexOf(0);
+      errText = (nullIdx !== -1
+        ? buffer.subarray(16, 16 + nullIdx)
+        : buffer.subarray(16, recLen)
+      ).toString('utf8').trim();
+    }
     result.error = errText.length > 0 ? errText : 'Unknown Databento gateway error';
+    result.errorCode = errCode;
+    result.isLast = isLast;
   }
 
   return { parsed: result, recLen };
@@ -323,6 +343,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
   private reconnectTimer: any = null;
   private liveResolver?: () => void;
   private generation = 0;
+  private dbnVersion = 2;
 
   constructor(options: DatabentoLiveOptions) {
     this.symbol = options.symbol;
@@ -583,6 +604,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
       // Phase 3: DBN Header
       if (phase === 'dbn_header') {
         if (buffer.length >= 8 && buffer.subarray(0, 3).toString('ascii') === DBN_CONSTANTS.MAGIC) {
+          this.dbnVersion = buffer.readUInt8(3);
           const metaLen = buffer.readUInt32LE(4);
           if (buffer.length >= 8 + metaLen) {
             buffer = buffer.subarray(8 + metaLen);
@@ -596,7 +618,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
       // Phase 4: Records
       if (phase === 'records') {
         while (buffer.length >= DBN_CONSTANTS.HEADER_SIZE) {
-          const { parsed, recLen } = parseDbnRecord(buffer, this.symbol, this.provider);
+          const { parsed, recLen } = parseDbnRecord(buffer, this.symbol, this.provider, this.dbnVersion);
           if (recLen === 0 || recLen < DBN_CONSTANTS.HEADER_SIZE) {
             buffer = buffer.subarray(1);
             continue;
@@ -621,6 +643,10 @@ export class DatabentoLiveClient implements MarketDataFeed {
             }
             if (parsed.trade) {
               this.handlers.onTrade(parsed.trade);
+            }
+            if (!parsed.trade && !parsed.depth && !parsed.system && !parsed.error) {
+              // Administrative or unhandled DBN record (e.g. SymbolMapping 0x16, Statistics 0x18)
+              // Telemetry: safely handled, never routed as market trade/depth
             }
           }
 
