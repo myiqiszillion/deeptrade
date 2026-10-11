@@ -2,7 +2,7 @@
 
 > **Báo cáo kiểm thử Entitlement, API Metadata, Live Gateway và Khả năng vận hành Real Data End-to-End.**
 > **Thời điểm xác minh**: 2026-10-11 (Giờ địa phương)
-> **Git Revision**: `24b9d4c7318237c0c8eb1e0a95af5781c4b60134` (với các bản sửa lỗi MBP-10 protocol, DBN decoder, SQLite transactional migration, temporal symbology và activation matrix)
+> **Git Revision**: Release Safety Snapshot (`master`) — với các bản sửa lỗi MBP-10 protocol, DBN decoder, SQLite transactional migration, temporal symbology và activation matrix.
 
 ---
 
@@ -181,7 +181,7 @@ Phân định rạch ròi giữa các tầng dữ liệu:
 
 ## 7. TRẠNG THÁI GIT & CÁC BƯỚC CẦN OPERATOR PHÊ DUYỆT
 
-- **Git HEAD Commit**: `24b9d4c7318237c0c8eb1e0a95af5781c4b60134`.
+- **Git Revision**: Release Safety Snapshot (`master`) đã nghiệm thu toàn diện các test suites.
 - **Git Diff & Whitespace check**: `git diff --check` đạt chuẩn, không có secret, không có push Git, không deploy production.
 - **Các bước còn lại phụ thuộc vào sự phê duyệt của Operator**:
   1. **Kích hoạt Live Streaming thực**: Để nhận stream trực tiếp từ CME, OPRA, hoặc EQUS trên tài khoản có trả phí, Operator cần phê duyệt chạy live session cụ thể.
