@@ -29,6 +29,8 @@ export const DBN_CONSTANTS = {
   TRADE_MSG_SIZE: 48,
   MBP1_MSG_SIZE: 80,
   MBP10_MSG_SIZE: 368,
+  SYSTEM_MSG_SIZE: 320,
+  ERROR_MSG_SIZE: 320,
   RTYPE_MBP0: 0x00, // Trades schema (MBP-0, 48 bytes)
   RTYPE_MBP1: 0x01, // mbp-1 schema (80 bytes)
   RTYPE_TBBO: 0x02, // tbbo schema (top-of-book on trade, 80 bytes)
@@ -36,6 +38,13 @@ export const DBN_CONSTANTS = {
   RTYPE_ERROR: 0x19,
   RTYPE_SYMBOL_MAPPING: 0x1a,
   RTYPE_SYSTEM: 0x1b,
+} as const;
+
+export const SYSTEM_CODES = {
+  HEARTBEAT: 0,
+  SUBSCRIPTION_ACK: 1,
+  SLOW_READER_WARNING: 2,
+  REPLAY_COMPLETED: 3,
 } as const;
 
 export interface ParsedDbnRecord {
@@ -46,6 +55,12 @@ export interface ParsedDbnRecord {
   trade?: MarketTrade;
   depth?: MarketDepthEvent;
   error?: string;
+  system?: {
+    code: number;
+    msg: string;
+    isHeartbeat: boolean;
+    isSubscriptionAck: boolean;
+  };
 }
 
 function buildCramAuthResponse(challenge: string, apiKey: string, dataset: string): string {
@@ -229,11 +244,52 @@ export function parseDbnRecord(
         sequenceId: sequence,
       };
     }
-  } else if (rtype === DBN_CONSTANTS.RTYPE_ERROR || rtype === 0x15) {
-    const errText = buffer.subarray(16, recLen).toString('utf8').replace(/\0+$/, '').trim();
-    if (errText.length > 0) {
-      result.error = errText;
+  } else if (rtype === DBN_CONSTANTS.RTYPE_SYSTEM || rtype === 0x17) {
+    let code = 0;
+    let msg = '';
+    if (recLen >= 320) {
+      code = buffer.readUInt8(319);
+      const nullIdx = buffer.subarray(16, 319).indexOf(0);
+      msg = (nullIdx !== -1 ? buffer.subarray(16, 16 + nullIdx) : buffer.subarray(16, 319))
+        .toString('utf8')
+        .trim();
+    } else {
+      const lastByte = buffer.readUInt8(recLen - 1);
+      const nullIdx = buffer.subarray(16, recLen).indexOf(0);
+      const rawText = (nullIdx !== -1 ? buffer.subarray(16, 16 + nullIdx) : buffer.subarray(16, recLen))
+        .toString('utf8')
+        .trim();
+      if (lastByte <= 3 && recLen > 17 && buffer[recLen - 2] === 0) {
+        code = lastByte;
+        msg = rawText;
+      } else {
+        msg = rawText;
+        const lower = msg.toLowerCase();
+        if (lower.includes('subscribed') || lower.includes('subscription')) {
+          code = SYSTEM_CODES.SUBSCRIPTION_ACK;
+        } else if (lower.includes('heartbeat')) {
+          code = SYSTEM_CODES.HEARTBEAT;
+        } else if (lower.includes('slow reader')) {
+          code = SYSTEM_CODES.SLOW_READER_WARNING;
+        } else if (lower.includes('replay')) {
+          code = SYSTEM_CODES.REPLAY_COMPLETED;
+        }
+      }
     }
+    result.system = {
+      code,
+      msg,
+      isHeartbeat: code === SYSTEM_CODES.HEARTBEAT,
+      isSubscriptionAck: code === SYSTEM_CODES.SUBSCRIPTION_ACK,
+    };
+  } else if (rtype === DBN_CONSTANTS.RTYPE_ERROR || rtype === 0x15) {
+    const textLimit = recLen >= 320 ? 318 : recLen;
+    const nullIdx = buffer.subarray(16, textLimit).indexOf(0);
+    const errText = (nullIdx !== -1
+      ? buffer.subarray(16, 16 + nullIdx)
+      : buffer.subarray(16, textLimit)
+    ).toString('utf8').trim();
+    result.error = errText.length > 0 ? errText : 'Unknown Databento gateway error';
   }
 
   return { parsed: result, recLen };
@@ -552,6 +608,13 @@ export class DatabentoLiveClient implements MarketDataFeed {
           if (parsed) {
             if (parsed.error) {
               this.handlers.onError(new Error(`[DatabentoLive:${this.symbol}] ${parsed.error}`));
+            }
+            if (parsed.system) {
+              if (parsed.system.isHeartbeat) {
+                // Gateway heartbeat keepalive
+              } else if (parsed.system.isSubscriptionAck) {
+                // Subscription acknowledged
+              }
             }
             if (parsed.depth) {
               this.handlers.onDepth(parsed.depth);

@@ -33,7 +33,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabentoHttpClient } from '../server/dist/databento/client.js';
-import { parseDbnRecord, DBN_CONSTANTS } from '../server/dist/databento/liveClient.js';
+import { parseDbnRecord, DBN_CONSTANTS, SYSTEM_CODES } from '../server/dist/databento/liveClient.js';
 import { SessionCalendar } from '../server/dist/calendar/sessionCalendar.js';
 import { resolveDatabentoConfig } from '../server/dist/databento/config.js';
 
@@ -298,12 +298,22 @@ async function runHarness() {
 
   let phase = 'cram';
   let buffer = Buffer.alloc(0);
-  let recordCount = 0;
+
+  // --- Protocol State Tracking (Explicit 6 Stages) ---
+  let authSuccess = false;                 // 1. AUTHENTICATED
+  let dbnMetadataReceived = false;         // 2. DBN METADATA RECEIVED
+  let subscriptionAckReceived = false;     // 3. SUBSCRIPTION ACK RECEIVED (SystemMsg code=1)
+  let errorRecordReceived = false;         // 4. ERROR RECORD RECEIVED (ErrorMsg rtype=0x19/0x15)
+  let realMarketRecordsReceived = 0;       // 5. REAL MARKET RECORDS RECEIVED (trade/depth count)
+  let decoderVerified = false;             // 6. DECODER VERIFIED (parsed trade/depth structurally valid)
+
+  // Additional Telemetry
+  let metadataLen = 0;
+  let heartbeatCount = 0;
+  let lastHeartbeatTs = 0;
+  let lastErrorText = null;
   let parseErrors = 0;
   let sampleRecords = [];
-  let subscribeAckReceived = false;
-  let dbnHeaderParsed = false;
-  let authSuccess = false;
   let disconnectReason = 'NORMAL_COMPLETION';
 
   const startTime = Date.now();
@@ -382,7 +392,7 @@ async function runHarness() {
           authSuccess = true;
           const sessMatch = line.match(/session_id=([^\r\n|]+)/);
           const sessId = sessMatch ? sessMatch[1] : 'active';
-          console.log(`[LSG] ✅ Authentication successful (session_id: ${sessId})`);
+          console.log(`[LSG] ✅ [STAGE 1: AUTHENTICATED] Gateway authentication successful (session_id: ${sessId})`);
 
           // Phase 3: Single Subscription (trades or mbp-10)
           const liveSymbol = opts.symbol;
@@ -408,20 +418,22 @@ async function runHarness() {
         }
       }
 
-      // Phase 4: DBN Stream Header
+      // Phase 4: DBN Stream Header (Stream/Container Metadata)
       if (phase === 'dbn_header') {
         if (buffer.length >= 8 && buffer.subarray(0, 3).toString('ascii') === DBN_CONSTANTS.MAGIC) {
           const metaLen = buffer.readUInt32LE(4);
           if (buffer.length >= 8 + metaLen) {
             buffer = buffer.subarray(8 + metaLen);
-            subscribeAckReceived = true;
-            dbnHeaderParsed = true;
-            console.log(`[LSG] ✅ DBN Header acknowledged (metaLen: ${metaLen} bytes). Streaming records...`);
+            dbnMetadataReceived = true;
+            metadataLen = metaLen;
+            console.log(`[LSG] ✅ [STAGE 2: DBN METADATA RECEIVED] Header parsed (metaLen: ${metaLen} bytes).`);
+            console.log('      (Note: DBN metadata header is stream framing, NOT subscription ACK)');
             phase = 'records';
           }
         } else if (buffer.length >= 128 && buffer.subarray(0, 3).toString('ascii') !== DBN_CONSTANTS.MAGIC) {
           // Fallback if header framing differs
-          subscribeAckReceived = true;
+          dbnMetadataReceived = true;
+          console.log('[LSG] ✅ [STAGE 2: DBN METADATA RECEIVED] Framing acknowledged. Awaiting subscription records...');
           phase = 'records';
         }
       }
@@ -442,14 +454,34 @@ async function runHarness() {
           }
 
           if (parsed) {
-            recordCount++;
-
-            if (parsed.error) {
-              console.error(`[LSG Record Error] ${parsed.error}`);
-              parseErrors++;
+            // Stage 3: SUBSCRIPTION ACK RECEIVED (SystemMsg code=1) or Heartbeat (code=0)
+            if (parsed.system) {
+              if (parsed.system.isSubscriptionAck) {
+                subscriptionAckReceived = true;
+                console.log(`[LSG] ✅ [STAGE 3: SUBSCRIPTION ACK RECEIVED] SystemMsg code=1 (msg: "${parsed.system.msg || 'OK'}")`);
+              } else if (parsed.system.isHeartbeat) {
+                heartbeatCount++;
+                lastHeartbeatTs = parsed.tsMs;
+                console.log(`[LSG Heartbeat] Received gateway heartbeat #${heartbeatCount} at ${new Date(parsed.tsMs || Date.now()).toISOString()} (gateway idle keepalive)`);
+              } else {
+                console.log(`[LSG SystemMsg] Received SystemMsg (code: ${parsed.system.code}, msg: "${parsed.system.msg}")`);
+              }
             }
 
+            // Stage 4: ERROR RECORD RECEIVED (ErrorMsg rtype=0x19/0x15)
+            if (parsed.error || parsed.rtype === DBN_CONSTANTS.RTYPE_ERROR || parsed.rtype === 0x15) {
+              errorRecordReceived = true;
+              lastErrorText = parsed.error || 'Gateway ErrorMsg received';
+              parseErrors++;
+              console.error(`[LSG Error Record] ❌ [STAGE 4: ERROR RECORD RECEIVED] Gateway error: ${lastErrorText}`);
+              disconnectReason = `GATEWAY_ERROR: ${lastErrorText}`;
+              safeResolve();
+              return;
+            }
+
+            // Stage 5: REAL MARKET RECORDS RECEIVED
             if (parsed.trade) {
+              realMarketRecordsReceived++;
               const t = parsed.trade;
               // Validation assertions
               const validPrice = Number.isFinite(t.price) && t.price > 0;
@@ -457,7 +489,9 @@ async function runHarness() {
               const validSide = t.side === 'BUY' || t.side === 'SELL' || t.side === 'UNKNOWN';
               const validTs = t.ts > 0;
 
-              if (!validPrice || !validSize || !validSide || !validTs) {
+              if (validPrice && validSize && validSide && validTs) {
+                decoderVerified = true;
+              } else {
                 parseErrors++;
               }
 
@@ -475,7 +509,17 @@ async function runHarness() {
             }
 
             if (parsed.depth) {
+              realMarketRecordsReceived++;
               const d = parsed.depth;
+              const validBids = Array.isArray(d.bids) && (d.bids.length === 0 || (d.bids[0].price > 0 && d.bids[0].size > 0));
+              const validAsks = Array.isArray(d.asks) && (d.asks.length === 0 || (d.asks[0].price > 0 && d.asks[0].size > 0));
+
+              if (validBids && validAsks && (d.bids.length > 0 || d.asks.length > 0)) {
+                decoderVerified = true;
+              } else {
+                parseErrors++;
+              }
+
               if (sampleRecords.length < 3) {
                 sampleRecords.push({
                   type: 'DEPTH',
@@ -489,8 +533,8 @@ async function runHarness() {
               }
             }
 
-            // Cap check
-            if (recordCount >= opts.maxRecords) {
+            // Cap check: only cap on real market records
+            if (realMarketRecordsReceived >= opts.maxRecords) {
               disconnectReason = `MAX_RECORDS_REACHED (${opts.maxRecords})`;
               console.log(`[LSG] ✅ Record cap reached (${opts.maxRecords}). Closing socket gracefully...`);
               safeResolve();
@@ -516,34 +560,38 @@ async function runHarness() {
 
   const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
 
-  // --- Step 7: Live Results Reporting & 8-Tier Verification Matrix ---
+  // --- Step 7: Live Results Reporting & 6-Stage / 8-Tier Verification Matrix ---
   console.log('\n================================================================');
-  console.log('📋 LIVE STREAMING RESULTS SUMMARY');
+  console.log('📋 LIVE PROTOCOL VERIFICATION & STAGE SUMMARY');
   console.log('================================================================');
-  console.log(`Gateway Authentication:  ${authSuccess ? '✅ AUTH VERIFIED' : '❌ AUTH FAILED'}`);
-  console.log(`Subscription State:      ${subscribeAckReceived ? '✅ SUBSCRIBE ACK VERIFIED' : '⚠️ NO DBN HEADER ACK'}`);
-  console.log(`Elapsed Stream Time:     ${elapsedSec}s / ${opts.duration}s`);
-  console.log(`Termination Reason:      ${disconnectReason}`);
-  console.log(`Actual Records Received: ${recordCount}`);
-  console.log(`Parse Errors / Corrupt:  ${parseErrors}`);
+  console.log(`[Stage 1] AUTHENTICATED:             ${authSuccess ? '✅ PASS (CRAM-SHA256 handshake successful)' : '❌ FAIL'}`);
+  console.log(`[Stage 2] DBN METADATA RECEIVED:     ${dbnMetadataReceived ? `✅ PASS (${metadataLen} bytes header parsed)` : '⚠️ PENDING / NONE'}`);
+  console.log(`[Stage 3] SUBSCRIPTION ACK RECEIVED: ${subscriptionAckReceived ? '✅ PASS (SystemMsg.code = 1 SUBSCRIPTION_ACK)' : '⚠️ NONE / PENDING'}`);
+  console.log(`[Stage 4] ERROR RECORD RECEIVED:     ${errorRecordReceived ? `❌ ERROR DETECTED (${lastErrorText})` : '✅ NONE (Clean stream)'}`);
+  console.log(`[Stage 5] REAL MARKET RECORDS:       ${realMarketRecordsReceived > 0 ? `✅ PASS (${realMarketRecordsReceived} records received)` : '⚠️ 0 RECORDS (Market inactive/closed)'}`);
+  console.log(`[Stage 6] DECODER VERIFIED:          ${decoderVerified ? '✅ PASS (parseDbnRecord decoded real market structures cleanly)' : realMarketRecordsReceived > 0 ? '❌ FAIL (Decoder validation error)' : '⏸️ SKIPPED (0 records to decode)'}`);
+  console.log(`Gateway Heartbeats Received:         ${heartbeatCount}`);
+  console.log(`Parse Errors / Corrupt:              ${parseErrors}`);
+  console.log(`Elapsed Stream Time:                 ${elapsedSec}s / ${opts.duration}s`);
+  console.log(`Termination Reason:                  ${disconnectReason}`);
 
   console.log('\n--- 8-Tier Architecture Verification Status ---');
   console.log(`[Tier 1] Metadata Preflight:                 ✅ PASS (listDatasets, listSchemas, symbology.resolve verified)`);
   console.log(`[Tier 2] Gateway Authentication:             ${authSuccess ? '✅ PASS (CRAM-SHA256 handshake successful)' : '❌ FAIL (Auth rejected/failed)'}`);
-  console.log(`[Tier 3] Subscription Accepted:              ${subscribeAckReceived ? '✅ PASS (DBN header frame / metaLen ack received)' : '⚠️ PENDING / NONE'}`);
-  console.log(`[Tier 4] Actual DBN Records Received:        ${recordCount > 0 ? `✅ PASS (${recordCount} records received)` : '⚠️ 0 RECORDS (Session closed / inactive window)'}`);
-  console.log(`[Tier 5] Decoder Receives Genuine Records:   ${recordCount > 0 && parseErrors === 0 ? '✅ PASS (parseDbnRecord decoded real records cleanly)' : recordCount > 0 ? '⚠️ PARTIAL (decoding errors observed)' : '⏸️ SKIPPED (0 records to decode)'}`);
+  console.log(`[Tier 3] Subscription Accepted:              ${subscriptionAckReceived ? '✅ PASS (SystemMsg code=1 ACK received)' : errorRecordReceived ? '❌ FAIL (ErrorMsg received)' : '⚠️ PENDING / NONE (Awaiting SystemMsg ACK)'}`);
+  console.log(`[Tier 4] Actual DBN Records Received:        ${realMarketRecordsReceived > 0 ? `✅ PASS (${realMarketRecordsReceived} market records received)` : '⚠️ 0 RECORDS (Session closed / inactive window)'}`);
+  console.log(`[Tier 5] Decoder Receives Genuine Records:   ${decoderVerified ? '✅ PASS (parseDbnRecord decoded real records cleanly)' : realMarketRecordsReceived > 0 ? '⚠️ PARTIAL (decoding errors observed)' : '⏸️ SKIPPED (0 records to decode)'}`);
   console.log(`[Tier 6] MarketContext Analytics Updated:    ⚙️ HARNESS LIMITATION (Not measured by harness; requires DeepChart backend runtime)`);
   console.log(`[Tier 7] Backend WebSocket Server Broadcast: ⚙️ HARNESS LIMITATION (Not measured by harness; requires DeepChart WS server)`);
   console.log(`[Tier 8] React Browser Render:               ⚙️ HARNESS LIMITATION (Not measured by harness; requires DeepChart Browser UI)`);
 
-  if (recordCount > 0) {
-    console.log('\n--- Sample Records Decoded via Production parseDbnRecord ---');
-    console.log(JSON.stringify(sampleRecords, null, 2));
+  if (errorRecordReceived) {
     console.log('\n================================================================');
-    console.log('🎉 REAL RECORDS VERIFIED: LIVE MARKET DATA RECEIVED & VALIDATED');
+    console.log('❌ SUBSCRIPTION FAILED: ERROR RECORD RECEIVED FROM GATEWAY');
     console.log('================================================================');
-    process.exit(0);
+    console.log(`Gateway Error: ${lastErrorText}`);
+    console.log(`Reason:        ${disconnectReason}`);
+    process.exit(2);
   } else if (!authSuccess) {
     console.log('\n================================================================');
     console.log('❌ AUTHENTICATION FAILED');
@@ -556,19 +604,26 @@ async function runHarness() {
     console.log('================================================================');
     console.log(`Reason: ${disconnectReason}`);
     process.exit(2);
+  } else if (realMarketRecordsReceived > 0) {
+    console.log('\n--- Sample Records Decoded via Production parseDbnRecord ---');
+    console.log(JSON.stringify(sampleRecords, null, 2));
+    console.log('\n================================================================');
+    console.log('🎉 REAL RECORDS VERIFIED: LIVE MARKET DATA RECEIVED & VALIDATED');
+    console.log('================================================================');
+    process.exit(0);
   } else {
     console.log('\n================================================================');
     console.log('⚠️ NO RECORDS RECEIVED (MARKET CLOSED / INACTIVE)');
     console.log('================================================================');
     console.log(`Market Session:     ${sessionInfo.isOpen ? 'OPEN' : 'CLOSED (Weekend / Maintenance Halt)'}`);
     console.log(`Current Time (CT):  ${currentCtTime}`);
-    console.log(`Subscription State: ${subscribeAckReceived ? 'ACKNOWLEDGED (LSG Ready)' : 'PENDING'}`);
+    console.log(`Subscription State: ${subscriptionAckReceived ? 'ACKNOWLEDGED (LSG Ready, SystemMsg code=1)' : dbnMetadataReceived ? 'METADATA RECEIVED (Pending SystemMsg ACK)' : 'PENDING'}`);
+    console.log(`Heartbeats:         ${heartbeatCount} received`);
     console.log(`Timeout:            ${elapsedSec}s elapsed`);
     console.log(`Probable Cause:     ${!sessionInfo.isOpen ? 'CME Globex market is currently closed. Exchange matching engine is not operating.' : 'No trading activity for requested symbol in sampling window.'}`);
     console.log('Assessment:         LSG gateway & protocol handshake verified.');
     console.log('                    Awaiting CME open session to capture live DBN ticks.');
     console.log('================================================================');
-    // Clean exit when auth and sub ack were good but market was closed
     process.exit(0);
   }
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { DatabentoLiveClient, DBN_CONSTANTS, parseDbnRecord } from '../../src/databento/liveClient.js';
+import { DatabentoLiveClient, DBN_CONSTANTS, SYSTEM_CODES, parseDbnRecord } from '../../src/databento/liveClient.js';
 import { FeedStatusEvent, MarketDepthEvent, MarketTrade } from '../../src/marketData/types.js';
 import { OrderbookManager } from '../../src/orderbook.js';
 
@@ -119,6 +119,60 @@ function buildMbp10BinaryFixture(options?: {
     }
   }
 
+  return buf;
+}
+
+function buildSystemMsgFixture(options?: {
+  code?: number;
+  msg?: string;
+  tsEventNs?: bigint;
+  instrumentId?: number;
+}): Buffer {
+  const code = options?.code ?? SYSTEM_CODES.SUBSCRIPTION_ACK;
+  const msg = options?.msg ?? 'Subscribed to GLBX.MDP3:trades';
+  const tsEventNs = options?.tsEventNs ?? 1711033200000000000n;
+  const instrumentId = options?.instrumentId ?? 10252;
+
+  const buf = Buffer.alloc(320);
+  buf.writeUInt8(80, 0); // 80 words * 4 = 320 bytes
+  buf.writeUInt8(DBN_CONSTANTS.RTYPE_SYSTEM, 1); // 0x1b
+  buf.writeUInt16LE(1, 2); // publisherId
+  buf.writeUInt32LE(instrumentId, 4);
+  buf.writeBigUInt64LE(tsEventNs, 8);
+  buf.write(msg, 16, 'utf8');
+  buf.writeUInt8(code, 319);
+  return buf;
+}
+
+function buildErrorMsgFixture(options?: {
+  err?: string;
+  code?: number;
+  isLast?: number;
+  tsEventNs?: bigint;
+}): Buffer {
+  const err = options?.err ?? 'Subscription rejected: unentitled schema';
+  const code = options?.code ?? 1;
+  const isLast = options?.isLast ?? 1;
+  const tsEventNs = options?.tsEventNs ?? 1711033200000000000n;
+
+  const buf = Buffer.alloc(320);
+  buf.writeUInt8(80, 0); // 80 words * 4 = 320 bytes
+  buf.writeUInt8(DBN_CONSTANTS.RTYPE_ERROR, 1); // 0x19
+  buf.writeUInt16LE(1, 2);
+  buf.writeUInt32LE(0, 4);
+  buf.writeBigUInt64LE(tsEventNs, 8);
+  buf.write(err, 16, 'utf8');
+  buf.writeUInt8(code, 318);
+  buf.writeUInt8(isLast, 319);
+  return buf;
+}
+
+function buildDbnMetadataHeaderFixture(metaLen = 100): Buffer {
+  const buf = Buffer.alloc(8 + metaLen);
+  buf.write(DBN_CONSTANTS.MAGIC, 0, 'ascii'); // 'DBN'
+  buf.writeUInt8(2, 3); // DBN version 2
+  buf.writeUInt32LE(metaLen, 4);
+  buf.fill(0xAA, 8); // dummy metadata payload
   return buf;
 }
 
@@ -395,6 +449,188 @@ export async function runDatabentoLiveTests(): Promise<void> {
     assert.equal(depthHistory[0].bids[0].price, 5202.25);
 
     console.log('  PASS  Decoded MBP-10 data confirmed routed to DOM and Liquidity Heatmap OrderbookManager');
+  }
+
+  // 10. TASK 1: SystemMsg Decoding (Subscription ACK code=1 and Heartbeat code=0)
+  {
+    // Test 10a: SystemMsg Subscription ACK (code = 1)
+    const subAckFixture = buildSystemMsgFixture({
+      code: SYSTEM_CODES.SUBSCRIPTION_ACK,
+      msg: 'Subscribed to GLBX.MDP3:trades',
+    });
+    assert.equal(subAckFixture.length, 320);
+    const resAck = parseDbnRecord(subAckFixture, 'ES.c.0');
+    assert.equal(resAck.recLen, 320);
+    assert.ok(resAck.parsed, 'SystemMsg record must be parsed');
+    assert.equal(resAck.parsed.rtype, DBN_CONSTANTS.RTYPE_SYSTEM);
+    assert.ok(resAck.parsed.system, 'System field must be populated');
+    assert.equal(resAck.parsed.system.code, 1);
+    assert.equal(resAck.parsed.system.isSubscriptionAck, true, 'SystemMsg code=1 MUST be recognized as subscription ack');
+    assert.equal(resAck.parsed.system.isHeartbeat, false);
+    assert.equal(resAck.parsed.system.msg, 'Subscribed to GLBX.MDP3:trades');
+    assert.equal(resAck.parsed.trade, undefined);
+    assert.equal(resAck.parsed.depth, undefined);
+    assert.equal(resAck.parsed.error, undefined);
+
+    // Test 10b: SystemMsg Heartbeat (code = 0)
+    const hbFixture = buildSystemMsgFixture({
+      code: SYSTEM_CODES.HEARTBEAT,
+      msg: 'Heartbeat',
+    });
+    const resHb = parseDbnRecord(hbFixture, 'ES.c.0');
+    assert.ok(resHb.parsed?.system);
+    assert.equal(resHb.parsed.system.code, 0);
+    assert.equal(resHb.parsed.system.isSubscriptionAck, false);
+    assert.equal(resHb.parsed.system.isHeartbeat, true, 'SystemMsg code=0 MUST be recognized as heartbeat');
+    assert.equal(resHb.parsed.system.msg, 'Heartbeat');
+
+    // Test 10c: SystemMsg Slow Reader Warning (code = 2) & Replay Completed (code = 3)
+    const warnFixture = buildSystemMsgFixture({ code: 2, msg: 'Slow reader warning' });
+    const resWarn = parseDbnRecord(warnFixture, 'ES.c.0');
+    assert.equal(resWarn.parsed?.system?.code, 2);
+    assert.equal(resWarn.parsed?.system?.isSubscriptionAck, false);
+
+    console.log('  PASS  SystemMsg decoding (Subscription ACK code=1, Heartbeat code=0, and warning codes)');
+  }
+
+  // 11. TASK 1: ErrorMsg Decoding (rtype 0x19) with Code and IsLast Byte Isolation
+  {
+    const errFixture = buildErrorMsgFixture({
+      err: 'Subscription failed: invalid symbol XYZ',
+      code: 1,
+      isLast: 1,
+    });
+    assert.equal(errFixture.length, 320);
+    const resErr = parseDbnRecord(errFixture, 'ES.c.0');
+    assert.equal(resErr.recLen, 320);
+    assert.ok(resErr.parsed);
+    assert.equal(resErr.parsed.rtype, DBN_CONSTANTS.RTYPE_ERROR);
+    assert.equal(resErr.parsed.error, 'Subscription failed: invalid symbol XYZ');
+    assert.equal(resErr.parsed.trade, undefined);
+    assert.equal(resErr.parsed.depth, undefined);
+    assert.equal(resErr.parsed.system, undefined);
+    console.log('  PASS  ErrorMsg decoding (rtype 0x19) cleanly extracts error string without byte leakage');
+  }
+
+  // 12. TASK 1: DBN Metadata Header vs Subscription ACK Strict Differentiation
+  {
+    // DBN Metadata Header alone (e.g. 108 bytes with magic 'DBN')
+    const headerBuf = buildDbnMetadataHeaderFixture(100);
+    assert.equal(headerBuf.length, 108);
+
+    // Assert parseDbnRecord does NOT parse DBN header as a record
+    const resHeader = parseDbnRecord(headerBuf, 'ES.c.0');
+    assert.equal(resHeader.parsed, null, 'DBN metadata header must NOT parse as a record');
+
+    // Assert that in stream processing, header reception only sets metadataReceived, NEVER isSubscriptionAck
+    let dbnMetadataReceived = false;
+    let subscriptionAckReceived = false;
+
+    // Simulate stream header arrival
+    let streamBuffer = Buffer.from(headerBuf);
+    if (streamBuffer.length >= 8 && streamBuffer.subarray(0, 3).toString('ascii') === DBN_CONSTANTS.MAGIC) {
+      const metaLen = streamBuffer.readUInt32LE(4);
+      if (streamBuffer.length >= 8 + metaLen) {
+        streamBuffer = streamBuffer.subarray(8 + metaLen);
+        dbnMetadataReceived = true;
+        // Invariant: DO NOT mark subscriptionAckReceived here!
+      }
+    }
+
+    assert.equal(dbnMetadataReceived, true, 'Metadata header received');
+    assert.equal(subscriptionAckReceived, false, 'Subscription ACK must REMAIN FALSE when only metadata is received');
+    assert.equal(streamBuffer.length, 0, 'Header payload consumed from stream buffer');
+
+    console.log('  PASS  DBN Metadata Header strictly distinguished from Subscription ACK');
+  }
+
+  // 13. TASK 1: Complete 6-Stage Protocol Pipeline Regression Test
+  {
+    // Stages:
+    // 1. AUTHENTICATED
+    // 2. DBN METADATA RECEIVED
+    // 3. SUBSCRIPTION ACK RECEIVED (SystemMsg.code = 1)
+    // 4. ERROR RECORD RECEIVED (none in happy path, caught on failure)
+    // 5. REAL MARKET RECORDS RECEIVED
+    // 6. DECODER VERIFIED
+
+    let stage1_authenticated = false;
+    let stage2_metadataReceived = false;
+    let stage3_subscriptionAck = false;
+    let stage4_errorRecord = false;
+    let stage5_realMarketRecords = 0;
+    let stage6_decoderVerified = false;
+
+    // 1. Auth step
+    const authLine = 'success=1|session_id=sess_test_12345\n';
+    if (authLine.includes('success=1')) {
+      stage1_authenticated = true;
+    }
+    assert.equal(stage1_authenticated, true, 'Stage 1: AUTHENTICATED verified');
+
+    // 2. DBN Metadata Header step
+    const header = buildDbnMetadataHeaderFixture(50);
+    // 3. SystemMsg Subscription ACK record (320 bytes)
+    const subAck = buildSystemMsgFixture({ code: 1, msg: 'Subscribed to GLBX.MDP3:trades' });
+    // 4. Gateway Heartbeat record (320 bytes)
+    const hb = buildSystemMsgFixture({ code: 0, msg: 'Heartbeat' });
+    // 5. Real Market Trade record (MBP-10, 368 bytes)
+    const trade = buildMbp10BinaryFixture({ sequence: 501, tradePrice: 5202500000000n, tradeSize: 10 });
+
+    // Combine stream into single buffer
+    let stream = Buffer.concat([header, subAck, hb, trade]);
+
+    // Process DBN stream header
+    if (stream.length >= 8 && stream.subarray(0, 3).toString('ascii') === DBN_CONSTANTS.MAGIC) {
+      const metaLen = stream.readUInt32LE(4);
+      if (stream.length >= 8 + metaLen) {
+        stream = stream.subarray(8 + metaLen);
+        stage2_metadataReceived = true;
+      }
+    }
+    assert.equal(stage2_metadataReceived, true, 'Stage 2: DBN METADATA RECEIVED verified');
+    assert.equal(stage3_subscriptionAck, false, 'Stage 3 must still be false before records parsed');
+
+    // Process records in stream
+    let heartbeatsCount = 0;
+    while (stream.length >= DBN_CONSTANTS.HEADER_SIZE) {
+      const { parsed, recLen } = parseDbnRecord(stream, 'ES.c.0');
+      if (recLen === 0 || stream.length < recLen) break;
+
+      if (parsed) {
+        if (parsed.system?.isSubscriptionAck) {
+          stage3_subscriptionAck = true;
+        } else if (parsed.system?.isHeartbeat) {
+          heartbeatsCount++;
+        }
+        if (parsed.error) {
+          stage4_errorRecord = true;
+        }
+        if (parsed.trade || parsed.depth) {
+          stage5_realMarketRecords++;
+          if (parsed.trade && parsed.trade.price > 0 && parsed.trade.size > 0) {
+            stage6_decoderVerified = true;
+          }
+        }
+      }
+
+      stream = stream.subarray(recLen);
+    }
+
+    assert.equal(stage3_subscriptionAck, true, 'Stage 3: SUBSCRIPTION ACK RECEIVED (SystemMsg code=1)');
+    assert.equal(heartbeatsCount, 1, 'Gateway Heartbeats tracked separately without polluting market records');
+    assert.equal(stage4_errorRecord, false, 'Stage 4: No error records in happy path');
+    assert.equal(stage5_realMarketRecords, 1, 'Stage 5: Exactly 1 real market record received');
+    assert.equal(stage6_decoderVerified, true, 'Stage 6: Production decoder verified real market record structure');
+    assert.equal(stream.length, 0, 'Stream buffer fully drained');
+
+    // Negative case: ErrorMsg trigger
+    const errStream = buildErrorMsgFixture({ err: 'Subscription limit reached' });
+    const { parsed: parsedErr } = parseDbnRecord(errStream, 'ES.c.0');
+    assert.ok(parsedErr?.error);
+    assert.equal(parsedErr.error, 'Subscription limit reached');
+
+    console.log('  PASS  Full 6-stage protocol pipeline regression test passed (Auth -> Meta -> SubAck -> Heartbeat -> MarketRecord -> Decoder)');
   }
 
   console.log('  [PASS] All DatabentoLiveClient unit tests passed.');

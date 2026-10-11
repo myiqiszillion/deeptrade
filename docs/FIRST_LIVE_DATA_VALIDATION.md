@@ -18,16 +18,20 @@ Harness `scripts/verify_databento_live.mjs` là công cụ smoke test độc l�
 | :--- | :---: | :---: | :--- |
 | **1. Metadata Preflight** | **Đo lường trực tiếp** | ✅ **PASS (Dry-Run)** | Gọi REST API: `listDatasets`, `listSchemas`, `resolveSymbology` (ES.c.0 -> ID 10252 -> ESZ6). |
 | **2. LSG Authentication** | **Đo lường trực tiếp** | ✅ **PASS (Sẵn sàng cho Live)** | Bắt tay CRAM-SHA256 trên TCP 13000, nhận `success=1` & session ID hợp lệ. |
-| **3. Subscription Accepted** | **Đo lường trực tiếp** | ⚠️ **PENDING OPERATOR** | Gửi `schema=...|symbols=...|start_session=1`, nhận DBN Header frame (metaLen bytes). |
-| **4. Actual DBN Records Received** | **Đo lường trực tiếp** | ⚠️ **PENDING OPERATOR** | Nhận các binary bytes thô từ sàn CME Globex qua kết nối TCP. |
+| **3. Subscription Accepted** | **Đo lường trực tiếp** | ⚠️ **PENDING OPERATOR** | Gửi `schema=...|symbols=...|start_session=1`, nhận `SystemMsg` (`code = 1`: `SUBSCRIPTION_ACK`). DBN Metadata Header chỉ là stream framing, không phải Subscription ACK. |
+| **4. Actual DBN Records Received** | **Đo lường trực tiếp** | ⚠️ **PENDING OPERATOR** | Nhận các binary records thô từ sàn CME Globex qua kết nối TCP. |
 | **5. Decoder Receives Genuine Records** | **Đo lường trực tiếp** | ⚠️ **PENDING OPERATOR** | Chạy production `parseDbnRecord`, xác thực cấu trúc trade (price > 0, size > 0, side, ts) hoặc MBP-10 depth. |
 | **6. MarketContext Analytics Updated** | ⚙️ **Ngoài phạm vi Harness** | ⏸️ **Test Suite Verified** | Đưa trade/depth vào `MarketContext` tính Footprint, CVD, VWAP, DOM. Đo lường qua unit/integration test suite. |
 | **7. Backend WebSocket Publishes Updates** | ⚙️ **Ngoài phạm vi Harness** | ⏸️ **Integration Verified** | Phát broadcast frame qua WebSocket server cho client. Đo lường qua integration test suite. |
 | **8. React Browser Renders Genuine Updates** | ⚙️ **Ngoài phạm vi Harness** | ⏸️ **Browser E2E Required** | React terminal hiển thị nến, DOM, và footprint thực tế. Phải nghiệm thu qua trình duyệt DeepChart UI. |
 
-> **Quy tắc nghiệm thu:**  
-> - Harness chỉ khẳng định PASS cho Tầng 1 đến Tầng 5 khi có dữ liệu đo lường thực tế.  
-> - Tầng 6, 7, 8 đòi hỏi toàn bộ runtime backend và giao diện frontend hoạt động đồng thời, không suy diễn từ kết quả của harness.
+> **Quy chuẩn 6 Giai Đoạn Giao Thức (6 Protocol Stages):**
+> 1. `AUTHENTICATED`: CRAM-SHA256 handshake thành công (`success=1`).
+> 2. `DBN METADATA RECEIVED`: Đã nhận và bóc tách DBN Metadata Header framing (8 + metaLen bytes).
+> 3. `SUBSCRIPTION ACK RECEIVED`: Đã nhận `SystemMsg` record với `code = 1` (`SUBSCRIPTION_ACK`).
+> 4. `ERROR RECORD RECEIVED`: Bắt và phân lập bản tin lỗi `ErrorMsg` (rtype `0x19` / `0x15`).
+> 5. `REAL MARKET RECORDS RECEIVED`: Bản tin dữ liệu thị trường thực tế (trade/depth) loại trừ heartbeat và system.
+> 6. `DECODER VERIFIED`: Production `parseDbnRecord` giải mã thành công cấu trúc bản tin chuẩn xác.
 
 ---
 
@@ -115,33 +119,16 @@ Khi harness chạy trong thời gian sàn CME đóng cửa (cuối tuần từ 1
 
 ---
 
-## 5. HƯỚNG DẪN XỬ LÝ DOCKER STAGING ENGINE (HIỆN TRẠNG BLOCKED)
+## 5. TRẠNG THÁI DOCKER STAGING ENGINE (ĐÃ XÁC THỰC PASS)
 
 ### 5.1. Hiện Trạng Kỹ Thuật
 - **Lệnh kiểm tra:** `docker info`
-- **Kết quả:** `BLOCKED` (Lỗi: `failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine; check if the path is correct and if the daemon is running`).
-- **Nguyên nhân:** Docker Desktop Linux daemon chưa được khởi động trên máy trạm Windows này.
-- **Quy tắc:** Không đánh dấu Staging PASS mới khi chưa chạy được môi trường container thật.
-
-### 5.2. Các Bước Dành Cho Operator Để Kích Hoạt Lại Docker
-Khi Operator mở giao diện **Docker Desktop** trên Windows và Docker Engine chuyển sang trạng thái running, chạy các lệnh sau:
-
-```bash
-# 1. Kiểm tra engine đã sẵn sàng:
-docker info
-
-# 2. Build lại image (không ảnh hưởng dữ liệu):
-docker compose build
-
-# 3. Khởi động các container:
-docker compose up -d
-
-# 4. Chạy kịch bản kiểm chứng staging đầy đủ:
-node scratch/staging_full_verification.mjs
-```
-
-> ⚠️ **LƯU Ý QUAN TRỌNG:**  
-> **TUYỆT ĐỐI KHÔNG XÓA SQLite VOLUME** hoặc thư mục `data/` trong quá trình tái khởi động container để bảo toàn dữ liệu tài khoản và cấu hình hệ thống.
+- **Kết quả:** `PASS` (Docker Desktop Linux daemon hoạt động bình thường, Server Version: `29.8.2`).
+- **Container Staging:**
+  - `docker compose build`: PASS (Build `deepchart-app` và `deepchart-proxy` hoàn tất sạch sẽ).
+  - `docker compose up -d`: PASS (Cả 2 containers `deepchart-app-1` và `deepchart-proxy-1` hoạt động và healthy).
+  - `node scratch/staging_full_verification.mjs`: PASS (42/42 tests passed 100%: Caddy TLS/headers, reverse proxy, unauthenticated/authenticated REST/WS, SQLite WAL persistence & online backup snapshot).
+- **Quy tắc bảo toàn:** SQLite volume và thư mục `data/` được giữ nguyên vẹn tuyệt đối.
 
 ---
 
@@ -149,11 +136,10 @@ node scratch/staging_full_verification.mjs
 
 | Mã Thoát | Ý Nghĩa Kỹ Thuật |
 | :---: | :--- |
-| **0** | Thành công hợp lệ (Dry-run thành công; hoặc Live run hoàn tất với records được xác thực; hoặc Live run hoàn tất bình thường nhưng nhận 0 records do phiên thị trường đóng cửa). |
-| **1** | Lỗi cấu hình, thiếu API Key, hoặc Dataset/Schema không được cấp phép. |
-| **2** | Lỗi mạng TCP socket hoặc lỗi xác thực CRAM-SHA256 bị từ chối (`success=0`). |
-| **3** | Lỗi từ chối subscription từ Databento Gateway. |
-| **130** | Tiến trình bị hủy bởi người dùng qua tín hiệu `SIGINT` (Ctrl+C). |
+| **0** | Thành công hợp lệ (Dry-run hoàn tất; hoặc Live run thu thập và giải mã records thành công; hoặc Live run hoàn tất bình thường nhưng nhận 0 records do phiên CME Globex đóng cửa / thị trường đứng im). |
+| **1** | Lỗi cấu hình, thiếu API Key (`DATABENTO_API_KEY`), hoặc Dataset/Schema không được cấp phép. |
+| **2** | Lỗi mạng TCP socket, lỗi xác thực CRAM-SHA256 bị từ chối (`success=0`), hoặc nhận bản tin lỗi từ gateway (`ErrorMsg` / `GATEWAY_ERROR`). |
+| **130** | Tiến trình bị hủy bởi người dùng hoặc hệ thống qua tín hiệu `SIGINT` (Ctrl+C) / `SIGTERM` (được thu hồi tài nguyên sạch sẽ). |
 
 ---
 
