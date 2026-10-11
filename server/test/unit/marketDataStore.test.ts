@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { MarketDataStore } from '../../src/storage/marketDataStore.js';
@@ -206,6 +206,99 @@ export async function runMarketDataStoreTests(): Promise<void> {
       idempotentStore.close();
     } finally {
       if (existsSync(LEGACY_DB)) unlinkSync(LEGACY_DB);
+    }
+
+    // 9. Fail-Closed Migration Safety: Backup Failure Halts Migration & Preserves Legacy Schema
+    const FAIL_BACKUP_DB = resolve(process.cwd(), 'test_legacy_backup_fail.sqlite');
+    const BLOCKER_FILE = resolve(process.cwd(), 'test_backup_dir_blocker.tmp');
+    if (existsSync(FAIL_BACKUP_DB)) unlinkSync(FAIL_BACKUP_DB);
+    if (existsSync(BLOCKER_FILE)) unlinkSync(BLOCKER_FILE);
+
+    const savedBackupDir = process.env.BACKUP_DIR;
+    try {
+      // Step A: Create an isolated legacy SQLite database needing migration
+      const legacyRaw = new DatabaseSync(FAIL_BACKUP_DB);
+      legacyRaw.exec(`
+        CREATE TABLE instrument_master (
+          instrument_id INTEGER PRIMARY KEY,
+          dataset TEXT NOT NULL,
+          publisher_id INTEGER NOT NULL,
+          raw_symbol TEXT NOT NULL,
+          security_type TEXT NOT NULL,
+          asset TEXT NOT NULL,
+          underlying TEXT,
+          exchange TEXT NOT NULL,
+          venue TEXT,
+          activation TEXT,
+          expiration TEXT,
+          strike REAL,
+          option_type TEXT,
+          currency TEXT NOT NULL DEFAULT 'USD',
+          tick_size REAL NOT NULL,
+          multiplier INTEGER NOT NULL DEFAULT 1,
+          figi TEXT, isin TEXT, cusip TEXT,
+          parent_instrument_id INTEGER,
+          is_continuous INTEGER NOT NULL DEFAULT 0,
+          continuous_root TEXT,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX idx_master_dataset ON instrument_master(dataset, asset);
+        CREATE UNIQUE INDEX idx_master_raw ON instrument_master(dataset, raw_symbol);
+
+        INSERT INTO instrument_master (
+          instrument_id, dataset, publisher_id, raw_symbol, security_type, asset,
+          exchange, tick_size, updated_at
+        ) VALUES (99999, 'GLBX.MDP3', 1, 'ESZ4', 'F', 'ES', 'CME', 0.25, 1711033200000);
+      `);
+      legacyRaw.close();
+
+      // Step B: Simulate backup failure (unwritable path by placing BACKUP_DIR under a regular file)
+      writeFileSync(BLOCKER_FILE, 'not_a_directory');
+      process.env.BACKUP_DIR = resolve(BLOCKER_FILE, 'forbidden_subfolder');
+
+      // Step C: Verify that initializing MarketDataStore fails closed and throws
+      assert.throws(
+        () => {
+          new MarketDataStore(FAIL_BACKUP_DB);
+        },
+        (err: any) => {
+          assert.match(err.message, /Pre-migration safety backup failed/);
+          return true;
+        },
+        'MarketDataStore must fail-closed and throw when pre-migration backup fails'
+      );
+
+      // Step D: Verify schema of FAIL_BACKUP_DB was NOT modified (Fail-Closed guarantee)
+      const inspectDb = new DatabaseSync(FAIL_BACKUP_DB);
+      const cols = inspectDb.prepare('PRAGMA table_info(instrument_master)').all() as Array<{ name: string; pk: number }>;
+      assert.equal(cols.find((c) => c.name === 'dataset')?.pk, 0, 'dataset pk must remain 0 (unmigrated)');
+      assert.equal(cols.find((c) => c.name === 'instrument_id')?.pk, 1, 'instrument_id pk must remain 1');
+
+      const migrationTable = inspectDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get();
+      assert.equal(migrationTable, undefined, 'schema_migrations must not exist because migration was aborted');
+
+      const preservedRow = inspectDb.prepare('SELECT * FROM instrument_master WHERE instrument_id = ?').get(99999) as any;
+      assert.ok(preservedRow, 'Legacy data must remain completely intact');
+      assert.equal(preservedRow.raw_symbol, 'ESZ4');
+      inspectDb.close();
+
+      // Step E: Unblock backup directory and verify safe migration succeeds
+      if (existsSync(BLOCKER_FILE)) unlinkSync(BLOCKER_FILE);
+      delete process.env.BACKUP_DIR;
+
+      const workingStore = new MarketDataStore(FAIL_BACKUP_DB);
+      const postCols = (workingStore as any).db.prepare('PRAGMA table_info(instrument_master)').all() as Array<{ name: string; pk: number }>;
+      assert.ok(((postCols.find((c: any) => c.name === 'dataset')?.pk) ?? 0) > 0, 'dataset must be part of composite PK after unblocking');
+      assert.ok(((postCols.find((c: any) => c.name === 'instrument_id')?.pk) ?? 0) > 0, 'instrument_id must be part of composite PK');
+      workingStore.close();
+    } finally {
+      if (savedBackupDir !== undefined) {
+        process.env.BACKUP_DIR = savedBackupDir;
+      } else {
+        delete process.env.BACKUP_DIR;
+      }
+      if (existsSync(BLOCKER_FILE)) unlinkSync(BLOCKER_FILE);
+      if (existsSync(FAIL_BACKUP_DB)) unlinkSync(FAIL_BACKUP_DB);
     }
 
     console.log('  [PASS] All MarketDataStore unit tests passed.');

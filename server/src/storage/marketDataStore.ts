@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { resolve, dirname } from 'node:path';
-import { mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync, existsSync, statSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { FootprintBar, HistoricalBar, Tick } from '../types.js';
 import { MarketTrade } from '../marketData/types.js';
@@ -129,8 +129,17 @@ export class MarketDataStore implements IMarketDataStore {
 
     this.db = new DatabaseSync(resolvedPath);
     this.dbPath = resolvedPath;
-    this.initSchema();
-    this.runMigrations();
+    try {
+      this.initSchema();
+      this.runMigrations();
+    } catch (err) {
+      try {
+        this.db.close();
+      } catch {
+        // ignore close failure
+      }
+      throw err;
+    }
 
     this.depthFlushTimer = setInterval(() => {
       this.flushDepthQueue();
@@ -504,108 +513,148 @@ export class MarketDataStore implements IMarketDataStore {
    * does not alter existing primary keys, so an explicit table recreation is required.
    */
   private migrateInstrumentMasterCompositePk(): void {
-    try {
-      const tableCheck = this.db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='instrument_master'")
-        .get() as { name: string } | undefined;
-      if (!tableCheck) return;
+    const tableCheck = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='instrument_master'")
+      .get() as { name: string } | undefined;
+    if (!tableCheck) return;
 
-      const cols = this.db
-        .prepare('PRAGMA table_info(instrument_master)')
-        .all() as Array<{ name: string; pk: number }>;
-      const datasetCol = cols.find((c) => c.name === 'dataset');
-      const instrumentIdCol = cols.find((c) => c.name === 'instrument_id');
+    const cols = this.db
+      .prepare('PRAGMA table_info(instrument_master)')
+      .all() as Array<{ name: string; pk: number }>;
+    const datasetCol = cols.find((c) => c.name === 'dataset');
+    const instrumentIdCol = cols.find((c) => c.name === 'instrument_id');
 
-      // Needs migration if dataset is not part of the primary key
-      const needsMigration = !datasetCol || datasetCol.pk === 0 || !instrumentIdCol || instrumentIdCol.pk === 0;
-      if (!needsMigration) return;
+    // Needs migration if dataset is not part of the primary key
+    const needsMigration = !datasetCol || datasetCol.pk === 0 || !instrumentIdCol || instrumentIdCol.pk === 0;
+    if (!needsMigration) return;
 
-      console.log('[MarketDataStore] Migrating instrument_master to composite PRIMARY KEY (dataset, instrument_id)...');
+    console.log('[MarketDataStore] Migrating instrument_master to composite PRIMARY KEY (dataset, instrument_id)...');
 
-      // Pre-migration safety backup if on-disk database
-      if (this.dbPath && this.dbPath !== ':memory:' && existsSync(this.dbPath)) {
-        try {
-          const backupDir = process.env.BACKUP_DIR || resolve(dirname(this.dbPath), 'backups');
-          mkdirSync(backupDir, { recursive: true });
-          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-          const backupTarget = resolve(backupDir, `market_data_pre_migration-${stamp}.sqlite`);
-          this.db.exec(`VACUUM INTO '${backupTarget.replace(/'/g, "''").replace(/\\/g, '/')}'`);
-          console.log(`[MarketDataStore] Pre-migration safety backup created at: ${backupTarget}`);
-        } catch (backupErr) {
-          console.warn(`[MarketDataStore] Pre-migration backup skipped or failed: ${(backupErr as Error).message}`);
+    // Pre-migration safety backup if on-disk database (FAIL-CLOSED)
+    if (this.dbPath && this.dbPath !== ':memory:' && existsSync(this.dbPath)) {
+      const backupDir = process.env.BACKUP_DIR || resolve(dirname(this.dbPath), 'backups');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const backupTarget = resolve(backupDir, `market_data_pre_migration-${stamp}.sqlite`);
+      try {
+        mkdirSync(backupDir, { recursive: true });
+        this.db.exec(`VACUUM INTO '${backupTarget.replace(/'/g, "''").replace(/\\/g, '/')}'`);
+
+        if (!existsSync(backupTarget) || statSync(backupTarget).size === 0) {
+          throw new Error(`Backup snapshot file missing or empty: ${backupTarget}`);
         }
-      }
 
+        const verifyDb = new DatabaseSync(backupTarget, { readOnly: true });
+        try {
+          const check = verifyDb.prepare('PRAGMA quick_check;').get() as { quick_check?: string; [k: string]: unknown } | undefined;
+          const status = check?.quick_check ?? Object.values(check ?? {})[0];
+          if (status !== 'ok') {
+            throw new Error(`Backup snapshot integrity check failed: ${status}`);
+          }
+        } finally {
+          verifyDb.close();
+        }
+
+        console.log(`[MarketDataStore] Pre-migration safety backup created and verified at: ${backupTarget}`);
+      } catch (backupErr) {
+        try {
+          if (existsSync(backupTarget)) {
+            unlinkSync(backupTarget);
+          }
+        } catch {
+          // ignore cleanup error
+        }
+        console.error(`[MarketDataStore] Pre-migration safety backup failed: ${(backupErr as Error).message}. Migration aborted (fail-closed).`);
+        throw new Error(`[MarketDataStore] Pre-migration safety backup failed: ${(backupErr as Error).message}. Migration aborted (fail-closed).`);
+      }
+    }
+
+    const initialFkRow = this.db.prepare('PRAGMA foreign_keys;').get() as { foreign_keys?: number; [k: string]: unknown } | undefined;
+    const initialFkState = initialFkRow?.foreign_keys ?? 1;
+
+    let inTransaction = false;
+    try {
       this.db.exec('PRAGMA foreign_keys = OFF;');
       this.db.exec('BEGIN IMMEDIATE TRANSACTION;');
-      try {
-        this.db.exec(`
-          CREATE TABLE instrument_master_migrated (
-            instrument_id INTEGER NOT NULL,
-            dataset TEXT NOT NULL,
-            publisher_id INTEGER NOT NULL,
-            raw_symbol TEXT NOT NULL,
-            security_type TEXT NOT NULL,
-            asset TEXT NOT NULL,
-            underlying TEXT,
-            exchange TEXT NOT NULL,
-            venue TEXT,
-            activation TEXT,
-            expiration TEXT,
-            strike REAL,
-            option_type TEXT,
-            currency TEXT NOT NULL DEFAULT 'USD',
-            tick_size REAL NOT NULL,
-            multiplier INTEGER NOT NULL DEFAULT 1,
-            figi TEXT, isin TEXT, cusip TEXT,
-            parent_instrument_id INTEGER,
-            is_continuous INTEGER NOT NULL DEFAULT 0,
-            continuous_root TEXT,
-            updated_at INTEGER NOT NULL,
-            PRIMARY KEY (dataset, instrument_id)
-          );
+      inTransaction = true;
 
-          INSERT INTO instrument_master_migrated (
-            instrument_id, dataset, publisher_id, raw_symbol, security_type, asset,
-            underlying, exchange, venue, activation, expiration, strike, option_type,
-            currency, tick_size, multiplier, figi, isin, cusip, parent_instrument_id,
-            is_continuous, continuous_root, updated_at
-          )
-          SELECT
-            instrument_id, dataset, publisher_id, raw_symbol, security_type, asset,
-            underlying, exchange, venue, activation, expiration, strike, option_type,
-            currency, tick_size, multiplier, figi, isin, cusip, parent_instrument_id,
-            is_continuous, continuous_root, updated_at
-          FROM instrument_master;
+      this.db.exec(`
+        CREATE TABLE instrument_master_migrated (
+          instrument_id INTEGER NOT NULL,
+          dataset TEXT NOT NULL,
+          publisher_id INTEGER NOT NULL,
+          raw_symbol TEXT NOT NULL,
+          security_type TEXT NOT NULL,
+          asset TEXT NOT NULL,
+          underlying TEXT,
+          exchange TEXT NOT NULL,
+          venue TEXT,
+          activation TEXT,
+          expiration TEXT,
+          strike REAL,
+          option_type TEXT,
+          currency TEXT NOT NULL DEFAULT 'USD',
+          tick_size REAL NOT NULL,
+          multiplier INTEGER NOT NULL DEFAULT 1,
+          figi TEXT, isin TEXT, cusip TEXT,
+          parent_instrument_id INTEGER,
+          is_continuous INTEGER NOT NULL DEFAULT 0,
+          continuous_root TEXT,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (dataset, instrument_id)
+        );
 
-          DROP TABLE instrument_master;
-          ALTER TABLE instrument_master_migrated RENAME TO instrument_master;
+        INSERT INTO instrument_master_migrated (
+          instrument_id, dataset, publisher_id, raw_symbol, security_type, asset,
+          underlying, exchange, venue, activation, expiration, strike, option_type,
+          currency, tick_size, multiplier, figi, isin, cusip, parent_instrument_id,
+          is_continuous, continuous_root, updated_at
+        )
+        SELECT
+          instrument_id, dataset, publisher_id, raw_symbol, security_type, asset,
+          underlying, exchange, venue, activation, expiration, strike, option_type,
+          currency, tick_size, multiplier, figi, isin, cusip, parent_instrument_id,
+          is_continuous, continuous_root, updated_at
+        FROM instrument_master;
 
-          CREATE INDEX IF NOT EXISTS idx_master_dataset ON instrument_master(dataset, asset);
-          CREATE UNIQUE INDEX IF NOT EXISTS idx_master_raw ON instrument_master(dataset, raw_symbol);
+        DROP TABLE instrument_master;
+        ALTER TABLE instrument_master_migrated RENAME TO instrument_master;
 
-          CREATE TABLE IF NOT EXISTS schema_migrations (
-            version INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            applied_at INTEGER NOT NULL
-          );
+        CREATE INDEX IF NOT EXISTS idx_master_dataset ON instrument_master(dataset, asset);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_master_raw ON instrument_master(dataset, raw_symbol);
 
-          INSERT OR REPLACE INTO schema_migrations (version, name, applied_at)
-          VALUES (1, 'instrument_master_composite_pk', ${Date.now()});
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version INTEGER PRIMARY KEY,
+          name TEXT NOT NULL,
+          applied_at INTEGER NOT NULL
+        );
 
-          PRAGMA user_version = 1;
-        `);
-        this.db.exec('COMMIT;');
-        console.log('[MarketDataStore] instrument_master migration committed successfully.');
-      } catch (migrationErr) {
-        this.db.exec('ROLLBACK;');
-        console.error('[MarketDataStore] instrument_master migration failed and rolled back:', migrationErr);
-        throw migrationErr;
-      } finally {
-        this.db.exec('PRAGMA foreign_keys = ON;');
+        INSERT OR REPLACE INTO schema_migrations (version, name, applied_at)
+        VALUES (1, 'instrument_master_composite_pk', ${Date.now()});
+
+        PRAGMA user_version = 1;
+      `);
+
+      // Foreign key integrity check before commit
+      const fkViolations = this.db.prepare('PRAGMA foreign_key_check;').all();
+      if (fkViolations.length > 0) {
+        throw new Error(`Foreign key constraint violation detected after migration: ${JSON.stringify(fkViolations)}`);
       }
-    } catch (err) {
-      console.error('[MarketDataStore] Failed to migrate instrument_master:', err);
+
+      this.db.exec('COMMIT;');
+      inTransaction = false;
+      console.log('[MarketDataStore] instrument_master migration committed successfully.');
+    } catch (migrationErr) {
+      if (inTransaction) {
+        try {
+          this.db.exec('ROLLBACK;');
+        } catch (rbErr) {
+          console.error('[MarketDataStore] Rollback failed:', rbErr);
+        }
+      }
+      console.error('[MarketDataStore] instrument_master migration failed and rolled back:', migrationErr);
+      throw migrationErr;
+    } finally {
+      this.db.exec(`PRAGMA foreign_keys = ${initialFkState ? 'ON' : 'OFF'};`);
     }
   }
 
