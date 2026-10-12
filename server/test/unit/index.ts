@@ -38,6 +38,7 @@ const { runDepthStorageTests } = await import('./depthStorage.test.js');
 const { runAlertEngineTests } = await import('./alertEngine.test.js');
 const { runAlertsApiTests } = await import('./alertsApi.test.js');
 const { runProfileEngineTests } = await import('./profileEngine.test.js');
+const { runControlledTradesTests } = await import('./controlledTrades.test.js');
 
 async function main() {
   console.log('======================================================');
@@ -45,6 +46,7 @@ async function main() {
   console.log('======================================================\n');
 
   const start = Date.now();
+  await runControlledTradesTests();
   await runAuthTests();
   await runEntitlementTests();
   await runMarketDataStoreTests();

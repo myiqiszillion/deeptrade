@@ -72,6 +72,11 @@ export const defaultHistoryProvider: HistoryProvider = {
   fetchTicks: async () => [],
 };
 
+export interface IsolatedAcceptanceContext {
+  createFeed: (handlers: import('./types.js').FeedHandlers) => MarketDataFeed;
+  onOutcome: (trade: MarketTrade, outcome: 'ACCEPTED' | 'REJECTED' | 'DEDUPLICATED') => void;
+}
+
 /**
  * MarketContext manages the live feed, orderbook, footprint engines, profile,
  * vwap, tape and subscribers for a single instrument.
@@ -163,7 +168,8 @@ export class MarketContext {
     instrument: FuturesInstrument,
     gexEngine = new GEXEngine(),
     private onTickRecord?: (tick: Tick) => void,
-    private historyProvider: HistoryProvider = defaultHistoryProvider
+    private historyProvider: HistoryProvider = defaultHistoryProvider,
+    private acceptance?: IsolatedAcceptanceContext
   ) {
     this.symbol = symbol;
     this.instrument = instrument;
@@ -188,6 +194,7 @@ export class MarketContext {
     // Initialize default footprint engine (1m)
     this.ensureFootprintEngine('1m');
 
+    if (this.acceptance) { this.provider = 'databento'; return; }
     const initialFeed = createMarketDataFeed(this.symbol, this.instrument, {
       onTrade: () => {},
       onDepth: () => {},
@@ -219,6 +226,11 @@ export class MarketContext {
       return [...this.historyTicks];
     }
     return [];
+  }
+
+  public acceptanceSnapshot() {
+    if (!this.acceptance) throw new Error('Not an isolated acceptance context');
+    return { bars: this.ensureFootprintEngine('1m').getAllBars(), profile: this.profile.getVolumeProfile() };
   }
 
   public getDepthHistory(fromMs?: number, toMs?: number) {
@@ -277,10 +289,10 @@ export class MarketContext {
     this.lastDepthTs = 0;
     this.historyBoundary = Date.now();
     this.historyRequest = new AbortController();
-    this.isBackfillingHistory = true;
+    this.isBackfillingHistory = !this.acceptance;
     this.liveBuffer = [];
 
-    const { feed, provider } = createMarketDataFeed(this.symbol, this.instrument, {
+    const handlers = {
       onTrade: (trade: MarketTrade) => {
         if (token !== this.activeFeedToken) return;
         this.handleTrade(trade);
@@ -309,7 +321,7 @@ export class MarketContext {
               Date.now(),
               `Feed reconnected after ${Math.round(disconnectDurationMs / 1000)}s`
             );
-            void this.backfillHistory();
+            if (!this.acceptance) void this.backfillHistory();
           }
         }
       },
@@ -318,7 +330,10 @@ export class MarketContext {
         console.warn(`[Feed:${provider}] ${this.symbol}: ${error.message}`);
         this.setFeedStatus('UNAVAILABLE');
       },
-    });
+    };
+    const { feed, provider } = this.acceptance
+      ? { feed: this.acceptance.createFeed(handlers), provider: 'databento' }
+      : createMarketDataFeed(this.symbol, this.instrument, handlers);
 
     this.feed = feed;
     this.provider = provider;
@@ -347,14 +362,14 @@ export class MarketContext {
     this.feedLifecycleState = 'RUNNING';
 
     // Refresh GEX and backfill history
-    if (this.instrument.underlyingIndex) {
+    if (!this.acceptance && this.instrument.underlyingIndex) {
       void this.refreshGex();
       if (this.gexTimer) clearInterval(this.gexTimer);
       this.gexTimer = setInterval(() => {
         void this.refreshGex();
       }, GEX_REFRESH_MS);
     }
-    void this.backfillHistory();
+    if (!this.acceptance) void this.backfillHistory();
   }
 
   private async doStopFeed(): Promise<void> {
@@ -402,6 +417,7 @@ export class MarketContext {
       !Number.isFinite(trade.ts) ||
       trade.ts <= 0
     ) {
+      this.acceptance?.onOutcome(trade, 'REJECTED');
       return;
     }
 
@@ -409,6 +425,7 @@ export class MarketContext {
     let tickId: string;
     if (trade.id) {
       if (!this.trackVendorTickId(trade.id)) {
+        this.acceptance?.onOutcome(trade, 'DEDUPLICATED');
         return;
       }
       tickId = trade.id;
@@ -422,7 +439,7 @@ export class MarketContext {
 
     // 3. Trade Sequence Gap Detection
     // Check for contiguous sequence gaps if the provider supplies dedicated trade-level sequencing.
-    if (trade.sequenceId !== undefined) {
+    if (!this.acceptance && trade.sequenceId !== undefined) {
       const seq = typeof trade.sequenceId === 'number' ? trade.sequenceId : parseInt(String(trade.sequenceId), 10);
       if (Number.isFinite(seq)) {
         if (this.lastTradeSeq !== undefined && seq > this.lastTradeSeq + 1) {
@@ -441,7 +458,7 @@ export class MarketContext {
     }
 
     // 4. Session Rollover Detection (Reset VWAP & Profile on official session boundaries)
-    if (this.lastTradeEventTs > 0 && SessionCalendar.isNewSession(this.lastTradeEventTs, trade.ts, this.instrument.sessionScheduleId)) {
+    if (!this.acceptance && this.lastTradeEventTs > 0 && SessionCalendar.isNewSession(this.lastTradeEventTs, trade.ts, this.instrument.sessionScheduleId)) {
       console.log(`[MarketContext] Session boundary crossed for ${this.symbol}. Resetting intraday profile & VWAP.`);
       this.profile.reset(trade.ts);
       this.vwap.reset(trade.ts);
@@ -461,6 +478,18 @@ export class MarketContext {
       sourceProvider: trade.sourceProvider || this.provider,
       qualityFlags: trade.qualityFlags,
     };
+
+    if (this.acceptance) {
+      for (const engine of this.footprintEngines.values()) engine.processTick(tick);
+      this.profile.processTick(tick);
+      this.profile.setCoverage('PARTIAL', 'Bounded acceptance observation; not full session');
+      this.historyTicks.push(tick);
+      this.acceptance.onOutcome(trade, 'ACCEPTED');
+      for (const session of this.subscribers) {
+        session.send({ type: 'TICK', symbol: this.symbol, tick });
+      }
+      return;
+    }
 
     // Persist normalized trade
     marketDataStore.saveTrades([trade], this.symbol, this.provider);
@@ -656,6 +685,7 @@ export class MarketContext {
   }
 
   public async refreshGex(_force = false): Promise<void> {
+    if (this.acceptance) return;
     const underlying = this.instrument.underlyingIndex;
     if (!underlying) return;
 
@@ -698,6 +728,7 @@ export class MarketContext {
   }
 
   public async backfillHistory(timeframe = '1m'): Promise<void> {
+    if (this.acceptance) return;
     const token = this.activeFeedToken;
     const symbol = this.symbol;
     const signal = this.historyRequest.signal;
@@ -863,6 +894,7 @@ export class MarketContext {
   }
 
   public async ensureHistoryBars(timeframe: string, forceRefresh = false): Promise<HistoricalBar[]> {
+    if (this.acceptance) return [];
     const cached = this.historyBarsByTf.get(timeframe);
     if (cached && cached.length > 0 && !forceRefresh) return cached;
 
@@ -967,6 +999,7 @@ export class MarketContext {
    * a client first subscribes and when it only switches timeframe.
    */
   private primeHistoryBarsFromStore(timeframe: string): void {
+    if (this.acceptance) return;
     if (this.historyBarsByTf.has(timeframe)) return;
 
     const stored = marketDataStore.queryBars({
@@ -1014,7 +1047,7 @@ export class MarketContext {
     // Instant local cache priming: if in-memory history is empty, populate from persistent store immediately
     this.primeHistoryBarsFromStore(timeframe);
 
-    if (this.historyTicks.length === 0) {
+    if (!this.acceptance && this.historyTicks.length === 0) {
       const storedTrades = marketDataStore.queryTrades({
         provider: this.getEffectiveProvider(),
         symbol: this.symbol,
@@ -1127,6 +1160,7 @@ export class MarketContext {
   }
 
   public scheduleCleanup(onDispose: () => void, graceMs = 10000): void {
+    if (this.acceptance) return;
     if (this.cleanupTimer) clearTimeout(this.cleanupTimer);
     this.cleanupTimer = setTimeout(async () => {
       if (this.subscribers.size === 0) {

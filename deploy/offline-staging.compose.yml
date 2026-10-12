@@ -1,0 +1,7 @@
+# Required for implementation/regression: ordinary staging must not contact vendors.
+services:
+  app:
+    environment:
+      FUTURES_PROVIDER: none
+      DATABENTO_API_KEY: ''
+      ENABLE_QUOTE_BOARD: '0'

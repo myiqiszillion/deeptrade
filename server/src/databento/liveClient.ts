@@ -330,6 +330,13 @@ interface DatabentoLiveOptions {
   gatewayUrl?: string;
   handlers: FeedHandlers;
   WebSocketClass?: any;
+  /** Only the private operator acceptance controller supplies these hooks. */
+  acceptance?: {
+    createConnection?: typeof net.createConnection;
+    onStage: (stage: 'AUTHENTICATED' | 'ACKNOWLEDGED' | 'METADATA') => void;
+    beforeRecord: (record: Buffer, parsed: ParsedDbnRecord | null) => boolean;
+    onFailure: (reason: string) => void;
+  };
 }
 
 export class DatabentoLiveClient implements MarketDataFeed {
@@ -351,6 +358,8 @@ export class DatabentoLiveClient implements MarketDataFeed {
   private liveResolver?: () => void;
   private generation = 0;
   private dbnVersion = 2;
+  private readonly acceptance?: DatabentoLiveOptions['acceptance'];
+  private acceptanceStarted = false;
 
   constructor(options: DatabentoLiveOptions) {
     this.symbol = options.symbol;
@@ -361,6 +370,10 @@ export class DatabentoLiveClient implements MarketDataFeed {
     this.gatewayUrl = (options.gatewayUrl || cfg.liveBaseUrl || 'wss://live.databento.com/v0').replace(/\/+$/, '');
     this.handlers = options.handlers;
     this.WSClass = options.WebSocketClass;
+    this.acceptance = options.acceptance;
+    if (this.acceptance && (this.dataset !== 'GLBX.MDP3' || this.symbol !== 'ES.c.0' || this.schema !== 'trades' || this.WSClass)) {
+      throw new Error('Acceptance requires GLBX.MDP3 / ES.c.0 / trades over TCP');
+    }
   }
 
   private inferDataset(symbol: string): string {
@@ -376,6 +389,10 @@ export class DatabentoLiveClient implements MarketDataFeed {
   }
 
   public async connect(): Promise<void> {
+    if (this.acceptance) {
+      if (this.acceptanceStarted) throw new Error('Acceptance cannot restart');
+      this.acceptanceStarted = true;
+    }
     if (this.connected || this.socket || this.ws) return;
     if (!this.apiKey) {
       this.handlers.onStatus({
@@ -542,7 +559,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
     let phase: 'cram' | 'auth' | 'dbn_header' | 'records' = 'cram';
     let buffer = Buffer.alloc(0);
 
-    const socket = net.createConnection({ host, port });
+    const socket = (this.acceptance?.createConnection || net.createConnection)({ host, port });
     this.socket = socket;
 
     socket.on('connect', () => {
@@ -551,6 +568,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
 
     socket.on('data', (chunk: Buffer) => {
       if (this.generation !== currentGen) return;
+      if (this.acceptance && buffer.length + chunk.length > 1024 * 1024) { this.acceptance.onFailure('Input buffer limit'); return; }
       buffer = Buffer.concat([buffer, chunk]);
 
       // Phase 1: CRAM Challenge
@@ -576,6 +594,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
         const line = buffer.subarray(0, nlIdx).toString('utf8');
         buffer = buffer.subarray(nlIdx + 1);
         if (line.includes('success=1')) {
+          this.acceptance?.onStage('AUTHENTICATED');
           this.reconnectAttempts = 0;
           this.connected = true;
           this.handlers.onStatus({
@@ -597,7 +616,9 @@ export class DatabentoLiveClient implements MarketDataFeed {
             stypeIn = 'raw_symbol';
           }
 
-          if (this.schema === 'tbbo') {
+          if (this.acceptance) {
+            socket.write('schema=trades|stype_in=continuous|symbols=ES.c.0|snapshot=0|is_last=1\n');
+          } else if (this.schema === 'tbbo') {
             const subTbbo = `schema=tbbo|stype_in=${stypeIn}|symbols=${liveSymbol}|snapshot=0|is_last=1\n`;
             socket.write(subTbbo);
           } else {
@@ -615,6 +636,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
         } else if (line.includes('success=0')) {
           const errMatch = line.match(/error=([^\r\n|]+)/);
           const errMsg = errMatch ? errMatch[1] : 'Authentication failed';
+          this.acceptance?.onFailure('Authentication rejected');
           this.handlers.onError(new Error(`[DatabentoLive:${this.symbol}] Auth failure: ${errMsg}`));
           this.handlers.onStatus({
             state: 'UNAVAILABLE',
@@ -634,9 +656,11 @@ export class DatabentoLiveClient implements MarketDataFeed {
           const metaLen = buffer.readUInt32LE(4);
           if (buffer.length >= 8 + metaLen) {
             buffer = buffer.subarray(8 + metaLen);
+            this.acceptance?.onStage('METADATA');
             phase = 'records';
           }
         } else if (buffer.length >= 128 && buffer.subarray(0, 3).toString('ascii') !== DBN_CONSTANTS.MAGIC) {
+          if (this.acceptance) { this.acceptance.onFailure('Invalid metadata framing'); return; }
           phase = 'records';
         }
       }
@@ -644,10 +668,12 @@ export class DatabentoLiveClient implements MarketDataFeed {
       // Phase 4: Records
       if (phase === 'records') {
         while (buffer.length >= DBN_CONSTANTS.HEADER_SIZE) {
+          if (this.acceptance && this.generation !== currentGen) return;
           const { parsed, recLen } = parseDbnRecord(buffer, this.symbol, this.provider, this.dbnVersion, {
             schema: this.schema,
           });
           if (recLen === 0 || recLen < DBN_CONSTANTS.HEADER_SIZE) {
+            if (this.acceptance) { this.acceptance.onFailure('Invalid record framing'); return; }
             buffer = buffer.subarray(1);
             continue;
           }
@@ -655,14 +681,18 @@ export class DatabentoLiveClient implements MarketDataFeed {
             break;
           }
 
+          if (this.acceptance && !this.acceptance.beforeRecord(buffer.subarray(0, recLen), parsed)) return;
+
           if (parsed) {
             if (parsed.error) {
+              if (this.acceptance) { this.acceptance.onFailure('Gateway ErrorMsg'); return; }
               this.handlers.onError(new Error(`[DatabentoLive:${this.symbol}] ${parsed.error}`));
             }
             if (parsed.system) {
               if (parsed.system.isHeartbeat) {
                 // Gateway heartbeat keepalive
               } else if (parsed.system.isSubscriptionAck) {
+                this.acceptance?.onStage('ACKNOWLEDGED');
                 // Subscription acknowledged
               }
             }
@@ -687,6 +717,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
       if (this.generation !== currentGen) return;
       console.warn(`[DatabentoLive:${this.symbol}] TCP error: ${err.message}`);
       this.handlers.onError(err);
+      this.acceptance?.onFailure('TCP error');
     });
 
     socket.on('close', () => {
@@ -694,6 +725,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
       this.connected = false;
       this.socket = null;
       if (!this.intentionallyClosed) {
+        if (this.acceptance) { this.acceptance.onFailure('Unexpected socket close'); return; }
         this.handlers.onStatus({
           state: 'UNAVAILABLE',
           reason: 'Databento TCP socket closed, reconnecting...',
@@ -706,6 +738,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
   }
 
   private scheduleReconnect(): void {
+    if (this.acceptance) return;
     if (this.intentionallyClosed) return;
     this.reconnectAttempts++;
     const delay = Math.min(30000, 1000 * Math.pow(2, Math.min(5, this.reconnectAttempts)));
