@@ -51,12 +51,15 @@ export class ControlledTradesSession {
   constructor(private options: {
     apiKey: string; instrumentId: number; resolvedContract: string;
     offline?: boolean; createConnection?: typeof net.createConnection;
+    normalFanout?: boolean;
+    deadlineClock?: { set: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>; clear: (timer: ReturnType<typeof setTimeout>) => void };
     durationMs?: number; maxRecords?: number;
     publish?: (message: ReturnType<ControlledTradesSession['message']>) => void;
     onClosed?: () => void;
   }) {
     if (!Number.isInteger(options.instrumentId) || options.instrumentId <= 0 || !/^ES[HMUZ]\d{1,2}$/.test(options.resolvedContract)) throw new Error('Date-valid ES mapping required');
     if (options.createConnection && !options.offline) throw new Error('Injected transport is offline-only');
+    if (options.deadlineClock && !options.offline) throw new Error('Injected clock is offline-only');
     if (!Number.isInteger(options.durationMs ?? 30000) || (options.durationMs ?? 30000) <= 0 || (options.durationMs ?? 30000) > 30000 ||
         !Number.isInteger(options.maxRecords ?? 50) || (options.maxRecords ?? 50) < 1 || (options.maxRecords ?? 50) > 50) throw new Error('Unsafe acceptance budget');
     this.done = new Promise(resolve => { this.resolveDone = resolve; });
@@ -64,6 +67,7 @@ export class ControlledTradesSession {
       fetchBars: async () => { throw new Error('Acceptance prohibits historical'); },
       fetchTicks: async () => { throw new Error('Acceptance prohibits historical'); },
     }, {
+      normalFanout: options.normalFanout,
       createFeed: handlers => {
         if (this.client) throw new Error('Exactly one vendor connection');
         this.client = new DatabentoLiveClient({ symbol: 'ES.c.0', dataset: 'GLBX.MDP3', schema: 'trades', apiKey: options.apiKey,
@@ -95,7 +99,7 @@ export class ControlledTradesSession {
     ControlledTradesSession.lease = this;
     this.state = 'CONNECTING';
     this.timerStarted = Date.now();
-    this.timer = setTimeout(() => this.finish(this.ackCount && this.accepted ? 'CLOSED' : 'FAILED',
+    this.timer = (this.options.deadlineClock?.set ?? setTimeout)(() => this.finish(this.ackCount && this.accepted ? 'CLOSED' : 'FAILED',
       !this.ackCount ? 'NO_ACK_TIMEOUT' : !this.accepted ? 'ZERO_RECORDS_TIMEOUT' : 'TIMEOUT'), this.options.durationMs ?? 30000);
     try { await this.context.startFeed(); } catch { this.finish('FAILED', 'Startup failed'); }
   }
@@ -178,9 +182,10 @@ export class ControlledTradesSession {
   finish(state: 'CLOSED' | 'FAILED' = 'FAILED', reason = 'Operator stop') {
     if (this.finished) return;
     this.finished = true; this.state = 'TERMINATING'; this.reason = reason;
-    if (this.timer) { clearTimeout(this.timer); this.timer = undefined; }
+    if (this.timer) { (this.options.deadlineClock?.clear ?? clearTimeout)(this.timer); this.timer = undefined; }
     // disconnect synchronously destroys TCP before final analytics publication.
     void this.client?.disconnect();
+    this.context.flushAcceptanceTerminal();
     this.context.feedReason = reason;
     this.context.setFeedStatus('UNAVAILABLE');
     this.state = state;

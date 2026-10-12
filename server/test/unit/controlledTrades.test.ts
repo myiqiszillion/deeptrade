@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import net from 'node:net';
 import { ControlledTradesSession } from '../../src/acceptance/controlledTrades.js';
+import { ChartSession } from '../../src/session.js';
+import { WebSocket } from 'ws';
 
 function record(i: number, side = 'N', size = 2): Buffer {
   const b = Buffer.alloc(48); b[0] = 12; b.writeUInt32LE(10252, 4);
@@ -22,19 +24,29 @@ class Socket extends EventEmitter {
 }
 export async function runControlledTradesTests() {
   let count = 0;
-  async function run(records: Buffer[], opts: { ack?: boolean; error?: boolean; cap?: number; close?: boolean } = {}) {
+  async function run(records: Buffer[], opts: { ack?: boolean; error?: boolean; cap?: number; close?: boolean; normal?: boolean; clock?: boolean } = {}) {
     const socket = new Socket(); let connections = 0;
     const messages: ReturnType<ControlledTradesSession['message']>[] = [];
+    const normal: any[] = [];
+    let deadline: (() => void) | undefined;
+    let cleared = false;
     const session = new ControlledTradesSession({ apiKey: 'fixture-key', instrumentId: 10252, resolvedContract: 'ESZ6',
-      offline: true, durationMs: 20, maxRecords: opts.cap ?? 50,
+      offline: true, normalFanout: opts.normal, durationMs: opts.clock ? 30000 : 20, maxRecords: opts.cap ?? 50,
+      ...(opts.clock ? { deadlineClock: { set: (callback: () => void, delay: number) => {
+        assert.equal(delay, 30000); deadline = callback; return 1 as unknown as ReturnType<typeof setTimeout>;
+      }, clear: () => { cleared = true; } } } : {}),
       createConnection: (() => { connections++; return socket; }) as unknown as typeof net.createConnection,
       publish: m => { messages.push(m); },
     });
+    if (opts.normal) session.context.addSubscriber(new ChartSession({ readyState: WebSocket.OPEN, bufferedAmount: 0,
+      send: (data: string) => { const m = JSON.parse(data); if (session.state === 'TERMINATING') assert(socket.destroyed); normal.push(m); }
+    } as unknown as WebSocket), '1m');
     await session.start();
     socket.emit('data', Buffer.from('cram=test\n')); socket.emit('data', Buffer.from('success=1\n'));
     const header = Buffer.alloc(128); header.write('DBN'); header[3] = 3; header.writeUInt32LE(120, 4);
     socket.emit('data', Buffer.concat([header, ...(opts.ack === false ? [] : [admin()]), ...(opts.error ? [admin(true)] : []), ...records]));
     if (opts.close) socket.destroy();
+    if (opts.clock) { assert.equal(session.state, 'RECEIVING'); deadline!(); assert(cleared); }
     await session.done;
     assert.equal(connections, 1);
     assert.equal(socket.writes.filter(w => w.startsWith('schema=')).length, 1);
@@ -46,7 +58,7 @@ export async function runControlledTradesTests() {
     await session.context.backfillHistory(); await session.context.ensureHistoryBars('1m'); await session.context.refreshGex();
     assert.equal(socket.writes.length, before); assert.equal(session.context.getHistorySource(), 'NONE');
     await session.context.dispose(); count++;
-    return { session, messages, final: finals[0] };
+    return { session, messages, final: finals[0], normal };
   }
   const cap = await run(Array.from({ length: 60 }, (_, i) => record(i)));
   assert.equal(cap.session.traces.length, 50); assert.equal(cap.final.acceptedCount, 50); assert.equal(cap.session.reason, 'RECORD_CAP');
@@ -54,6 +66,14 @@ export async function runControlledTradesTests() {
   assert.equal(cap.final.unknownVolume, 100); assert.equal(cap.final.snapshot.bars.at(-1)?.cvd, 0);
   assert.equal(cap.final.snapshot.profile.coverage, 'PARTIAL');
   assert.equal(cap.final.source, 'OFFLINE_FIXTURE');
+  const bridged = await run(Array.from({ length: 60 }, (_, i) => record(i)), { normal: true });
+  assert.equal(bridged.final.acceptedCount, 50);
+  assert.equal(bridged.final.acceptedVolume, 100);
+  assert.equal(bridged.normal.filter(m => m.type === 'TICK').length, 50);
+  assert.equal(bridged.normal.filter(m => m.type === 'BAR_UPDATE').at(-1).bar.volume, 100);
+  assert.equal(bridged.normal.filter(m => m.type === 'PROFILE_UPDATE').at(-1).volumeProfile.totalVolume, 100);
+  const deadlineRun = await run([record(0)], { normal: true, clock: true });
+  assert.equal(deadlineRun.session.reason, 'TIMEOUT');
   const mixed = await run([record(0, 'B', 2), record(1, 'A', 3), record(2, 'N', 4)]);
   assert.deepEqual(mixed.final.signedContributions, [2, -3, 0]);
   assert.equal(mixed.final.acceptedVolume, 9); assert.equal(mixed.final.snapshot.bars[0].cvd, -1);

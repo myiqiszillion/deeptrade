@@ -10,10 +10,17 @@ import { ControlledTradesSession } from '../server/dist/acceptance/controlledTra
 import { DatabentoHttpClient } from '../server/dist/databento/client.js';
 import { SessionCalendar } from '../server/dist/calendar/sessionCalendar.js';
 import { metadata, systemRecord, tradeRecord } from './acceptance_fixtures.mjs';
+import { ChartSession } from '../server/dist/session.js';
+import { getOrRegisterInstrument } from '../server/dist/futuresConfig.js';
+import { verifyTerminal } from './regular_acceptance_ui.mjs';
 
 if (!process.send || !process.env.ACCEPTANCE_ARTIFACT_DIR) throw new Error('Run through local operator supervisor only');
 const offline = process.argv.includes('--offline');
 const sparse = offline && process.argv.includes('--sparse');
+const regular = process.argv.includes('--regular-terminal');
+const frames = []; const normalPublications = []; const browserErrors = [];
+let terminalEvidence;
+let chartSession;
 const root = process.cwd();
 const receipts = []; const publications = [];
 let connectionCount = 0; let subscriptionCount = 0;
@@ -65,17 +72,38 @@ try {
             subscriptionCount++;
             if (line !== 'schema=trades|stype_in=continuous|symbols=ES.c.0|snapshot=0|is_last=1') evidenceFailure = 'Wrong subscription';
           }
-          if (line === 'start_session=1') socket.write(Buffer.concat([metadata(), systemRecord(), ...Array.from({ length: sparse ? 3 : 60 }, (_, i) => tradeRecord(i))]));
+          if (line === 'start_session=1') socket.write(Buffer.concat([metadata(), systemRecord(), ...Array.from({ length: sparse ? 3 : 60 }, (_, i) => {
+            const record = tradeRecord(i);
+            if (regular) {
+              const event = BigInt(Date.UTC(2026, 9, 12, 15, 29, 58) + i * 1000) * 1000000n;
+              record.writeBigUInt64LE(event, 8); record.writeBigUInt64LE(event + 20000n, 32);
+            }
+            return record;
+          })]));
         }
       });
     });
     await new Promise(resolve => mock.listen(0, '127.0.0.1', resolve));
   }
 
+  // No secondary network service may be reached after read-only metadata preflight.
+  let externalCalls = 0;
+  globalThis.fetch = async () => { externalCalls++; throw new Error('Acceptance prohibits external analytics/history fetch'); };
+
   let origin;
   server = http.createServer((req, res) => {
     if (req.method !== 'GET' || !req.url) { res.writeHead(404).end(); return; }
     const pathname = new URL(req.url, 'http://localhost').pathname;
+    if (regular && pathname === '/api/v1/auth/config') {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ authRequired: false, devMode: false, registrationEnabled: false, billingConfigured: false, plans: [] })); return;
+    }
+    if (regular && pathname === '/api/v1/instruments') {
+      res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ instruments: [getOrRegisterInstrument('ES')], total: 1 })); return;
+    }
+    if (regular && pathname === '/api/v1/instruments/ES') {
+      res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ instrument: getOrRegisterInstrument('ES'), provider: 'databento', feedStatus: session?.context.feedStatus })); return;
+    }
     if (pathname !== '/' && !/^\/assets\/[A-Za-z0-9_.-]+$/.test(pathname)) { res.writeHead(404).end(); return; }
     const filename = path.join(root, 'client', 'dist', pathname === '/' ? 'index.html' : pathname.slice(1));
     if (!fs.existsSync(filename)) { res.writeHead(404).end(); return; }
@@ -84,12 +112,34 @@ try {
   });
   wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
   server.on('upgrade', (req, socket, head) => {
-    if (req.url !== '/acceptance-observer' || req.headers.origin !== origin || wss.clients.size) { socket.destroy(); return; }
+    if (req.url !== (regular ? '/' : '/acceptance-observer') || req.headers.origin !== origin || wss.clients.size) { socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws));
   });
   let readyResolve;
   const ready = new Promise(resolve => { readyResolve = resolve; });
   wss.on('connection', ws => {
+    if (regular) {
+      chartSession = new ChartSession(ws);
+      const send = ws.send.bind(ws);
+      ws.send = (bytes, ...args) => {
+        if (normalPublications.length >= 512) { session.finish('FAILED', 'Normal publication budget'); ws.close(1008); return; }
+        const message = JSON.parse(String(bytes));
+        normalPublications.push({ type: message.type, symbol: message.symbol, sessionId: session.sessionId,
+          watermark: session.traces.length, vendorClosed: ['TERMINATING', 'CLOSED', 'FAILED'].includes(session.state) });
+        return send(bytes, ...args);
+      };
+      ws.on('message', bytes => {
+        let r; try { r = JSON.parse(String(bytes)); } catch { ws.close(1008); return; }
+        if (r.type === 'SUBSCRIBE' && r.symbol === 'ES' && (!r.timeframe || r.timeframe === '1m')) {
+          session.context.addSubscriber(chartSession, '1m'); readyResolve();
+        } else if (r.type === 'PING') chartSession.send({ type: 'PONG', ts: r.ts });
+        else if (r.type === 'UNSUBSCRIBE' && r.symbol === 'ES') session.context.removeSubscriber(chartSession);
+        else { chartSession.send({ type: 'ERROR', code: 'ACCEPTANCE_SCOPE', message: 'Only ES/1m chart subscription; no history or vendor start' }); }
+      });
+      ws.on('close', () => { session.context.removeSubscriber(chartSession); if (!['CLOSED', 'FAILED'].includes(session.state)) session.finish('FAILED', 'Terminal disconnected'); });
+      session.context.addSubscriber(chartSession, '1m'); readyResolve();
+      return;
+    }
     readyResolve();
     ws.on('message', bytes => {
       let r;
@@ -106,12 +156,13 @@ try {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
-  session = new ControlledTradesSession({ apiKey, ...mapping, offline,
+  session = new ControlledTradesSession({ apiKey, ...mapping, offline, normalFanout: regular,
     ...(sparse ? { durationMs: 200 } : {}),
     ...(offline ? { createConnection: () => net.createConnection({ host: '127.0.0.1', port: mock.address().port }) } : {}),
     publish: message => {
       const publication = { watermark: message.watermark, final: message.final, digest: message.digest, status: 'PENDING' };
       publications.push(publication);
+      if (regular) { publication.status = 'PRIVATE_ONLY'; return; }
       if (evidenceBytes() > 1024 * 1024) { evidenceFailure = 'Artifact limit'; session.finish('FAILED', evidenceFailure); return; }
       if (!wss.clients.size) { evidenceFailure = 'Observer disconnected'; session.finish('FAILED', evidenceFailure); return; }
       for (const ws of wss.clients) ws.send(JSON.stringify(message), error => {
@@ -126,11 +177,35 @@ try {
   process.send({ type: 'BROWSER_PID', pid: browserServer.process().pid });
   browser = await chromium.connect(browserServer.wsEndpoint());
   const page = await browser.newPage();
-  await page.goto(`${origin}/?acceptance=1`);
+  await page.route('**/*', route => route.request().url().startsWith(origin) ? route.continue() : route.abort());
+  page.on('pageerror', error => browserErrors.push(error.message));
+  page.on('websocket', ws => ws.on('framereceived', frame => { if (regular) frames.push(JSON.parse(String(frame.payload))); }));
+  if (regular) await page.addInitScript(() => {
+    const NativeWebSocket = window.WebSocket;
+    window.WebSocket = class extends NativeWebSocket {
+      constructor(...args) { super(...args); window.__acceptanceSocket = this; }
+    };
+    localStorage.setItem('deepchart.onboarding.v1', 'dismissed');
+    localStorage.setItem('deepchart_free_settings_v1', JSON.stringify({ symbol: 'ES', timeframe: '1m', activePanel: 'Profile', showCVD: true, chartMode: 'footprint' }));
+  });
+  await page.goto(`${origin}/${regular ? '' : '?acceptance=1'}`);
   await Promise.race([ready, new Promise((_, reject) => setTimeout(() => reject(new Error('Browser not ready')), 10000))]);
   assert.equal((await page.request.post(`${origin}/start`)).status(), 404);
   assert.equal((await page.request.get(`${origin}/api/v1/history?symbol=ES`)).status(), 404);
   assert.equal(connectionCount, 0); // Browser connected, but cannot start any vendor connection.
+  if (regular) {
+    await page.waitForSelector('#chart-surface');
+    await page.waitForTimeout(150);
+    assert.equal(frames.filter(m => m.type === 'TICK').length, 0);
+    assert(frames.some(m => m.type === 'INIT_STATE' && m.bars.length === 0 && m.historySource === 'NONE'));
+    await page.evaluate(() => {
+      window.__acceptanceSocket.send(JSON.stringify({ type: 'START' }));
+      window.__acceptanceSocket.send(JSON.stringify({ type: 'SUBSCRIBE', symbol: 'NQ', timeframe: '1m' }));
+    });
+    await page.waitForTimeout(100);
+    assert.equal(connectionCount, 0);
+    assert.equal(frames.filter(m => m.type === 'ERROR' && m.code === 'ACCEPTANCE_SCOPE').length, 2);
+  }
   process.send('CONNECTING');
   await session.start();
   if (offline && process.argv.includes('--watchdog-probe')) {
@@ -138,12 +213,24 @@ try {
     while (Date.now() < until) { /* Offline-only event loop hang: parent must terminate tree. */ }
   }
   await session.done;
-  await Promise.race([browserFinal, new Promise((_, reject) => setTimeout(() => reject(new Error('Final browser receipt missing')), 5000))]);
+  if (offline && process.argv.includes('--cleanup-watchdog-probe')) {
+    const until = Date.now() + 20000;
+    while (Date.now() < until) { /* Vendor closed; supervisor must bound cleanup separately. */ }
+  }
+  if (regular) {
+    terminalEvidence = await verifyTerminal(page, session.message(true), frames, session.traces);
+    assert.deepEqual(browserErrors, []);
+    assert(normalPublications.some(p => p.type === 'BAR_UPDATE' && p.vendorClosed));
+    assert(normalPublications.some(p => p.type === 'PROFILE_UPDATE' && p.vendorClosed));
+    if (offline && !sparse) assert(frames.some(m => m.type === 'BAR_CLOSE'));
+    assert.equal(externalCalls, 0);
+  } else await Promise.race([browserFinal, new Promise((_, reject) => setTimeout(() => reject(new Error('Final browser receipt missing')), 5000))]);
   const result = { label: offline ? 'OFFLINE ONLY — NOT LIVE PASS' : 'GENUINE LIVE ACCEPTANCE', mapping,
     final: session.message(true), traces: session.traces.map((trace, index) => ({ ...trace,
-      webSocketPublication: publications.find(p => p.watermark === index + 1)?.status || 'COVERED_BY_FINAL',
-      browserReceipt: receipts.some(r => r.watermark >= index + 1) ? 'COVERED_BY_RENDERED_WATERMARK' : 'NOT CAPTURED' })), publications, receipts,
-    connectionCount: offline ? connectionCount : 1, subscriptionCount: offline ? subscriptionCount : 1, evidenceFailure };
+      webSocketPublication: regular ? (normalPublications.some(p => p.type === 'TICK' && p.watermark === index + 1) ? 'NORMAL_CHARTSESSION_SERIALIZED' : 'NOT CAPTURED') : publications.find(p => p.watermark === index + 1)?.status || 'COVERED_BY_FINAL',
+      browserReceipt: regular ? 'COVERED_BY_FINAL_COMPONENT_NUMERIC_MATCH' : receipts.some(r => r.watermark >= index + 1) ? 'COVERED_BY_RENDERED_WATERMARK' : 'NOT CAPTURED' })), publications, receipts,
+    connectionCount: offline ? connectionCount : 1, subscriptionCount: offline ? subscriptionCount : 1, evidenceFailure,
+    ...(regular ? { terminalEvidence, normalPublications, browserErrors, externalCalls } : {}) };
   const accepted = session.traces.filter(t => t.outcome === 'ACCEPTED');
   const bins = new Map();
   for (const trade of accepted) {

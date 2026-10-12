@@ -35,7 +35,7 @@ async function startServer(): Promise<ChildProcess> {
   TEST_PORT = await getFreePort(parseInt(process.env.TEST_PORT || '8089', 10));
   WS_URL = `ws://localhost:${TEST_PORT}`;
   console.log(`[verify_p0] Starting test server on port ${TEST_PORT} with DEV_HOOKS=1...`);
-  const serverPath = path.resolve(__dirname, 'index.ts');
+  const serverPath = path.resolve(__dirname, '../test/p0OfflineServer.ts');
   // Run tsx through node directly instead of the .cmd shim: spawning a shell wrapper
   // triggers Node's DEP0190 warning and adds an extra cmd.exe layer that has to be killed.
   const tsxCli = path.resolve(__dirname, '../node_modules/tsx/dist/cli.mjs');
@@ -43,6 +43,12 @@ async function startServer(): Promise<ChildProcess> {
   const proc = spawn(process.execPath, [tsxCli, serverPath], {
     env: {
       ...process.env,
+      // P0 is an offline regression suite, even when the workspace has live credentials.
+      NODE_ENV: 'test',
+      FUTURES_PROVIDER: 'none',
+      DATABENTO_API_KEY: '',
+      STORAGE_PATH: ':memory:',
+      ENABLE_QUOTE_BOARD: '0',
       PORT: TEST_PORT.toString(),
       DEV_HOOKS: '1',
       AUTH_REQUIRED: '0',
@@ -182,7 +188,7 @@ async function runVerifyP0() {
     const initMsg = await waitForMessage((m) => m.type === 'INIT_STATE');
     console.log(`Received INIT_STATE for ${initMsg.symbol}, pointValue: ${initMsg.instrument.pointValue}`);
 
-    // Allow ticks to buffer for 2 seconds so replay buffer has ticks
+    // The offline bootstrap seeds explicit fixtures; no vendor feed is started.
     await sleep(2000);
 
     // ==========================================
@@ -306,7 +312,7 @@ async function runVerifyP0() {
     } else {
       console.log('No whale printed during this run — threshold contract verified without fabricating one.');
     }
-    console.log('✅ TEST 6 PASSED: notional threshold is instrument-derived (pointValue-aware) and enforced on real ticks.');
+    console.log('✅ TEST 6 PASSED: instrument-derived threshold contract verified in offline fixture scope.');
 
     // ==========================================
     // TEST 7: SET_SPEED and STEP

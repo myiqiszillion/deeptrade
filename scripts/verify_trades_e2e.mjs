@@ -17,9 +17,12 @@ const directory = path.join(os.homedir(), '.codex', 'private-acceptance', `deepc
 fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
 const child = fork(path.join(root, 'scripts', 'trades_e2e_worker.mjs'), args, {
   cwd: root, stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-  env: { ...process.env, NODE_ENV: 'test', STORAGE_PATH: ':memory:', ACCEPTANCE_ARTIFACT_DIR: directory },
+  env: { ...process.env, NODE_ENV: 'test', FUTURES_PROVIDER: 'none',
+    ...(args.includes('--offline') ? { DATABENTO_API_KEY: '' } : {}),
+    STORAGE_PATH: ':memory:', ACCEPTANCE_ARTIFACT_DIR: directory },
 });
 let watchdog;
+let cleanupDeadline;
 let killed = false;
 let browserPid;
 let cleanup = Promise.resolve();
@@ -50,8 +53,12 @@ child.on('message', message => {
     const deadline = args.includes('--offline') && args.includes('--watchdog-probe') ? 20 : 30000;
     watchdog = setTimeout(() => { console.error('Acceptance watchdog deadline'); stopTree('Vendor deadline'); }, deadline);
   }
-  if (message === 'CLOSED') { clearTimeout(watchdog); watchdog = undefined; }
+  if (message === 'CLOSED') {
+    clearTimeout(watchdog); watchdog = undefined;
+    // Vendor is already closed. This independent budget bounds browser/artifact cleanup.
+    cleanupDeadline = setTimeout(() => stopTree('Cleanup deadline'), 10000);
+  }
 });
-child.on('exit', async code => { clearTimeout(startup); clearTimeout(watchdog); await cleanup; console.log(`Private evidence: ${directory}`); process.exit(killed ? 124 : code ?? 1); });
+child.on('exit', async code => { clearTimeout(startup); clearTimeout(watchdog); clearTimeout(cleanupDeadline); await cleanup; console.log(`Private evidence: ${directory}`); process.exit(killed ? 124 : code ?? 1); });
 process.once('SIGINT', () => stopTree('Operator interrupt'));
 process.once('SIGTERM', () => stopTree('Operator terminate'));

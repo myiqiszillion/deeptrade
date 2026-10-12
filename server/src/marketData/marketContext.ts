@@ -73,6 +73,7 @@ export const defaultHistoryProvider: HistoryProvider = {
 };
 
 export interface IsolatedAcceptanceContext {
+  normalFanout?: boolean;
   createFeed: (handlers: import('./types.js').FeedHandlers) => MarketDataFeed;
   onOutcome: (trade: MarketTrade, outcome: 'ACCEPTED' | 'REJECTED' | 'DEDUPLICATED') => void;
 }
@@ -485,7 +486,7 @@ export class MarketContext {
       qualityFlags: trade.qualityFlags,
     };
 
-    if (this.acceptance) {
+    if (this.acceptance && !this.acceptance.normalFanout) {
       for (const engine of this.footprintEngines.values()) engine.processTick(tick);
       this.profile.processTick(tick);
       this.profile.setCoverage('PARTIAL', 'Bounded acceptance observation; not full session');
@@ -498,7 +499,7 @@ export class MarketContext {
     }
 
     // Persist normalized trade
-    marketDataStore.saveTrades([trade], this.symbol, this.provider);
+    if (!this.acceptance) marketDataStore.saveTrades([trade], this.symbol, this.provider);
 
     // Buffer recent ticks (strictly maintained in timestamp ascending order)
     if (!this.isBackfillingHistory) {
@@ -522,10 +523,10 @@ export class MarketContext {
       }
     }
 
-    if (this.onTickRecord) {
+    if (!this.acceptance && this.onTickRecord) {
       this.onTickRecord(tick);
     }
-    microstructureEngine.recordTick(tick);
+    if (!this.acceptance) microstructureEngine.recordTick(tick);
 
     if (this.isBackfillingHistory) {
       this.liveBuffer.push(tick);
@@ -542,10 +543,10 @@ export class MarketContext {
       const { currentBar, closedBar, correctedBar, affectedBars } = engine.processTick(tick);
 
       // Persist closed bar to store
-      if (closedBar) {
+      if (!this.acceptance && closedBar) {
         marketDataStore.saveBar(closedBar, this.symbol, tf, this.provider);
         alertEngine.evaluateFootprintBar(this.symbol, closedBar, this.instrument.tickSize);
-      } else if (currentBar) {
+      } else if (!this.acceptance && currentBar) {
         alertEngine.evaluateFootprintBar(this.symbol, currentBar, this.instrument.tickSize);
       }
 
@@ -582,6 +583,7 @@ export class MarketContext {
 
     // 2. Process Profile & VWAP
     this.profile.processTick(tick);
+    if (this.acceptance) this.profile.setCoverage('PARTIAL', 'Bounded acceptance observation; not full session');
     const vwapPoint = this.vwap.processTick(tick);
 
     // 3. Process Tape
@@ -594,8 +596,8 @@ export class MarketContext {
     );
 
     // Evaluate alert rules against live market events
-    alertEngine.evaluateTick(this.symbol, tick, this.profile.getVolumeProfile());
-    if (absorption) {
+    if (!this.acceptance) alertEngine.evaluateTick(this.symbol, tick, this.profile.getVolumeProfile());
+    if (!this.acceptance && absorption) {
       alertEngine.evaluateAbsorption(this.symbol, absorption);
     }
 
@@ -646,6 +648,13 @@ export class MarketContext {
       this.trailingAnalyticsTimer = setTimeout(() => this.flushTrailingAnalytics(), 500);
       this.trailingAnalyticsTimer.unref();
     }
+    this.acceptance?.onOutcome(trade, 'ACCEPTED');
+  }
+
+  /** Controller calls this only after its vendor socket has been destroyed. */
+  public flushAcceptanceTerminal(): void {
+    if (!this.acceptance?.normalFanout) return;
+    this.flushTrailingAnalytics();
   }
 
   private flushTrailingAnalytics(): void {
