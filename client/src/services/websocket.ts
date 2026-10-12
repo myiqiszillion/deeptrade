@@ -393,6 +393,10 @@ export class DeepChartWSClient {
     }
 
     this.activeSubscription = { symbol, source, timeframe: tf };
+    // The regular App listener follows the primary symbol; named secondary panes
+    // retain their independent routes on the multiplexed connection.
+    const primary = this.listenersMap.get('default');
+    if (primary) primary.symbol = symbol;
     this.subscriptionState = 'PENDING';
     this.notifyHealth();
 

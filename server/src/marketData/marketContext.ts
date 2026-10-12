@@ -155,6 +155,7 @@ export class MarketContext {
   private lastSpeedOfTapeUpdate = 0;
   private lastProfileUpdate = 0;
   private lastVwapUpdate = 0;
+  private trailingAnalyticsTimer: NodeJS.Timeout | null = null;
 
   private gexEngine: GEXEngine;
   private cachedGexProfile?: GEXProfile;
@@ -391,6 +392,11 @@ export class MarketContext {
       } catch (err) {
         console.warn(`[Feed:${previous.provider}] disconnect failed: ${(err as Error).message}`);
       }
+    }
+    if (!this.acceptance) {
+      this.flushTrailingAnalytics();
+      this.feedReason = 'feed stopped';
+      this.setFeedStatus('UNAVAILABLE');
     }
     this.feedLifecycleState = 'STOPPED';
   }
@@ -634,6 +640,25 @@ export class MarketContext {
     }
     if (vwapPoint && now - this.lastVwapUpdate > 500) {
       this.lastVwapUpdate = now;
+    }
+    // Leading-edge throttling must not leave the last quiet-market trade invisible.
+    if (!this.trailingAnalyticsTimer) {
+      this.trailingAnalyticsTimer = setTimeout(() => this.flushTrailingAnalytics(), 500);
+      this.trailingAnalyticsTimer.unref();
+    }
+  }
+
+  private flushTrailingAnalytics(): void {
+    if (this.trailingAnalyticsTimer) {
+      clearTimeout(this.trailingAnalyticsTimer);
+      this.trailingAnalyticsTimer = null;
+    }
+    for (const session of this.subscribers) {
+      if (session.isReplay()) continue;
+      const bar = this.footprintEngines.get(session.getTimeframe(this.symbol))?.getCurrentBar();
+      if (bar) session.send({ type: 'BAR_UPDATE', symbol: this.symbol, bar });
+      session.send({ type: 'PROFILE_UPDATE', symbol: this.symbol,
+        volumeProfile: this.profile.getVolumeProfile(), tpo: this.profile.getTPOProfile() });
     }
   }
 

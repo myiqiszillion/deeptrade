@@ -319,9 +319,18 @@ function userIdForUsername(username: string): string {
 
 // Multi-instrument market context manager
 import { createDatabentoHistoryProvider } from './marketData/databentoHistoryProvider.js';
+import { resolveDatabentoConfig } from './databento/config.js';
 const databentoClient = new DatabentoHttpClient();
 const databentoHistoryProvider = createDatabentoHistoryProvider(databentoClient);
 const contextManager = new MarketContextManager(undefined, undefined, databentoHistoryProvider);
+/** In-process fixture access only; no endpoint and no vendor credentials permitted. */
+export async function offlineTerminalTestContext(symbol: string) {
+  if (process.env.NODE_ENV !== 'test' || process.env.FUTURES_PROVIDER !== 'none' ||
+      resolveDatabentoConfig().apiKey || process.env.STORAGE_PATH !== ':memory:') {
+    throw new Error('Offline Terminal test requires test/none/no-key/in-memory isolation');
+  }
+  return contextManager.getOrCreateContext(symbol);
+}
 const redisCache = new RedisCache();
 const handleOptionsRequest = createOptionsRouter({
   dbClient: databentoClient,
