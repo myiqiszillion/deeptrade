@@ -130,7 +130,8 @@ export class ControlledTradesSession {
     if (trace.instrumentId !== this.options.instrumentId) { this.finish('FAILED', 'Instrument mismatch'); return false; }
     this.state = 'RECEIVING';
     if (trade) {
-      trade.id = `${this.sessionId}:${createHash('sha256').update(record).digest('hex')}`;
+      // Keep production normalized identity; sessionId remains cohort provenance, not a trade ID.
+      trade.id ||= `${this.sessionId}:${createHash('sha256').update(record).digest('hex')}`;
       trade.receiveTs = trace.localReceiveTimestamp;
       if (this.options.offline) trade.sourceProvider = 'fixture';
       if (trade.side === 'UNKNOWN') trade.aggressorProvenance = 'UNKNOWN';

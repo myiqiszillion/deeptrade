@@ -11,6 +11,9 @@ export type AggressorProvenance =
   | 'UNKNOWN';        // Undecidable or not provided
 
 export interface Tick {
+  vendorIdentity?: import('./marketData/tradeIdentity.js').VendorTradeIdentity;
+  eventTsNs?: string;
+  identityKind?: 'VENDOR_RECORD_V1' | 'LOCAL_DELIVERY_V1' | 'LEGACY';
   id: string;
   timestamp: number;
   price: number;

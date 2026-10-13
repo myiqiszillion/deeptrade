@@ -19,6 +19,9 @@ interface TradeQualityFlags {
  * Vendor payloads must never reach Footprint/Profile/VWAP/Tape/Replay directly.
  */
 export interface MarketTrade {
+  vendorIdentity?: import('./tradeIdentity.js').VendorTradeIdentity;
+  eventTsNs?: string;
+  identityKind?: 'VENDOR_RECORD_V1' | 'LOCAL_DELIVERY_V1' | 'LEGACY';
   /** Epoch milliseconds (normalized from the vendor's native time unit). */
   ts: number;
   price: number;
@@ -30,7 +33,7 @@ export interface MarketTrade {
   receiveTs?: number;
   /** Provenance of the aggressor side. */
   aggressorProvenance?: AggressorProvenance;
-  /** Sequence identifier from vendor for gap detection. */
+  /** Original venue message sequence; no symbol-local continuity guarantee. */
   sequenceId?: number | string;
   /** Data source provider identifier (e.g. 'databento', 'fixture'). */
   sourceProvider?: string;

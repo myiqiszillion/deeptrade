@@ -1,6 +1,7 @@
 // History provider wired to Databento Historical — replaces defaultHistoryProvider (no-op)
 import { DatabentoHttpClient } from '../databento/client.js';
 import { resolveDatabentoConfig } from '../databento/config.js';
+import { resolveTradeIdentity } from './tradeIdentity.js';
 import type { HistoryProvider } from './marketContext.js';
 
 const CME_ROOTS = ['ES', 'NQ', 'MES', 'MNQ', 'CL', 'GC', 'ZB', 'ZN', 'UB', 'RTY', 'MGC', 'SI', 'HG', 'MCL', 'MNG'];
@@ -125,11 +126,14 @@ export function createDatabentoHistoryProvider(client?: DatabentoHttpClient): Hi
           stypeIn
         );
         return trades.map(t => ({
+          ...resolveTradeIdentity({ ...t, id: t.tradeId }),
           timestamp: t.timestamp,
           price: t.price,
           size: t.size,
           side: t.side,
-          id: t.tradeId ?? ''
+          eventTsNs: t.eventTsNs,
+          vendorIdentity: t.vendorIdentity,
+          sequenceId: t.sequenceId
         }));
       } catch (err: any) {
         const msg = String(err?.message || '');

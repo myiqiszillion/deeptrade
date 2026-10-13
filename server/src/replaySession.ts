@@ -173,7 +173,7 @@ export class ReplaySession {
 
     this.replayEngine.loadTicks(ticks);
     this.rebuildState();
-    return ticks.length;
+    return this.replayEngine.getRecordedCount();
   }
 
   public sendProfileAndVwapUpdate(): void {

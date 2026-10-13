@@ -15,6 +15,7 @@ import {
   OptionContractDefinition,
   OptionStatisticRecord,
 } from './types.js';
+import { exactNs, identityFromJson, vendorTradeId } from '../marketData/tradeIdentity.js';
 
 /**
  * Parses Databento fixed-point price.
@@ -108,7 +109,7 @@ export function parseOsiSymbol(symbol: string): {
 /**
  * Normalizes a Databento trade record.
  */
-export function normalizeTrade(rec: DbTradeRecord): NormalizedTrade {
+export function normalizeTrade(rec: DbTradeRecord, dataset?: string): NormalizedTrade {
   const ts = rec.ts_event ?? rec.hd?.ts_event;
   const timestamp = parseTimestampMs(ts);
   const price = parsePrice(rec.price);
@@ -116,10 +117,11 @@ export function normalizeTrade(rec: DbTradeRecord): NormalizedTrade {
 
   let side: 'buy' | 'sell' | 'unknown' = 'unknown';
   if (rec.side === 'A') {
-    side = 'buy';
-  } else if (rec.side === 'B') {
     side = 'sell';
+  } else if (rec.side === 'B') {
+    side = 'buy';
   }
+  const vendorIdentity = identityFromJson(rec, dataset);
 
   return {
     symbol: rec.symbol || '',
@@ -127,7 +129,10 @@ export function normalizeTrade(rec: DbTradeRecord): NormalizedTrade {
     size,
     timestamp,
     side,
-    tradeId: rec.order_id !== undefined ? String(rec.order_id) : undefined,
+    tradeId: vendorIdentity ? vendorTradeId(vendorIdentity) : undefined,
+    vendorIdentity,
+    eventTsNs: exactNs(ts),
+    sequenceId: rec.sequence === undefined ? undefined : String(rec.sequence),
     isBuyerMaker: side === 'sell',
   };
 }

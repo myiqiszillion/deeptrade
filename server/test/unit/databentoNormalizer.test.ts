@@ -68,11 +68,11 @@ export async function runDatabentoNormalizerTests(): Promise<void> {
     assert.equal(norm0.symbol, 'SPY');
     assert.equal(norm0.price, 520.25);
     assert.equal(norm0.size, 100);
-    assert.equal(norm0.side, 'buy'); // Action 'T' with side 'A' (Ask) is a buyer-initiated trade
+    assert.equal(norm0.side, 'sell'); // Databento A = sell aggressor
     assert.equal(norm0.timestamp, 1711033200000);
 
     const norm1 = normalizeTrade(tradesFixture[1]);
-    assert.equal(norm1.side, 'sell'); // Action 'T' with side 'B' (Bid) is a seller-initiated trade
+    assert.equal(norm1.side, 'buy'); // Databento B = buy aggressor
     assert.equal(norm1.price, 520.20);
     assert.equal(norm1.size, 250);
 

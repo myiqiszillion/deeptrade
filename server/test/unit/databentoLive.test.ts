@@ -269,7 +269,7 @@ export async function runDatabentoLiveTests(): Promise<void> {
     assert.equal(trades.length, 1);
     assert.equal(trades[0].price, 520.25);
     assert.equal(trades[0].size, 15);
-    assert.equal(trades[0].side, 'BUY');
+    assert.equal(trades[0].side, 'SELL');
     assert.equal(trades[0].aggressorProvenance, 'EXCHANGE_NATIVE');
     assert.equal(trades[0].sourceProvider, 'databento');
 
@@ -906,7 +906,7 @@ export async function runDatabentoLiveTests(): Promise<void> {
     assert.equal(trades.length, 1, 'TBBO record must dispatch onTrade');
     assert.equal(trades[0].price, 5200.00);
     assert.equal(trades[0].size, 10);
-    assert.equal(trades[0].side, 'BUY');
+    assert.equal(trades[0].side, 'SELL');
 
     assert.equal(depths.length, 1, 'TBBO record must dispatch onDepth');
     assert.equal((depths[0] as any).bids[0].price, 5199.75);

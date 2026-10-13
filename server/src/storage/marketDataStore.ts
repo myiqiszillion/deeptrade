@@ -4,6 +4,7 @@ import { mkdirSync, existsSync, statSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { FootprintBar, HistoricalBar, Tick } from '../types.js';
 import { MarketTrade } from '../marketData/types.js';
+import { identityFields, resolveTradeIdentity } from '../marketData/tradeIdentity.js';
 import { Entitlement, User } from '../auth/types.js';
 import { OptionContractDefinition, OptionStatisticRecord } from '../databento/types.js';
 import { IMarketDataStore, DepthSnapshotInput, DepthQueryOptions, DepthQueryResult } from './types.js';
@@ -678,7 +679,10 @@ export class MarketDataStore implements IMarketDataStore {
     try {
       for (const t of trades) {
         const ts = 'ts' in t ? t.ts : t.timestamp;
-        const tradeId = 'id' in t && t.id ? t.id : `t_${ts}_${t.price}_${t.size}`;
+        const tradeId = resolveTradeIdentity(t).id;
+        if (this.tradeIdentityStatus(provider, symbol, tradeId, t) === 'CONFLICT') {
+          throw new Error('Conflicting payload for existing trade identity; rejected without overwrite');
+        }
         const receiveTs = t.receiveTs ?? Date.now();
         const seqId = t.sequenceId !== undefined ? String(t.sequenceId) : null;
         const srcProvider = t.sourceProvider || provider;
@@ -711,6 +715,13 @@ export class MarketDataStore implements IMarketDataStore {
 
   public saveTrade(trade: MarketTrade, symbol: string, provider: string): void {
     this.saveTrades([trade], symbol, provider);
+  }
+
+  /** Indexed read for dedup across context/reconnect/restart; no ingestion durability guarantee. */
+  public tradeIdentityStatus(provider: string, symbol: string, id: string, t: { price: number; size: number; side: string; ts?: number; timestamp?: number }): 'UNSEEN' | 'DUPLICATE' | 'CONFLICT' {
+    const row = this.db.prepare('SELECT ts, price, size, side FROM trades WHERE provider=? AND symbol=? AND trade_id=?').get(provider, symbol, id);
+    if (!row) return 'UNSEEN';
+    return Number(row.ts) === (t.ts ?? t.timestamp) && Number(row.price) === t.price && Number(row.size) === t.size && String(row.side).toLowerCase() === t.side.toLowerCase() ? 'DUPLICATE' : 'CONFLICT';
   }
 
   public saveTradesBatch(trades: MarketTrade[], symbol: string, provider: string): void {
@@ -1039,6 +1050,7 @@ export class MarketDataStore implements IMarketDataStore {
 
     return rows.map((r) => ({
       id: r.trade_id,
+      ...identityFields(r.trade_id),
       timestamp: Number(r.ts),
       price: Number(r.price),
       size: Number(r.size),
@@ -1087,6 +1099,7 @@ export class MarketDataStore implements IMarketDataStore {
 
     const trades: Tick[] = resultRows.map((r) => ({
       id: r.trade_id,
+      ...identityFields(r.trade_id),
       timestamp: Number(r.ts),
       price: Number(r.price),
       size: Number(r.size),

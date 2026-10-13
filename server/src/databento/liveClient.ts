@@ -20,6 +20,7 @@ import {
 } from './normalizer.js';
 import { DbTradeRecord, DbMbp1Record } from './types.js';
 import { resolveDatabentoConfig } from './config.js';
+import { vendorTradeId, VendorTradeIdentity } from '../marketData/tradeIdentity.js';
 
 export const DBN_CONSTANTS = {
   MAGIC: 'DBN',
@@ -128,6 +129,7 @@ export function parseDbnRecord(
     if (action === 'T' && isValidPrice && isValidSize) {
       const side = sideChar === 'B' ? 'BUY' : sideChar === 'A' ? 'SELL' : 'UNKNOWN';
       result.trade = {
+        eventTsNs: tsEventNs.toString(),
         ts: tsMs,
         price: Number(rawPrice) / 1e9,
         size,
@@ -136,6 +138,13 @@ export function parseDbnRecord(
         sourceProvider,
         sequenceId: sequence,
       };
+      if (typeof context?.dataset === 'string') {
+        const identity: VendorTradeIdentity = [context.dataset, publisherId, instrumentId, tsEventNs.toString(), rawPrice.toString(), size,
+          action, sideChar, buffer[30], buffer[31], buffer.readBigUInt64LE(32).toString(), buffer.readInt32LE(40), sequence];
+        result.trade.vendorIdentity = Object.freeze(identity);
+        result.trade.id = vendorTradeId(identity);
+        result.trade.identityKind = 'VENDOR_RECORD_V1';
+      }
     }
   } else if ((rtype === DBN_CONSTANTS.RTYPE_MBP1 || rtype === DBN_CONSTANTS.RTYPE_TBBO) && recLen >= DBN_CONSTANTS.MBP1_MSG_SIZE) {
     // Both mbp-1 and tbbo schemas emit Mbp1Msg with literal rtype = 0x01.
@@ -520,13 +529,16 @@ export class DatabentoLiveClient implements MarketDataFeed {
 
     if (hasTradeData) {
       try {
-        const norm = normalizeTrade(parsed as DbTradeRecord);
+        const norm = normalizeTrade(parsed as DbTradeRecord, isTradesSchema ? this.dataset : undefined);
         const mt: MarketTrade = {
           ts: norm.timestamp,
           price: norm.price,
           size: norm.size,
           side: norm.side === 'buy' ? 'BUY' : norm.side === 'sell' ? 'SELL' : 'UNKNOWN',
           id: norm.tradeId,
+          vendorIdentity: norm.vendorIdentity,
+          eventTsNs: norm.eventTsNs,
+          sequenceId: norm.sequenceId,
           receiveTs: Date.now(),
           aggressorProvenance: 'EXCHANGE_NATIVE',
           sourceProvider: this.provider,
@@ -702,6 +714,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
         while (buffer.length >= DBN_CONSTANTS.HEADER_SIZE) {
           if (this.acceptance && this.generation !== currentGen) return;
           const { parsed, recLen } = parseDbnRecord(buffer, this.symbol, this.provider, this.dbnVersion, {
+            dataset: this.dataset,
             schema: this.schema,
           });
           if (recLen === 0 || recLen < DBN_CONSTANTS.HEADER_SIZE) {

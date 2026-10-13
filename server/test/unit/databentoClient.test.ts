@@ -105,9 +105,9 @@ export async function runDatabentoClientTests(): Promise<void> {
 
     const trades = await client.getHistoricalTrades('DBEQ.BASIC', 'SPY', '2026-03-20T00:00:00Z');
     assert.equal(trades.length, 2);
-    assert.equal(trades[0].side, 'buy');
+    assert.equal(trades[0].side, 'sell');
     assert.equal(trades[0].price, 520.25);
-    assert.equal(trades[1].side, 'sell');
+    assert.equal(trades[1].side, 'buy');
     assert.equal(trades[1].size, 200);
 
     console.log('  PASS  Historical trades with NDJSON streaming');

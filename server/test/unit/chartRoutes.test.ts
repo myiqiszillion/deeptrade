@@ -252,7 +252,8 @@ export async function runChartRoutesTests(): Promise<void> {
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body);
     assert.equal(body.count, 2);
-    assert.equal(body.series[0].buyVolume, 50);
+    assert.equal(body.series[0].buyVolume, 0);
+    assert.equal(body.series[0].sellVolume, 50); // Native Databento A = sell aggressor.
     console.log('✓ GET /api/v1/chart/cvd returns CVD series');
   }
 

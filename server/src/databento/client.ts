@@ -244,7 +244,7 @@ export class DatabentoHttpClient {
       stype_in: stypeIn,
     });
 
-    return rawRecords.map((r) => normalizeTrade(r));
+    return rawRecords.map((r) => normalizeTrade(r, dataset));
   }
 
   /**

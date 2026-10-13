@@ -1,4 +1,5 @@
 import { Tick } from './types.js';
+import { uniqueTradeTicks } from './marketData/tradeIdentity.js';
 
 export class BacktestReplayEngine {
   private recordedTicks: Tick[] = [];
@@ -39,7 +40,7 @@ export class BacktestReplayEngine {
   }
 
   public loadTicks(ticks: Tick[]) {
-    this.recordedTicks = [...ticks];
+    this.recordedTicks = uniqueTradeTicks(ticks);
     this.playbackIndex = 0;
     this.notifyProgress();
   }

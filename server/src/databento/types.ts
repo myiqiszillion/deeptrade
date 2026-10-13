@@ -21,12 +21,16 @@ interface DbRecordHeader {
 
 /** Databento trades schema record */
 export interface DbTradeRecord {
+  publisher_id?: number;
+  sequence?: number;
+  depth?: number;
+  ts_in_delta?: number;
   hd?: DbRecordHeader;
   instrument_id?: number;
   ts_event?: string | number;
   ts_recv?: string | number;
   action?: string; // 'T' = trade, 'A' = add, 'C' = cancel, etc.
-  side?: string;   // 'A' = Ask (aggressor bought), 'B' = Bid (aggressor sold), 'N' = None
+  side?: string;   // 'A' = sell aggressor, 'B' = buy aggressor, 'N' = unspecified
   price: number | string; // nanodollars or float
   size: number;
   channel_id?: number;
@@ -98,6 +102,9 @@ export interface DbStatisticsRecord {
 // ==========================================
 
 export interface NormalizedTrade {
+  eventTsNs?: string;
+  vendorIdentity?: import('../marketData/tradeIdentity.js').VendorTradeIdentity;
+  sequenceId?: string;
   symbol: string;
   price: number;
   size: number;

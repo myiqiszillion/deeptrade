@@ -14,6 +14,7 @@ import {
 import { VWAPEngine } from '../vwapEngine.js';
 import { createMarketDataFeed, ordinaryProviderForSymbol } from './registry.js';
 import { ordinaryExternalFetchDisabled } from './ordinaryRuntime.js';
+import { resolveTradeIdentity, uniqueTradeTicks } from './tradeIdentity.js';
 import { historyBarsTarget } from './historyDepth.js';
 import { FeedStatusEvent, MarketDataFeed, MarketDepthEvent, MarketTrade } from './types.js';
 import { marketDataStore } from '../storage/marketDataStore.js';
@@ -122,26 +123,35 @@ export class MarketContext {
   private isBackfillingHistory = false;
   private liveBuffer: Tick[] = [];
 
-  private recentVendorTickIds = new Map<string, true>();
+  private recentVendorTickIds = new Map<string, string>();
+  private identityBlocked = false;
   private readonly MAX_DEDUP_IDS = 5000;
-  private generatedSeq = 0;
   private pendingHistoryFetches = new Map<string, { token: number; promise: Promise<HistoricalBar[]> }>();
   private feedLifecycleState: 'STARTING' | 'RUNNING' | 'STOPPING' | 'STOPPED' = 'STOPPED';
   private feedTransitionPromise: Promise<void> = Promise.resolve();
-  private lastTradeSeq: number | undefined;
   private lastTradeEventTs = 0;
   private lastDepthUpdateId: number | undefined;
 
-  private trackVendorTickId(id: string): boolean {
+  private trackVendorTickId(id: string, signature: string): boolean {
     if (this.recentVendorTickIds.has(id)) {
       return false;
     }
-    this.recentVendorTickIds.set(id, true);
+    this.recentVendorTickIds.set(id, signature);
     if (this.recentVendorTickIds.size > this.MAX_DEDUP_IDS) {
       const oldest = this.recentVendorTickIds.keys().next().value;
       if (oldest !== undefined) this.recentVendorTickIds.delete(oldest);
     }
     return true;
+  }
+
+  private blockIdentity(trade: MarketTrade, reason: string): void {
+    this.identityBlocked = true;
+    this.feedReason = `Trade identity BLOCKED: ${reason}; Operator reconciliation required`;
+    console.warn(`[Trade identity] ${this.symbol}: ${this.feedReason}`);
+    this.setFeedStatus('UNAVAILABLE');
+    this.acceptance?.onOutcome(trade, 'REJECTED');
+    // Synchronous socket destruction in disconnect prevents further ordinary record dispatch.
+    void this.feed?.disconnect().catch(err => console.warn(`[Trade identity] disconnect failed: ${(err as Error).message}`));
   }
 
   private cachedBook: OrderbookSnapshot | null = null;
@@ -405,6 +415,7 @@ export class MarketContext {
   }
 
   private handleTrade(trade: MarketTrade): void {
+    if (this.identityBlocked) { this.acceptance?.onOutcome(trade, 'REJECTED'); return; }
     // 1. Validation: reject malformed or non-positive trade values
     if (
       !Number.isFinite(trade.price) ||
@@ -419,40 +430,30 @@ export class MarketContext {
     }
 
     // 2. Centralized Deduplication: drop duplicate vendor trades before fan-out
-    let tickId: string;
-    if (trade.id) {
-      if (!this.trackVendorTickId(trade.id)) {
+    let identity: ReturnType<typeof resolveTradeIdentity>;
+    try { identity = resolveTradeIdentity(trade); }
+    catch (err) {
+      this.blockIdentity(trade, (err as Error).message);
+      return;
+    }
+    trade = { ...trade, ...identity };
+    const tickId = identity.id;
+    const signature = JSON.stringify([trade.ts, trade.price, trade.size, trade.side.toLowerCase()]);
+    const known = this.recentVendorTickIds.get(tickId);
+    const storedStatus = this.acceptance ? 'UNSEEN' : marketDataStore.tradeIdentityStatus(this.provider, this.symbol, tickId, trade);
+    if ((known !== undefined && known !== signature) || storedStatus === 'CONFLICT') {
+      this.blockIdentity(trade, 'conflicting payload for existing identity; rejected without overwrite');
+      return;
+    }
+    if (storedStatus === 'DUPLICATE' || !this.trackVendorTickId(tickId, signature)) {
         this.acceptance?.onOutcome(trade, 'DEDUPLICATED');
         return;
-      }
-      tickId = trade.id;
-    } else {
-      // Distinct ID for trades without vendor ID prevents accidental collision
-      tickId = `gen_${this.symbol}_${trade.ts}_${++this.generatedSeq}`;
     }
 
     this.lastTradeTs = Date.now();
     if (this.feedStatus !== 'LIVE') this.setFeedStatus('LIVE');
 
-    // 3. Trade Sequence Gap Detection
-    // Check for contiguous sequence gaps if the provider supplies dedicated trade-level sequencing.
-    if (!this.acceptance && trade.sequenceId !== undefined) {
-      const seq = typeof trade.sequenceId === 'number' ? trade.sequenceId : parseInt(String(trade.sequenceId), 10);
-      if (Number.isFinite(seq)) {
-        if (this.lastTradeSeq !== undefined && seq > this.lastTradeSeq + 1) {
-          const gapCount = seq - (this.lastTradeSeq + 1);
-          console.warn(`[MarketContext] Trade sequence gap for ${this.symbol}: expected ${this.lastTradeSeq + 1}, got ${seq} (${gapCount} missing)`);
-          marketDataStore.recordGap(
-            this.symbol,
-            this.provider,
-            this.lastTradeEventTs || trade.ts,
-            trade.ts,
-            `Trade sequence gap (${gapCount} missing): ${this.lastTradeSeq} -> ${seq}`
-          );
-        }
-        this.lastTradeSeq = seq;
-      }
-    }
+    // Venue message sequence is retained, but has no proven symbol-local trade continuity.
 
     // 4. Session Rollover Detection (Reset VWAP & Profile on official session boundaries)
     if (!this.acceptance && this.lastTradeEventTs > 0 && SessionCalendar.isNewSession(this.lastTradeEventTs, trade.ts, this.instrument.sessionScheduleId)) {
@@ -463,6 +464,8 @@ export class MarketContext {
     this.lastTradeEventTs = trade.ts;
 
     const tick: Tick = {
+      ...identity,
+      eventTsNs: trade.eventTsNs,
       id: tickId,
       timestamp: trade.ts,
       price: trade.price,
@@ -489,7 +492,7 @@ export class MarketContext {
     }
 
     // Persist normalized trade
-    if (!this.acceptance) marketDataStore.saveTrades([trade], this.symbol, this.provider);
+    if (!this.acceptance) marketDataStore.saveTrades([tick], this.symbol, this.provider);
 
     // Buffer recent ticks (strictly maintained in timestamp ascending order)
     if (!this.isBackfillingHistory) {
@@ -817,15 +820,7 @@ export class MarketContext {
 
       if (combined.length > 0) {
         // Dedup and sort merged ticks strictly by timestamp ascending
-        const seenKeys = new Set<string>();
-        const uniqueSortedTicks = combined
-          .filter((t) => {
-            const key = t.id || `${t.timestamp}:${t.price}:${t.size}:${t.side}`;
-            if (seenKeys.has(key)) return false;
-            seenKeys.add(key);
-            return true;
-          })
-          .sort((a, b) => a.timestamp - b.timestamp);
+        const uniqueSortedTicks = uniqueTradeTicks(combined);
 
         this.historyTicks = uniqueSortedTicks.slice(-5000);
 
@@ -834,7 +829,7 @@ export class MarketContext {
         for (const tick of uniqueSortedTicks) {
           if (tick.id) {
             this.recentVendorTickIds.delete(tick.id);
-            this.recentVendorTickIds.set(tick.id, true);
+            this.recentVendorTickIds.set(tick.id, JSON.stringify([tick.timestamp, tick.price, tick.size, tick.side.toLowerCase()]));
             if (this.recentVendorTickIds.size > this.MAX_DEDUP_IDS) {
               const oldest = this.recentVendorTickIds.keys().next().value;
               if (oldest !== undefined) this.recentVendorTickIds.delete(oldest);
@@ -1086,12 +1081,13 @@ export class MarketContext {
       const isRecentEnough = newestTradeTs >= Math.max(Date.now() - 24 * 3600 * 1000, newestHistoryTs - 3600 * 1000);
 
       if (storedTrades.trades.length > 0 && isRecentEnough) {
-        this.historyTicks = storedTrades.trades.slice().reverse();
+        this.historyTicks = uniqueTradeTicks(storedTrades.trades);
         const firstTs = this.historyTicks[0]?.timestamp || 0;
         this.profile.reset(firstTs);
         this.vwap.reset(firstTs);
         const engine = this.ensureFootprintEngine(timeframe);
         for (const t of this.historyTicks) {
+          this.trackVendorTickId(t.id, JSON.stringify([t.timestamp, t.price, t.size, t.side.toLowerCase()]));
           engine.processTick(t);
           this.profile.processTick(t);
           this.vwap.processTick(t);
