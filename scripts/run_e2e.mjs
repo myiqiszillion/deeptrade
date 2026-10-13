@@ -1,3 +1,4 @@
+import './offline_guard.cjs';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
@@ -96,9 +97,10 @@ async function main() {
   let clientProc = null;
 
   const serverRunning = await isUrlReady(serverUrl);
+  if (serverRunning) throw new Error('OFFLINE_ISOLATION: refusing an existing backend');
   if (!serverRunning) {
     console.log('[E2E Runner] Starting DeepChart test backend on port 8080...');
-    serverProc = spawn(process.execPath, [path.join(root, 'server', 'dist', 'index.js')], {
+    serverProc = spawn(process.execPath, [path.join(root, 'scripts', 'offline_bootstrap.mjs'), path.join(root, 'server', 'dist', 'index.js')], {
       cwd: path.join(root, 'server'),
       stdio: 'ignore',
       env: {
@@ -107,6 +109,7 @@ async function main() {
         PORT: '8080',
         AUTH_REQUIRED: '0',
         FUTURES_PROVIDER: 'none',
+        DATABENTO_API_KEY: '', STORAGE_PATH: ':memory:', ENABLE_QUOTE_BOARD: '0',
       },
     });
   } else {

@@ -1,3 +1,4 @@
+import '../../../scripts/offline_guard.cjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -34,8 +35,10 @@ export async function runAuthFlowTests(): Promise<void> {
     ADMIN_USERNAME: 'ops-admin',
     ADMIN_PASSWORD: 'ops-admin-password',
     STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+    OFFLINE_TEST_WEBHOOK_SECRET: WEBHOOK_SECRET,
     METRICS_TOKEN: 'integration-metrics-token',
     FUTURES_PROVIDER: 'none',
+    DATABENTO_API_KEY: '', ENABLE_QUOTE_BOARD: '0',
     STORAGE_PATH: ':memory:',
     DEFAULT_SYMBOL: 'ES',
     MAX_API_REQUESTS_PER_MIN: '1000',
@@ -49,7 +52,7 @@ export async function runAuthFlowTests(): Promise<void> {
     if (key.startsWith('UW_')) delete env[key];
   }
 
-  const server = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {
+  const server = spawn(process.execPath, [fileURLToPath(new URL('../../../scripts/offline_bootstrap.mjs', import.meta.url)), fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {
     cwd: root,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],

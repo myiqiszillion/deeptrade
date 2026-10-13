@@ -362,6 +362,10 @@ export class DatabentoLiveClient implements MarketDataFeed {
   private acceptanceStarted = false;
 
   constructor(options: DatabentoLiveOptions) {
+    if ((globalThis as any)[Symbol.for('deepchart.offline.guard')] && (options.apiKey || process.env.DATABENTO_API_KEY) &&
+        !options.WebSocketClass && !options.acceptance?.createConnection) {
+      (globalThis as any)[Symbol.for('deepchart.offline.guard')].fail('vendor factory requires injected mock transport');
+    }
     this.symbol = options.symbol;
     this.dataset = options.dataset || this.inferDataset(options.symbol);
     const cfg = resolveDatabentoConfig();

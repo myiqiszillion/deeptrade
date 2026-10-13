@@ -1,3 +1,4 @@
+import '../../../scripts/offline_guard.cjs';
 import assert from 'node:assert/strict';
 import { FootprintEngine } from '../../src/footprintEngine.js';
 import { ChartService } from '../../src/chart/chartService.js';

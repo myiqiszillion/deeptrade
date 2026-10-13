@@ -284,7 +284,8 @@ export async function runMarketDataStoreTests(): Promise<void> {
 
       // Step E: Unblock backup directory and verify safe migration succeeds
       if (existsSync(BLOCKER_FILE)) unlinkSync(BLOCKER_FILE);
-      delete process.env.BACKUP_DIR;
+      if (savedBackupDir !== undefined) process.env.BACKUP_DIR = savedBackupDir;
+      else delete process.env.BACKUP_DIR;
 
       const workingStore = new MarketDataStore(FAIL_BACKUP_DB);
       const postCols = (workingStore as any).db.prepare('PRAGMA table_info(instrument_master)').all() as Array<{ name: string; pk: number }>;

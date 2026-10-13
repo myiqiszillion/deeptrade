@@ -1,3 +1,4 @@
+import '../../../scripts/offline_guard.cjs';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import WebSocket from 'ws';
@@ -8,6 +9,7 @@ export async function runAlertDeliveryTests(): Promise<void> {
 
   const oldEnv = { ...process.env };
   process.env.NODE_ENV = 'test';
+  process.env.FUTURES_PROVIDER = 'none'; process.env.DATABENTO_API_KEY = ''; process.env.ENABLE_QUOTE_BOARD = '0';
   process.env.PORT = '0';
   process.env.HOST = '127.0.0.1';
   process.env.AUTH_REQUIRED = '1';

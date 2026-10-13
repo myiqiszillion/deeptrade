@@ -1,3 +1,4 @@
+import '../../../scripts/offline_guard.cjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -18,6 +19,7 @@ export async function runWebSocketIntegrationTests(): Promise<void> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     NODE_ENV: 'test',
+    FUTURES_PROVIDER: 'none', DATABENTO_API_KEY: '', ENABLE_QUOTE_BOARD: '0',
     PORT: String(port),
     HOST: '127.0.0.1',
     DEV_HOOKS: '1',
@@ -30,7 +32,7 @@ export async function runWebSocketIntegrationTests(): Promise<void> {
     STORAGE_PATH: ':memory:',
   };
 
-  const server = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {
+  const server = spawn(process.execPath, [fileURLToPath(new URL('../../../scripts/offline_bootstrap.mjs', import.meta.url)), fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {
     cwd: root,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],

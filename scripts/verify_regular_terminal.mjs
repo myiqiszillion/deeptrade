@@ -1,4 +1,5 @@
 // Offline fixtures through the normal index/ChartSession and actual App/components.
+import './offline_guard.cjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';

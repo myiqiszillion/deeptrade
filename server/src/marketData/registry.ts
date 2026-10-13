@@ -22,6 +22,7 @@ export function createMarketDataFeed(
   instrument: FuturesInstrument,
   handlers: FeedHandlers
 ): FeedFactoryResult {
+  (globalThis as any)[Symbol.for('deepchart.offline.guard')]?.assertBackend();
   const cfg = resolveDatabentoConfig();
   const provider = providerForSymbol(symbol);
   const liveSymbols = cfg.symbols;

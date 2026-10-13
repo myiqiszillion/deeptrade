@@ -55,6 +55,10 @@ export class DatabentoHttpClient {
   private readonly timeoutMs: number;
 
   constructor(options: DatabentoClientOptions = {}) {
+    if ((globalThis as any)[Symbol.for('deepchart.offline.guard')] &&
+        (options.apiKey || process.env.DATABENTO_API_KEY) && !options.fetchFn) {
+      (globalThis as any)[Symbol.for('deepchart.offline.guard')].fail('credentialed HTTP provider requires mock fetch');
+    }
     const cfg = resolveDatabentoConfig();
     this.apiKey = options.apiKey || process.env.DATABENTO_API_KEY || '';
     this.baseUrl = (options.baseUrl || process.env.DATABENTO_HIST_URL || cfg.histBaseUrl).replace(/\/+$/, '');

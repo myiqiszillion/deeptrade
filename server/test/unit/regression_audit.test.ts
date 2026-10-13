@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { MarketDataStore } from '../../src/storage/marketDataStore.js';
 const findBarIndexByTime = (time: number, bars: Array<{ time: number }>): number => {
@@ -89,17 +88,14 @@ export async function runRegressionAuditTests(): Promise<void> {
 
       // Development environment: verify DEV_HOOKS=1 does NOT force :memory:
       // It should resolve to the real persistent DB path
-      const rootDir = existsSync(resolve(process.cwd(), 'data/market_data.sqlite'))
-        ? process.cwd()
-        : resolve(process.cwd(), '..');
-      const realDbPath = resolve(rootDir, 'data/market_data.sqlite');
-      if (existsSync(realDbPath)) {
-        const devStore = new MarketDataStore(realDbPath);
-        const realTrades = devStore.queryTrades({ provider: 'databento', symbol: 'ES', limit: 10 });
-        assert.ok(realTrades.trades.length >= 0, 'Development database can query real historical trades');
+      const fixtureDbPath = resolve(process.cwd(), 'test_dev_storage.sqlite');
+      {
+        const devStore = new MarketDataStore(fixtureDbPath);
+        const fixtureTrades = devStore.queryTrades({ provider: 'fixture', symbol: 'ES', limit: 10 });
+        assert.equal(fixtureTrades.trades.length, 0, 'Explicit fixture database starts empty');
         devStore.close();
       }
-      console.log('  PASS  P1 SQLite: NODE_ENV=test uses isolated :memory:, development uses real DB');
+      console.log('  PASS  P1 SQLite: NODE_ENV=test uses isolated :memory:, explicit fixture storage is persistent');
     } finally {
       process.env.NODE_ENV = oldEnv;
       process.env.DEV_HOOKS = oldDevHooks;

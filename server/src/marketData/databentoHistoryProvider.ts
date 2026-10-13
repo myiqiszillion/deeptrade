@@ -32,6 +32,9 @@ function schemaForBarMinutes(barMinutes: number): 'ohlcv-1s' | 'ohlcv-1m' | 'ohl
 }
 
 export function createDatabentoHistoryProvider(client?: DatabentoHttpClient): HistoryProvider {
+  if ((globalThis as any)[Symbol.for('deepchart.offline.guard')] && !client) {
+    (globalThis as any)[Symbol.for('deepchart.offline.guard')].fail('history provider requires injected mock client');
+  }
   const c = client ?? new DatabentoHttpClient();
   return {
     async fetchBars(symbol, config, options) {

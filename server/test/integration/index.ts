@@ -1,3 +1,4 @@
+import '../../../scripts/offline_guard.cjs';
 import { runChartSmokeTests } from './chartSmoke.test.js';
 import { runHistoryApiTests } from './historyApi.test.js';
 import { runWebSocketIntegrationTests } from './websocket.test.js';

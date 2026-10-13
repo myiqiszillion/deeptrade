@@ -1,3 +1,4 @@
+import '../../scripts/offline_guard.cjs';
 import { spawn, ChildProcess } from 'child_process';
 import net from 'net';
 import path from 'path';

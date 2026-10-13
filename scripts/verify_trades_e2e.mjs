@@ -11,11 +11,13 @@ if (!args.includes('--offline') && !args.includes('--live')) {
   process.exit(0);
 }
 if (args.includes('--offline') === args.includes('--live')) throw new Error('Select exactly one mode');
+if (args.includes('--offline')) await import('./offline_guard.cjs');
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 if (args.includes('--live') && args[args.indexOf('--approval-date') + 1] !== today) throw new Error('Current ICT date approval required');
 const directory = path.join(os.homedir(), '.codex', 'private-acceptance', `deepchart-${Date.now()}`);
 fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-const child = fork(path.join(root, 'scripts', 'trades_e2e_worker.mjs'), args, {
+const child = fork(path.join(root, 'scripts', args.includes('--offline') ? 'offline_bootstrap.mjs' : 'trades_e2e_worker.mjs'),
+  args.includes('--offline') ? [path.join(root, 'scripts', 'trades_e2e_worker.mjs'), ...args] : args, {
   cwd: root, stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   env: { ...process.env, NODE_ENV: 'test', FUTURES_PROVIDER: 'none',
     ...(args.includes('--offline') ? { DATABENTO_API_KEY: '' } : {}),

@@ -1,3 +1,4 @@
+import '../../../scripts/offline_guard.cjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -30,7 +31,7 @@ export async function runHistoryApiTests(): Promise<void> {
     DATABENTO_API_KEY: '',
   };
 
-  const server = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {
+  const server = spawn(process.execPath, [fileURLToPath(new URL('../../../scripts/offline_bootstrap.mjs', import.meta.url)), fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {
     cwd: root,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],

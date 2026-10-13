@@ -54,7 +54,12 @@ import { syncInstrumentSpecs } from './marketData/instrumentSync.js';
 
 // Test runs must stay hermetic: hydrating the developer's .env would re-introduce vendor
 // credentials and STORAGE_PATH after the suites deliberately stripped them.
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.DEEPCHART_OFFLINE_TEST === '1') {
+  const guard = (globalThis as any)[Symbol.for('deepchart.offline.guard')];
+  if (!guard) throw new Error('OFFLINE_ISOLATION: missing preload guard');
+  guard.assertBackend();
+}
+if (process.env.NODE_ENV !== 'test' && process.env.DEEPCHART_OFFLINE_TEST !== '1') {
   const reloadEnv = () => {
     try {
       process.loadEnvFile?.('../.env');
@@ -321,7 +326,9 @@ function userIdForUsername(username: string): string {
 import { createDatabentoHistoryProvider } from './marketData/databentoHistoryProvider.js';
 import { resolveDatabentoConfig } from './databento/config.js';
 const databentoClient = new DatabentoHttpClient();
-const databentoHistoryProvider = createDatabentoHistoryProvider(databentoClient);
+const databentoHistoryProvider = process.env.DEEPCHART_OFFLINE_TEST === '1'
+  ? { fetchBars: async () => [], fetchTicks: async () => [] }
+  : createDatabentoHistoryProvider(databentoClient);
 const contextManager = new MarketContextManager(undefined, undefined, databentoHistoryProvider);
 /** In-process fixture access only; no endpoint and no vendor credentials permitted. */
 export async function offlineTerminalTestContext(symbol: string) {

@@ -16,6 +16,11 @@ import { verifyTerminal } from './regular_acceptance_ui.mjs';
 
 if (!process.send || !process.env.ACCEPTANCE_ARTIFACT_DIR) throw new Error('Run through local operator supervisor only');
 const offline = process.argv.includes('--offline');
+const offlineGuard = globalThis[Symbol.for('deepchart.offline.guard')];
+if (offline) {
+  if (!offlineGuard) throw new Error('OFFLINE_ISOLATION: worker must use guarded bootstrap');
+  offlineGuard.assertBackend();
+}
 const sparse = offline && process.argv.includes('--sparse');
 const regular = process.argv.includes('--regular-terminal');
 const frames = []; const normalPublications = []; const browserErrors = [];
@@ -24,6 +29,7 @@ let chartSession;
 const root = process.cwd();
 const receipts = []; const publications = [];
 let connectionCount = 0; let subscriptionCount = 0;
+const mockSubscriptionCommands = [];
 let mapping = { instrumentId: 10252, resolvedContract: 'ESZ6' };
 let apiKey = 'offline-fixture-key';
 let mock;
@@ -70,6 +76,7 @@ try {
           if (line.startsWith('auth=')) socket.write('success=1\n');
           if (line.startsWith('schema=')) {
             subscriptionCount++;
+            mockSubscriptionCommands.push(line);
             if (line !== 'schema=trades|stype_in=continuous|symbols=ES.c.0|snapshot=0|is_last=1') evidenceFailure = 'Wrong subscription';
           }
           if (line === 'start_session=1') socket.write(Buffer.concat([metadata(), systemRecord(), ...Array.from({ length: sparse ? 3 : 60 }, (_, i) => {
@@ -226,12 +233,19 @@ try {
     assert.equal(externalCalls, 0);
   } else await Promise.race([browserFinal, new Promise((_, reject) => setTimeout(() => reject(new Error('Final browser receipt missing')), 5000))]);
   const result = { label: offline ? 'OFFLINE ONLY — NOT LIVE PASS' : 'GENUINE LIVE ACCEPTANCE', mapping,
+    ...(offline ? { mockSubscriptionCommands, offlineIsolation: { preloaded: Boolean(offlineGuard),
+      violations: offlineGuard.violations, provider: process.env.FUTURES_PROVIDER,
+      credentialPresent: Boolean(process.env.DATABENTO_API_KEY), storageMemory: process.env.STORAGE_PATH === ':memory:' } } : {}),
     final: session.message(true), traces: session.traces.map((trace, index) => ({ ...trace,
       webSocketPublication: regular ? (normalPublications.some(p => p.type === 'TICK' && p.watermark === index + 1) ? 'NORMAL_CHARTSESSION_SERIALIZED' : 'NOT CAPTURED') : publications.find(p => p.watermark === index + 1)?.status || 'COVERED_BY_FINAL',
       browserReceipt: regular ? 'COVERED_BY_FINAL_COMPONENT_NUMERIC_MATCH' : receipts.some(r => r.watermark >= index + 1) ? 'COVERED_BY_RENDERED_WATERMARK' : 'NOT CAPTURED' })), publications, receipts,
     connectionCount: offline ? connectionCount : 1, subscriptionCount: offline ? subscriptionCount : 1, evidenceFailure,
     ...(regular ? { terminalEvidence, normalPublications, browserErrors, externalCalls } : {}) };
   const accepted = session.traces.filter(t => t.outcome === 'ACCEPTED');
+  if (offline) {
+    assert.deepEqual(mockSubscriptionCommands, ['schema=trades|stype_in=continuous|symbols=ES.c.0|snapshot=0|is_last=1']);
+    offlineGuard.assertClean();
+  }
   const bins = new Map();
   for (const trade of accepted) {
     const bin = Math.round(trade.price / 0.25) * 0.25;

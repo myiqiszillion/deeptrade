@@ -5,6 +5,7 @@
  * real SQLite file, and MarketDataStore reads STORAGE_PATH when its singleton is constructed at
  * import time. Hence the dynamic imports below.
  */
+import '../../../scripts/offline_guard.cjs';
 process.env.NODE_ENV = 'test';
 process.env.STORAGE_PATH = ':memory:';
 

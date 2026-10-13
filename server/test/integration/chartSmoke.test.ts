@@ -1,3 +1,4 @@
+import '../../../scripts/offline_guard.cjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -21,7 +22,7 @@ export async function runChartSmokeTests(): Promise<void> {
     NODE_ENV: 'test',
     PORT: String(port),
     HOST: '127.0.0.1',
-    FUTURES_PROVIDER: 'databento',
+    FUTURES_PROVIDER: 'none',
     DEMO: '0',
     DEV_HOOKS: '1',
     ADMIN_SECRET,
@@ -32,7 +33,7 @@ export async function runChartSmokeTests(): Promise<void> {
   };
   delete env.DATABENTO_API_KEY;
 
-  const server = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {
+  const server = spawn(process.execPath, [fileURLToPath(new URL('../../../scripts/offline_bootstrap.mjs', import.meta.url)), fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {
     cwd: root,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -115,9 +116,9 @@ export async function runChartSmokeTests(): Promise<void> {
     const detailed = (await fetch(`${base}/healthz`, { headers: { 'x-admin-secret': ADMIN_SECRET } }).then((r) =>
       r.json()
     )) as any;
-    assert.equal(detailed.feed, 'databento');
+    assert.equal(detailed.feed, 'none');
     assert.equal(detailed.historySource, 'NONE');
-    assert.match(detailed.feedReason, /DATABENTO_API_KEY/);
+    assert.match(detailed.feedReason, /FUTURES_PROVIDER=none/);
     console.log('  [PASS] Chart history server smoke test passed.');
   } finally {
     socket?.terminate();
