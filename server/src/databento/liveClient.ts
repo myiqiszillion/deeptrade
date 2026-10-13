@@ -330,6 +330,13 @@ interface DatabentoLiveOptions {
   gatewayUrl?: string;
   handlers: FeedHandlers;
   WebSocketClass?: any;
+  ordinary?: {
+    createConnection?: typeof net.createConnection;
+    expiresAt: string;
+    beforeConnect: () => void;
+    onSubscription: () => void;
+    onAck: () => void;
+  };
   /** Only the private operator acceptance controller supplies these hooks. */
   acceptance?: {
     createConnection?: typeof net.createConnection;
@@ -360,10 +367,12 @@ export class DatabentoLiveClient implements MarketDataFeed {
   private dbnVersion = 2;
   private readonly acceptance?: DatabentoLiveOptions['acceptance'];
   private acceptanceStarted = false;
+  private readonly ordinary?: DatabentoLiveOptions['ordinary'];
+  private approvalTimer?: NodeJS.Timeout;
 
   constructor(options: DatabentoLiveOptions) {
     if ((globalThis as any)[Symbol.for('deepchart.offline.guard')] && (options.apiKey || process.env.DATABENTO_API_KEY) &&
-        !options.WebSocketClass && !options.acceptance?.createConnection) {
+        !options.WebSocketClass && !options.acceptance?.createConnection && !options.ordinary?.createConnection) {
       (globalThis as any)[Symbol.for('deepchart.offline.guard')].fail('vendor factory requires injected mock transport');
     }
     this.symbol = options.symbol;
@@ -375,6 +384,10 @@ export class DatabentoLiveClient implements MarketDataFeed {
     this.handlers = options.handlers;
     this.WSClass = options.WebSocketClass;
     this.acceptance = options.acceptance;
+    this.ordinary = options.ordinary;
+    if (this.ordinary && (this.dataset !== 'GLBX.MDP3' || this.symbol !== 'ES.c.0' || this.schema !== 'trades' || this.WSClass || this.acceptance)) {
+      throw new Error('Ordinary runtime requires GLBX.MDP3 / ES.c.0 / trades over TCP');
+    }
     if (this.acceptance && (this.dataset !== 'GLBX.MDP3' || this.symbol !== 'ES.c.0' || this.schema !== 'trades' || this.WSClass)) {
       throw new Error('Acceptance requires GLBX.MDP3 / ES.c.0 / trades over TCP');
     }
@@ -398,6 +411,16 @@ export class DatabentoLiveClient implements MarketDataFeed {
       this.acceptanceStarted = true;
     }
     if (this.connected || this.socket || this.ws) return;
+    if (this.ordinary) {
+      this.ordinary.beforeConnect();
+      const remaining = Date.parse(this.ordinary.expiresAt) - Date.now();
+      if (!Number.isFinite(remaining) || remaining <= 0) throw new Error('Ordinary approval expired');
+      this.approvalTimer = setTimeout(() => {
+        void this.disconnect();
+        this.handlers.onStatus({ state: 'UNAVAILABLE', reason: 'Ordinary approval expired; restart requires renewed profile', provider: this.provider, symbol: this.symbol });
+      }, remaining);
+      this.approvalTimer.unref();
+    }
     if (!this.apiKey) {
       this.handlers.onStatus({
         state: 'UNAVAILABLE',
@@ -563,7 +586,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
     let phase: 'cram' | 'auth' | 'dbn_header' | 'records' = 'cram';
     let buffer = Buffer.alloc(0);
 
-    const socket = (this.acceptance?.createConnection || net.createConnection)({ host, port });
+    const socket = (this.acceptance?.createConnection || this.ordinary?.createConnection || net.createConnection)({ host, port });
     this.socket = socket;
 
     socket.on('connect', () => {
@@ -600,14 +623,14 @@ export class DatabentoLiveClient implements MarketDataFeed {
         if (line.includes('success=1')) {
           this.acceptance?.onStage('AUTHENTICATED');
           this.reconnectAttempts = 0;
-          this.connected = true;
-          this.handlers.onStatus({
+          this.connected = !this.ordinary;
+          if (!this.ordinary) this.handlers.onStatus({
             state: 'LIVE',
             reason: `Connected to Databento realtime stream (${dataset}:${this.symbol})`,
             provider: this.provider,
             symbol: this.symbol,
           });
-          if (this.liveResolver) {
+          if (!this.ordinary && this.liveResolver) {
             this.liveResolver();
             this.liveResolver = undefined;
           }
@@ -620,8 +643,13 @@ export class DatabentoLiveClient implements MarketDataFeed {
             stypeIn = 'raw_symbol';
           }
 
-          if (this.acceptance) {
+          if (this.ordinary) {
+            this.ordinary.onSubscription();
             socket.write('schema=trades|stype_in=continuous|symbols=ES.c.0|snapshot=0|is_last=1\n');
+          } else if (this.acceptance) {
+            socket.write('schema=trades|stype_in=continuous|symbols=ES.c.0|snapshot=0|is_last=1\n');
+          } else if (this.schema === 'trades') {
+            socket.write(`schema=trades|stype_in=${stypeIn}|symbols=${liveSymbol}|snapshot=0|is_last=1\n`);
           } else if (this.schema === 'tbbo') {
             const subTbbo = `schema=tbbo|stype_in=${stypeIn}|symbols=${liveSymbol}|snapshot=0|is_last=1\n`;
             socket.write(subTbbo);
@@ -691,19 +719,26 @@ export class DatabentoLiveClient implements MarketDataFeed {
             if (parsed.error) {
               if (this.acceptance) { this.acceptance.onFailure('Gateway ErrorMsg'); return; }
               this.handlers.onError(new Error(`[DatabentoLive:${this.symbol}] ${parsed.error}`));
+              if (this.ordinary) { void this.disconnect(); return; }
             }
             if (parsed.system) {
               if (parsed.system.isHeartbeat) {
                 // Gateway heartbeat keepalive
               } else if (parsed.system.isSubscriptionAck) {
                 this.acceptance?.onStage('ACKNOWLEDGED');
+                if (this.ordinary) {
+                  this.ordinary.onAck();
+                  this.connected = true;
+                  this.handlers.onStatus({ state: 'LIVE', reason: 'Trades subscription acknowledged', provider: this.provider, symbol: this.symbol });
+                  if (this.liveResolver) { this.liveResolver(); this.liveResolver = undefined; }
+                }
                 // Subscription acknowledged
               }
             }
-            if (parsed.depth) {
+            if (parsed.depth && !this.ordinary) {
               this.handlers.onDepth(parsed.depth);
             }
-            if (parsed.trade) {
+            if (parsed.trade && (!this.ordinary || this.connected)) {
               this.handlers.onTrade(parsed.trade);
             }
             if (!parsed.trade && !parsed.depth && !parsed.system && !parsed.error) {
@@ -732,7 +767,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
         if (this.acceptance) { this.acceptance.onFailure('Unexpected socket close'); return; }
         this.handlers.onStatus({
           state: 'UNAVAILABLE',
-          reason: 'Databento TCP socket closed, reconnecting...',
+            reason: this.ordinary ? 'Databento TCP socket closed; ordinary retry disabled' : 'Databento TCP socket closed, reconnecting...',
           provider: this.provider,
           symbol: this.symbol,
         });
@@ -742,7 +777,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
   }
 
   private scheduleReconnect(): void {
-    if (this.acceptance) return;
+    if (this.acceptance || this.ordinary) return;
     if (this.intentionallyClosed) return;
     this.reconnectAttempts++;
     const delay = Math.min(30000, 1000 * Math.pow(2, Math.min(5, this.reconnectAttempts)));
@@ -756,6 +791,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
   }
 
   public async disconnect(): Promise<void> {
+    if (this.approvalTimer) { clearTimeout(this.approvalTimer); this.approvalTimer = undefined; }
     this.intentionallyClosed = true;
     this.generation++;
     if (this.reconnectTimer) {

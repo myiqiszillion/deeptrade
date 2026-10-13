@@ -51,6 +51,7 @@ import { futuresSymbolResolver } from './symbols/futuresResolver.js';
 import { getTradingHours } from './sessions/tradingSessions.js';
 import { marketStatusEngine } from './sessions/marketStatus.js';
 import { syncInstrumentSpecs } from './marketData/instrumentSync.js';
+import { initializeOrdinaryRuntime } from './marketData/ordinaryRuntime.js';
 
 // Test runs must stay hermetic: hydrating the developer's .env would re-introduce vendor
 // credentials and STORAGE_PATH after the suites deliberately stripped them.
@@ -86,6 +87,8 @@ if (process.env.NODE_ENV !== 'test' && process.env.DEEPCHART_OFFLINE_TEST !== '1
 // Structured logs first (LOG_FORMAT=json), then the configuration guard: a server that requires
 // authentication must never boot on the public dev secret or with DEV_HOOKS enabled.
 installConsoleBridge();
+const ordinaryRuntimeGate = initializeOrdinaryRuntime();
+console.log(`[Ordinary runtime] ${ordinaryRuntimeGate.reason}`);
 assertAuthConfig();
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
@@ -323,12 +326,10 @@ function userIdForUsername(username: string): string {
 }
 
 // Multi-instrument market context manager
-import { createDatabentoHistoryProvider } from './marketData/databentoHistoryProvider.js';
 import { resolveDatabentoConfig } from './databento/config.js';
-const databentoClient = new DatabentoHttpClient();
-const databentoHistoryProvider = process.env.DEEPCHART_OFFLINE_TEST === '1'
-  ? { fetchBars: async () => [], fetchTicks: async () => [] }
-  : createDatabentoHistoryProvider(databentoClient);
+// Phase 01 grants no ordinary REST/history/options capability, even with a live trades profile.
+const databentoClient = new DatabentoHttpClient({ requestsEnabled: false });
+const databentoHistoryProvider: import('./marketData/marketContext.js').HistoryProvider = { fetchBars: async () => [], fetchTicks: async () => [] };
 const contextManager = new MarketContextManager(undefined, undefined, databentoHistoryProvider);
 /** In-process fixture access only; no endpoint and no vendor credentials permitted. */
 export async function offlineTerminalTestContext(symbol: string) {
@@ -501,7 +502,7 @@ export const httpServer = createServer(async (req, res) => {
         feedReason: ctx?.feedReason,
         lastTradeTs: ctx?.lastTradeTs || 0,
         lastDepthTs: ctx?.lastDepthTs || 0,
-        futuresProvider: process.env.FUTURES_PROVIDER || 'none',
+        futuresProvider: (ordinaryRuntimeGate.allows('ES') ? 'databento' : 'none'),
         databento: {
           configured: Boolean(process.env.DATABENTO_API_KEY),
           opraDataset: process.env.DATABENTO_OPRA_DATASET || 'OPRA.PILLAR',
@@ -595,7 +596,6 @@ export const httpServer = createServer(async (req, res) => {
   if (req.url?.startsWith('/api/v1/instruments')) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const parts = url.pathname.split('/').filter(Boolean);
-    const futuresProvider = process.env.FUTURES_PROVIDER || 'none';
 
     // Detailed single instrument: /api/v1/instruments/:symbol
     if (parts.length === 4) {
@@ -606,7 +606,7 @@ export const httpServer = createServer(async (req, res) => {
         return;
       }
       const ctx = contextManager.getContext(sym);
-      const provider = futuresProvider;
+      const provider = ordinaryRuntimeGate.allows(sym) ? 'databento' : 'none';
       // Honest feed state: a symbol with no market context is NOT connecting — the server starts the vendor
       // feed lazily on subscribe, so it is IDLE. Claiming CONNECTING for 42 untouched symbols is a lie.
       const feedStatus = ctx?.feedStatus ?? 'IDLE';
@@ -614,7 +614,7 @@ export const httpServer = createServer(async (req, res) => {
         instrument: inst,
         feedStatus,
         subscribed: Boolean(ctx),
-        feedConfigured: futuresProvider !== 'none',
+        feedConfigured: provider !== 'none',
         provider: ctx?.provider || provider,
         lastTradeTs: ctx?.lastTradeTs || 0,
         lastDepthTs: ctx?.lastDepthTs || 0,
@@ -635,7 +635,7 @@ export const httpServer = createServer(async (req, res) => {
 
     // List all instruments
     const list = Object.values(FUTURES_INSTRUMENTS).map((inst) => {
-      const provider = futuresProvider;
+      const provider = ordinaryRuntimeGate.allows(inst.symbol) ? 'databento' : 'none';
       const ctx = contextManager.getContext(inst.symbol);
       const feedStatus = ctx?.feedStatus ?? 'IDLE';
       return {
@@ -643,7 +643,7 @@ export const httpServer = createServer(async (req, res) => {
         provider,
         feedStatus,
         subscribed: Boolean(ctx),
-        feedConfigured: futuresProvider !== 'none',
+        feedConfigured: provider !== 'none',
         isLive: feedStatus === 'LIVE',
       };
     });
@@ -679,9 +679,12 @@ export const httpServer = createServer(async (req, res) => {
     sendJson(res, 200, {
       status: 'ok',
       uptimeSec: Math.round(process.uptime()),
+      ordinaryRuntime: { enabled: ordinaryRuntimeGate.allows('ES'), reason: ordinaryRuntimeGate.reason,
+        counters: { ...ordinaryRuntimeGate.counters }, budgets: { connectionAttempts: 1, subscriptionCommands: 1 },
+        schema: ordinaryRuntimeGate.profile?.schema || null, history: false, gex: false, quoteBoard: false, reconnect: false },
       sessions: sessions.size,
       uniqueUsers: userSessions.size,
-      futuresProvider: process.env.FUTURES_PROVIDER || 'none',
+      futuresProvider: (ordinaryRuntimeGate.allows('ES') ? 'databento' : 'none'),
       activeContexts: allContexts.map((ctx) => ({
         symbol: ctx.symbol,
         provider: ctx.provider,
@@ -985,7 +988,7 @@ export const httpServer = createServer(async (req, res) => {
   if (req.url?.startsWith('/api/v1/trades')) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const symbol = url.searchParams.get('symbol') || (process.env.DEFAULT_SYMBOL || 'ES');
-    const provider = url.searchParams.get('provider') || (process.env.FUTURES_PROVIDER || 'none');
+    const provider = url.searchParams.get('provider') || ((ordinaryRuntimeGate.allows('ES') ? 'databento' : 'none'));
     const beforeTimeStr = url.searchParams.get('beforeTime');
     const beforeTime = beforeTimeStr ? parseInt(beforeTimeStr, 10) : undefined;
     const beforeId = url.searchParams.get('beforeId') || undefined;
@@ -1038,7 +1041,7 @@ export const httpServer = createServer(async (req, res) => {
 
   // 11. Data Coverage & Capability Matrix API
   if (req.url?.startsWith('/api/v1/coverage')) {
-    const futuresProvider = process.env.FUTURES_PROVIDER || 'none';
+    const futuresProvider = (ordinaryRuntimeGate.allows('ES') ? 'databento' : 'none');
     const coverage = Object.values(FUTURES_INSTRUMENTS).map((inst) => {
       const provider = futuresProvider;
       const ctx = contextManager.getContext(inst.symbol);
@@ -1050,9 +1053,9 @@ export const httpServer = createServer(async (req, res) => {
         category: inst.category,
         provider,
         realtime: isLive ? 'LIVE' : (futuresProvider !== 'none' ? 'DEGRADED' : 'UNAVAILABLE'),
-        history: futuresProvider !== 'none' ? 'BARS' : 'NONE',
+        history: 'NONE',
         footprint: isLive ? 'AVAILABLE' : 'UNAVAILABLE',
-        orderbook: futuresProvider === 'databento' ? 'L2' : 'NONE',
+        orderbook: 'NONE',
         gapStatus: 'NONE',
       };
     });
@@ -1444,7 +1447,7 @@ export const httpServer = createServer(async (req, res) => {
   if (req.url?.startsWith('/api/v1/replay/stats')) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const symbol = url.searchParams.get('symbol') || (process.env.DEFAULT_SYMBOL || 'ES');
-    const provider = url.searchParams.get('provider') || (process.env.FUTURES_PROVIDER || 'none');
+    const provider = url.searchParams.get('provider') || ((ordinaryRuntimeGate.allows('ES') ? 'databento' : 'none'));
     const trades = marketDataStore.queryTrades({ provider, symbol, limit: 5000 }).trades;
     const ctx = contextManager.getContext(symbol);
     const liveTicks = ctx ? ctx.getHistoryTicks() : [];
@@ -1476,7 +1479,8 @@ const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD_BY
 
 // Warm default market context for primary CME instrument
 const DEFAULT_SYMBOL = process.env.DEFAULT_SYMBOL || 'ES';
-void contextManager.getOrCreateContext(DEFAULT_SYMBOL);
+// Preserve offline local context warming; registry cannot activate without the explicit boot capability.
+void contextManager.getOrCreateContext(ordinaryRuntimeGate.profile?.symbol || DEFAULT_SYMBOL);
 
 /**
  * Ensure the operator account from env (ADMIN_USERNAME + ADMIN_PASSWORD) exists with the admin role
@@ -1620,7 +1624,7 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
   });
 
   // Subscribe new connection to default symbol (1m)
-  const defaultSym = process.env.DEFAULT_SYMBOL || 'ES';
+  const defaultSym = ordinaryRuntimeGate.profile?.symbol || process.env.DEFAULT_SYMBOL || 'ES';
   const gen = session.nextGeneration();
   void contextManager.subscribe(session, defaultSym, '1m', gen);
 
@@ -1674,6 +1678,10 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
         }
 
         const targetSymbol = validInst.symbol;
+        if (ordinaryRuntimeGate.profile && !ordinaryRuntimeGate.allows(targetSymbol)) {
+          session.send({ type: 'ERROR', code: 'RUNTIME_SCOPE_DENIED', message: 'Symbol outside approved ordinary runtime profile or approval expired' });
+          return;
+        }
 
         // Validate timeframe
         if (!TIMEFRAMES[requestedTf]) {
@@ -1682,8 +1690,7 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
         }
 
         // Entitlement check via centralized AccessPolicy
-        const defaultFuturesProvider = process.env.DATABENTO_API_KEY ? 'databento' : 'none';
-        const provider = process.env.FUTURES_PROVIDER || defaultFuturesProvider;
+        const provider = ordinaryRuntimeGate.allows(targetSymbol) ? 'databento' : 'none';
         const hasAccess = AccessPolicy.isAuthorized({
           user: session.user,
           symbol: targetSymbol,

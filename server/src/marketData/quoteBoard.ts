@@ -9,6 +9,7 @@
  * Off by default (`ENABLE_QUOTE_BOARD=1` to enable): it is metered data, so the operator opts in.
  */
 import { resolveDatabentoConfig } from '../databento/config.js';
+import { ordinaryExternalFetchDisabled } from './ordinaryRuntime.js';
 
 interface WatchlistQuote {
   symbol: string;
@@ -39,7 +40,7 @@ const DEFAULT_TTL_MS = 60_000;
 const cache = new Map<string, CacheEntry>();
 
 export function quoteBoardEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.ENABLE_QUOTE_BOARD === '1';
+  return !ordinaryExternalFetchDisabled() && env.ENABLE_QUOTE_BOARD === '1';
 }
 
 export function quoteBoardTtlMs(env: NodeJS.ProcessEnv = process.env): number {
@@ -75,6 +76,7 @@ export function clearQuoteBoardCache(): void {
  * previous value flagged `stale`, or are omitted when there is nothing to show — never invented.
  */
 export async function fetchWatchlistQuotes(options: QuoteBoardOptions): Promise<WatchlistQuote[]> {
+  if (ordinaryExternalFetchDisabled()) return [];
   const symbols = normaliseQuoteSymbols(options.symbols);
   if (symbols.length === 0) return [];
   const ttlMs = options.ttlMs ?? quoteBoardTtlMs();

@@ -1,57 +1,30 @@
 import { FuturesInstrument } from '../futuresConfig.js';
 import { FeedHandlers, MarketDataFeed } from './types.js';
 import { DatabentoLiveClient } from '../databento/liveClient.js';
-import { resolveDatabentoConfig } from '../databento/config.js';
+import { ordinaryRuntime, OrdinaryRuntimeGate } from './ordinaryRuntime.js';
 
-type FuturesProviderName = 'none' | 'databento';
-
-interface FeedFactoryResult {
-  feed: MarketDataFeed;
-  provider: FuturesProviderName;
+export function ordinaryProviderForSymbol(symbol: string): 'none' | 'databento' {
+  return ordinaryRuntime()?.allows(symbol) ? 'databento' : 'none';
 }
 
-function providerForSymbol(symbol: string, env: NodeJS.ProcessEnv = process.env): FuturesProviderName {
-  const cfg = resolveDatabentoConfig(env);
-  const raw = (env.FUTURES_PROVIDER || (cfg.apiKey ? 'databento' : 'none')).toLowerCase();
-  if (raw === 'databento' || raw === 'none') return raw as FuturesProviderName;
-  return 'databento';
-}
-
-export function createMarketDataFeed(
-  symbol: string,
-  instrument: FuturesInstrument,
-  handlers: FeedHandlers
-): FeedFactoryResult {
-  (globalThis as any)[Symbol.for('deepchart.offline.guard')]?.assertBackend();
-  const cfg = resolveDatabentoConfig();
-  const provider = providerForSymbol(symbol);
-  const liveSymbols = cfg.symbols;
-  const isSupported = liveSymbols.includes(symbol.toUpperCase());
-  const apiKey = cfg.apiKey;
-
-  if (provider === 'databento' && isSupported && apiKey) {
-    const liveClient = new DatabentoLiveClient({
-      symbol,
-      apiKey,
-      handlers,
+/** Injection is in-process only; offline tests keep environment pinned by offline_guard. */
+export function createMarketDataFeed(symbol: string, _instrument: FuturesInstrument, handlers: FeedHandlers,
+  gate: OrdinaryRuntimeGate | undefined = ordinaryRuntime(), mockConnection?: typeof import('net').createConnection
+): { feed: MarketDataFeed; provider: 'none' | 'databento' } {
+  const guard = (globalThis as any)[Symbol.for('deepchart.offline.guard')];
+  guard?.assertBackend();
+  if (mockConnection && !guard) throw new Error('Ordinary mock transport requires offline guard');
+  if (gate?.allows(symbol)) {
+    const p = gate.profile!;
+    const feed = new DatabentoLiveClient({ symbol: p.vendorSymbol, dataset: p.dataset, schema: p.schema,
+      apiKey: gate.credentials(), handlers,
+      ordinary: { createConnection: mockConnection, expiresAt: p.expiresAt,
+        beforeConnect: () => gate.claimConnection(symbol), onSubscription: () => gate.subscription(), onAck: () => gate.ack() },
     });
-    return { feed: liveClient, provider: 'databento' };
+    return { feed, provider: 'databento' };
   }
-
-  return {
-    feed: {
-      provider: provider === 'databento' ? 'databento' : 'none',
-      symbol,
-      connect: async () => {
-        if (!apiKey && provider === 'databento') {
-          handlers.onStatus({ state: 'UNAVAILABLE', reason: 'Missing Databento API key (DATABENTO_API_KEY)', provider: 'databento', symbol });
-          return;
-        }
-        handlers.onStatus({ state: 'UNAVAILABLE', reason: `FUTURES_PROVIDER=${provider}: no active realtime stream for ${symbol}`, provider: provider === 'databento' ? 'databento' : 'none', symbol });
-      },
-      disconnect: async () => {},
-      isConnected: () => false,
-    },
-    provider: provider === 'databento' && isSupported ? 'databento' : 'none',
-  };
+  const reason = gate?.profile ? `Symbol ${symbol} denied by approved ordinary runtime profile` : gate?.reason || 'No approved ordinary runtime profile: vendor activation OFF';
+  return { provider: 'none', feed: { provider: 'none', symbol,
+    connect: async () => { handlers.onStatus({ state: 'UNAVAILABLE', reason, provider: 'none', symbol }); },
+    disconnect: async () => {}, isConnected: () => false } };
 }

@@ -42,6 +42,7 @@ import { resolveDatabentoConfig } from './config.js';
 import { DatabentoDecodeError, DatabentoNotConfiguredError, errorForStatus } from './errors.js';
 
 interface DatabentoClientOptions {
+  requestsEnabled?: boolean;
   apiKey?: string;
   baseUrl?: string;
   fetchFn?: typeof fetch;
@@ -53,6 +54,7 @@ export class DatabentoHttpClient {
   private readonly baseUrl: string;
   private readonly fetchFn: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly requestsEnabled: boolean;
 
   constructor(options: DatabentoClientOptions = {}) {
     if ((globalThis as any)[Symbol.for('deepchart.offline.guard')] &&
@@ -60,6 +62,7 @@ export class DatabentoHttpClient {
       (globalThis as any)[Symbol.for('deepchart.offline.guard')].fail('credentialed HTTP provider requires mock fetch');
     }
     const cfg = resolveDatabentoConfig();
+    this.requestsEnabled = options.requestsEnabled !== false;
     this.apiKey = options.apiKey || process.env.DATABENTO_API_KEY || '';
     this.baseUrl = (options.baseUrl || process.env.DATABENTO_HIST_URL || cfg.histBaseUrl).replace(/\/+$/, '');
     this.fetchFn = options.fetchFn || globalThis.fetch;
@@ -67,7 +70,7 @@ export class DatabentoHttpClient {
   }
 
   public get configured(): boolean {
-    return Boolean(this.apiKey && this.apiKey.trim().length > 0);
+    return this.requestsEnabled && Boolean(this.apiKey && this.apiKey.trim().length > 0);
   }
 
   /**

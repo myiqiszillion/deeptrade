@@ -4,4 +4,6 @@ services:
     environment:
       FUTURES_PROVIDER: none
       DATABENTO_API_KEY: ''
+      DATABENTO_RUNTIME_START: '0'
+      DATABENTO_RUNTIME_PROFILE: ''
       ENABLE_QUOTE_BOARD: '0'

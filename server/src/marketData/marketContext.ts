@@ -12,7 +12,8 @@ import {
   WSServerMessage,
 } from '../types.js';
 import { VWAPEngine } from '../vwapEngine.js';
-import { createMarketDataFeed } from './registry.js';
+import { createMarketDataFeed, ordinaryProviderForSymbol } from './registry.js';
+import { ordinaryExternalFetchDisabled } from './ordinaryRuntime.js';
 import { historyBarsTarget } from './historyDepth.js';
 import { FeedStatusEvent, MarketDataFeed, MarketDepthEvent, MarketTrade } from './types.js';
 import { marketDataStore } from '../storage/marketDataStore.js';
@@ -99,15 +100,9 @@ export class MarketContext {
     if (this.provider && this.provider !== 'none') return this.provider;
     if (this.provider === 'none') {
       if (this.feedLifecycleState !== 'STOPPED') return 'none';
-      const feedResult = createMarketDataFeed(this.symbol, this.instrument, {
-        onTrade: () => {},
-        onDepth: () => {},
-        onStatus: () => {},
-        onError: () => {},
-      });
-      return feedResult.provider;
+      return ordinaryProviderForSymbol(this.symbol);
     }
-    return (process.env.FUTURES_PROVIDER || 'databento').toLowerCase();
+    return ordinaryProviderForSymbol(this.symbol);
   }
 
   private activeFeedToken = 0;
@@ -171,7 +166,8 @@ export class MarketContext {
     gexEngine = new GEXEngine(),
     private onTickRecord?: (tick: Tick) => void,
     private historyProvider: HistoryProvider = defaultHistoryProvider,
-    private acceptance?: IsolatedAcceptanceContext
+    private acceptance?: IsolatedAcceptanceContext,
+    private feedFactory: typeof createMarketDataFeed = createMarketDataFeed
   ) {
     this.symbol = symbol;
     this.instrument = instrument;
@@ -197,13 +193,7 @@ export class MarketContext {
     this.ensureFootprintEngine('1m');
 
     if (this.acceptance) { this.provider = 'databento'; return; }
-    const initialFeed = createMarketDataFeed(this.symbol, this.instrument, {
-      onTrade: () => {},
-      onDepth: () => {},
-      onStatus: () => {},
-      onError: () => {},
-    });
-    this.provider = initialFeed.provider;
+    this.provider = ordinaryProviderForSymbol(this.symbol);
   }
 
   public computeDeepTradeThresholdUsd(): number {
@@ -291,7 +281,7 @@ export class MarketContext {
     this.lastDepthTs = 0;
     this.historyBoundary = Date.now();
     this.historyRequest = new AbortController();
-    this.isBackfillingHistory = !this.acceptance;
+    this.isBackfillingHistory = !this.acceptance && !ordinaryExternalFetchDisabled();
     this.liveBuffer = [];
 
     const handlers = {
@@ -335,7 +325,7 @@ export class MarketContext {
     };
     const { feed, provider } = this.acceptance
       ? { feed: this.acceptance.createFeed(handlers), provider: 'databento' }
-      : createMarketDataFeed(this.symbol, this.instrument, handlers);
+      : this.feedFactory(this.symbol, this.instrument, handlers);
 
     this.feed = feed;
     this.provider = provider;
@@ -364,14 +354,14 @@ export class MarketContext {
     this.feedLifecycleState = 'RUNNING';
 
     // Refresh GEX and backfill history
-    if (!this.acceptance && this.instrument.underlyingIndex) {
+    if (!this.acceptance && !ordinaryExternalFetchDisabled() && this.instrument.underlyingIndex) {
       void this.refreshGex();
       if (this.gexTimer) clearInterval(this.gexTimer);
       this.gexTimer = setInterval(() => {
         void this.refreshGex();
       }, GEX_REFRESH_MS);
     }
-    if (!this.acceptance) void this.backfillHistory();
+    if (!this.acceptance && !ordinaryExternalFetchDisabled()) void this.backfillHistory();
   }
 
   private async doStopFeed(): Promise<void> {
@@ -719,7 +709,7 @@ export class MarketContext {
   }
 
   public async refreshGex(_force = false): Promise<void> {
-    if (this.acceptance) return;
+    if (this.acceptance || ordinaryExternalFetchDisabled()) return;
     const underlying = this.instrument.underlyingIndex;
     if (!underlying) return;
 
@@ -762,7 +752,7 @@ export class MarketContext {
   }
 
   public async backfillHistory(timeframe = '1m'): Promise<void> {
-    if (this.acceptance) return;
+    if (this.acceptance || ordinaryExternalFetchDisabled()) return;
     const token = this.activeFeedToken;
     const symbol = this.symbol;
     const signal = this.historyRequest.signal;
@@ -934,7 +924,7 @@ export class MarketContext {
 
     const effectiveProvider = this.getEffectiveProvider();
 
-    if (effectiveProvider !== 'databento') {
+    if (effectiveProvider !== 'databento' || ordinaryExternalFetchDisabled()) {
       // Check persistent store if no live futures provider configured
       const stored = marketDataStore.queryBars({
         provider: effectiveProvider,
@@ -1236,7 +1226,8 @@ export class MarketContextManager {
   constructor(
     private onTickRecord?: (tick: Tick) => void,
     gexEngine?: GEXEngine,
-    private historyProvider: HistoryProvider = defaultHistoryProvider
+    private historyProvider: HistoryProvider = defaultHistoryProvider,
+    private feedFactory: typeof createMarketDataFeed = createMarketDataFeed
   ) {
     this.gexEngine = gexEngine || new GEXEngine();
   }
@@ -1268,7 +1259,9 @@ export class MarketContextManager {
             instrument,
             this.gexEngine,
             this.onTickRecord,
-            this.historyProvider
+            this.historyProvider,
+            undefined,
+            this.feedFactory
           );
           await newCtx.startFeed();
           this.contexts.set(symbol, newCtx);
