@@ -28,18 +28,6 @@ export class FootprintEngine {
     this.stackedImbalanceLevels = stackedImbalanceLevels;
   }
 
-  public setTickSize(tickSize: number) {
-    this.tickSize = tickSize;
-  }
-
-  public setBarDuration(durationMs: number) {
-    this.barDurationMs = durationMs;
-  }
-
-  public setStackedImbalanceLevels(levels: number) {
-    this.stackedImbalanceLevels = levels;
-  }
-
   private normalizePrice(price: number): number {
     // Snapping to the tick's decimal precision prevents float residue such as
     // 5850.1000000000004 from becoming a level key.
@@ -313,10 +301,6 @@ export class FootprintEngine {
     this.currentCVD = bar.cvd;
   }
 
-  public getClosedBars(): FootprintBar[] {
-    return this.closedBars;
-  }
-
   public getCurrentBar(): FootprintBar | null {
     return this.currentBar;
   }
@@ -326,9 +310,5 @@ export class FootprintEngine {
       return [...this.closedBars, this.currentBar];
     }
     return [...this.closedBars];
-  }
-
-  public getCurrentCVD(): number {
-    return this.currentCVD;
   }
 }

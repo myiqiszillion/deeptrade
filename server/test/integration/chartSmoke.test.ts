@@ -4,9 +4,14 @@ import { once } from 'node:events';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import { ensureBuiltArtifacts } from './ensureBuild.js';
 
 export async function runChartSmokeTests(): Promise<void> {
   console.log('[integration/chartSmoke.test] Running chart smoke integration test...');
+
+  // The smoke test spawns the PRODUCTION server entry point and asserts it serves the client
+  // bundle: build them first when missing/stale instead of failing on an absent dist/.
+  ensureBuiltArtifacts();
 
   const root = fileURLToPath(new URL('../../', import.meta.url));
   const probe = net.createServer();
@@ -22,6 +27,8 @@ export async function runChartSmokeTests(): Promise<void> {
     FUTURES_PROVIDER: 'tradovate',
     DEMO: '0',
     DEV_HOOKS: '1',
+    // Keep the suite hermetic: a developer .env with live vendor credentials must not leak in.
+    DATABENTO_TRANSPORT_READY: '0',
   };
   for (const key of Object.keys(env)) {
     if (key.startsWith('TRADOVATE_')) delete env[key];

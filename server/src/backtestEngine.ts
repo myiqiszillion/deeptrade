@@ -21,19 +21,6 @@ export class BacktestReplayEngine {
     return this.isReplaying;
   }
 
-  public recordTick(tick: Tick) {
-    if (this.isReplaying) return; // Prevent infinite loop during replay
-    this.recordedTicks.push(tick);
-    // Keep up to 200,000 ticks in buffer for instant replay
-    if (this.recordedTicks.length > 200000) {
-      this.recordedTicks.shift();
-    }
-  }
-
-  public getRecordedCount(): number {
-    return this.recordedTicks.length;
-  }
-
   public getRecordedTicks(): Tick[] {
     return this.recordedTicks;
   }

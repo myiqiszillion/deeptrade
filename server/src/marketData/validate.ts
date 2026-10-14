@@ -7,13 +7,7 @@ import { AggressorProvenance, DataDepthLevel, DepthLevel, MarketDepthEvent, Mark
  * never replaced by synthetic values.
  */
 
-export interface DropStats {
-  droppedInvalid: number;
-  droppedStaleSymbol: number;
-  droppedMisaligned: number;
-}
-
-export interface TradeValidation {
+interface TradeValidation {
   trade: MarketTrade | null;
   dropped?: 'invalid' | 'stale-symbol';
 }
@@ -103,7 +97,7 @@ export function validateTrade(
   };
 }
 
-export interface DepthValidation {
+interface DepthValidation {
   event: MarketDepthEvent | null;
   dropped?: 'invalid' | 'stale-symbol';
 }

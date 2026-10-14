@@ -13,6 +13,20 @@ export interface DataFeedCallbacks {
  */
 export type SocketFactory = (url: string) => WebSocket;
 
+/**
+ * Trade stream flavor.
+ *
+ * `trade` streams every single fill; `aggTrade` aggregates fills (lower bandwidth). Some
+ * networks/edges silently accept `@aggTrade` and then never deliver a single trade even though the
+ * depth stream on the same host keeps ticking, which would leave BTCUSDT stuck at UNAVAILABLE.
+ *
+ * Default is therefore `trade` (always delivered, and per-fill data is strictly better for
+ * footprint accuracy). `auto` opts into aggTrade-first with an automatic fallback, `aggTrade`
+ * pins the aggregated stream.
+ */
+type BinanceTradeStream = 'aggTrade' | 'trade';
+type BinanceTradeStreamMode = 'auto' | BinanceTradeStream;
+
 export class BinanceFuturesFeed {
   private symbol: string;
   private wsTrade: WebSocket | null = null;
@@ -31,6 +45,14 @@ export class BinanceFuturesFeed {
   private depthReconnectTimer: NodeJS.Timeout | null = null;
   /** True once teardown was requested: late callbacks are expected and must stay silent. */
   private intentionalStop = false;
+  // Trade-stream resilience state (see BinanceTradeStream docs above).
+  private readonly tradeSilenceMs: number;
+  private readonly tradeStreamMode: BinanceTradeStreamMode;
+  private tradeStream: BinanceTradeStream = 'trade';
+  private tradeFallbackApplied = false;
+  private tradeWatchdog: NodeJS.Timeout | null = null;
+  private lastTradeMessageTs = 0;
+  private lastDepthMessageTs = 0;
 
   constructor(
     symbol: string,
@@ -39,11 +61,22 @@ export class BinanceFuturesFeed {
   ) {
     this.symbol = symbol.toLowerCase();
     this.callbacks = callbacks;
+    // Read per instance (not per module) so tests can pin the mode and the watchdog window.
+    this.tradeSilenceMs = Math.max(250, parseInt(process.env.BINANCE_TRADE_SILENCE_MS || '6000', 10));
+    const mode = (process.env.BINANCE_TRADE_STREAM || 'trade').trim().toLowerCase();
+    this.tradeStreamMode = mode === 'auto' ? 'auto' : mode === 'aggtrade' ? 'aggTrade' : 'trade';
+    // 'auto' starts on aggTrade (with the watchdog); the default 'trade' starts on @trade.
+    this.tradeStream = this.tradeStreamMode === 'trade' ? 'trade' : 'aggTrade';
   }
 
   public start() {
     this.isRunning = true;
     this.intentionalStop = false;
+    this.tradeStream = this.tradeStreamMode === 'trade' ? 'trade' : 'aggTrade';
+    this.tradeFallbackApplied = this.tradeStreamMode !== 'auto';
+    this.lastTradeMessageTs = 0;
+    this.lastDepthMessageTs = 0;
+    this.clearTradeWatchdog();
     this.connectTradeStream();
     this.connectDepthStream();
   }
@@ -61,6 +94,7 @@ export class BinanceFuturesFeed {
       clearTimeout(this.depthReconnectTimer);
       this.depthReconnectTimer = null;
     }
+    this.clearTradeWatchdog();
 
     const sockets = [this.wsTrade, this.wsDepth].filter((socket): socket is WebSocket => socket !== null);
     this.wsTrade = null;
@@ -107,59 +141,87 @@ export class BinanceFuturesFeed {
 
   private connectTradeStream() {
     if (!this.isRunning) return;
-    const url = `wss://fstream.binance.com/ws/${this.symbol}@aggTrade`;
-    this.wsTrade = this.socketFactory(url);
+    const stream = this.tradeStream;
+    const url = `wss://fstream.binance.com/ws/${this.symbol}@${stream}`;
+    const socket = this.socketFactory(url);
+    this.wsTrade = socket;
     this.socketsCreated++;
-    console.log(`[BinanceFeed] feed=${this.feedId} symbol=${this.symbol} event=TRADE_SOCKET_CONNECTING sockets=${this.socketsCreated}`);
+    console.log(`[BinanceFeed] feed=${this.feedId} symbol=${this.symbol} event=TRADE_SOCKET_CONNECTING sockets=${this.socketsCreated} stream=${stream}`);
 
-    this.wsTrade.on('open', () => {
+    socket.on('open', () => {
+      if (this.wsTrade !== socket) return; // superseded socket (fallback/reconnect)
       this.socketsOpened++;
       console.log(
         `[BinanceFeed] feed=${this.feedId} symbol=${this.symbol} event=TRADE_SOCKET_OPEN opened=${this.socketsOpened}/${this.socketsCreated}`
       );
+      this.armTradeWatchdog(socket);
     });
 
-    this.wsTrade.on('message', (data: WebSocket.Data) => {
+    socket.on('message', (data: WebSocket.Data) => {
+      if (this.wsTrade !== socket) return; // superseded socket (fallback/reconnect)
       try {
         const msg = JSON.parse(data.toString());
-        // Binance USD-M Futures aggTrade format:
-        // { e: 'aggTrade', E: timestamp, s: 'BTCUSDT', a: aggTradeId, p: 'price', q: 'quantity', f: firstTradeId, l: lastTradeId, T: tradeTime, m: isBuyerMaker }
-        if (msg.e === 'aggTrade') {
-          const price = parseFloat(msg.p);
-          const size = parseFloat(msg.q);
-          const isBuyerMaker = msg.m; // true: sell market order (buyer was maker), false: buy market order
-          const tick: Tick = {
-            id: String(msg.a),
-            timestamp: msg.T,
-            price,
-            size,
-            side: isBuyerMaker ? 'sell' : 'buy',
-            isBuyerMaker,
-            receiveTs: Date.now(),
-            aggressorProvenance: 'EXCHANGE_NATIVE',
-            sequenceId: String(msg.a),
-            sourceProvider: 'binance',
-          };
-          this.callbacks.onTick(tick);
+        // Binance USD-M Futures trade formats:
+        //   aggTrade: { e: 'aggTrade', E, s, a: aggTradeId, p, q, f, l, T, m }
+        //   trade:    { e: 'trade',    E, T, s, t: tradeId,    p, q, X, m }
+        // `m` = isBuyerMaker (true: sell market order, false: buy market order) in both.
+        if (msg.e !== 'aggTrade' && msg.e !== 'trade') return;
+
+        const price = parseFloat(msg.p);
+        const size = parseFloat(msg.q);
+        const rawId = msg.e === 'aggTrade' ? msg.a : msg.t;
+        // `@trade` also carries lifecycle rows (X: 'NA') with zero price/size — they are not trades.
+        if (
+          !Number.isFinite(price) ||
+          price <= 0 ||
+          !Number.isFinite(size) ||
+          size <= 0 ||
+          rawId === undefined ||
+          rawId === null
+        ) {
+          return;
         }
+
+        // A real trade arrived: the stream is alive, so the silence watchdog is unnecessary.
+        this.lastTradeMessageTs = Date.now();
+        this.clearTradeWatchdog();
+
+        const isBuyerMaker = msg.m === true;
+        // Only aggTrade ids are contiguous per symbol. `@trade` ids skip carriers (X: 'NA') and
+        // other vendor rows, so claiming them as a sequence would raise false gap alarms.
+        const sequenceId = msg.e === 'aggTrade' ? String(rawId) : undefined;
+        const tick: Tick = {
+          id: String(rawId),
+          timestamp: Number.isFinite(msg.T) ? msg.T : Date.now(),
+          price,
+          size,
+          side: isBuyerMaker ? 'sell' : 'buy',
+          isBuyerMaker,
+          receiveTs: Date.now(),
+          aggressorProvenance: 'EXCHANGE_NATIVE',
+          sequenceId,
+          sourceProvider: 'binance',
+        };
+        this.callbacks.onTick(tick);
       } catch (err) {
         console.error('[BinanceFeed] Error parsing trade message:', err);
       }
     });
 
-    this.wsTrade.on('error', (err) => {
-      console.error('[BinanceFeed] aggTrade WebSocket error:', err.message);
+    socket.on('error', (err) => {
+      console.error(`[BinanceFeed] ${stream} WebSocket error:`, err.message);
     });
 
-    this.wsTrade.on('close', () => {
+    socket.on('close', () => {
       this.socketsClosed++;
+      this.clearTradeWatchdog();
       if (this.intentionalStop || !this.isRunning) {
         console.log(
           `[BinanceFeed] feed=${this.feedId} symbol=${this.symbol} event=TRADE_SOCKET_CLOSE intentional closed=${this.socketsClosed}/${this.socketsCreated}`
         );
         return;
       }
-      console.log('[BinanceFeed] aggTrade closed, reconnecting in 3s...');
+      console.log(`[BinanceFeed] ${stream} closed, reconnecting in 3s...`);
       if (this.tradeReconnectTimer) clearTimeout(this.tradeReconnectTimer);
       this.tradeReconnectTimer = setTimeout(() => {
         this.tradeReconnectTimer = null;
@@ -167,6 +229,54 @@ export class BinanceFuturesFeed {
         this.connectTradeStream();
       }, 3000);
     });
+  }
+
+  /**
+   * Watchdog for a silently dead trade stream.
+   *
+   * Silence alone is never enough to switch streams: the fallback also requires the vendor to be
+   * provably reachable (depth data within the same window), so a genuinely quiet market cannot
+   * trigger it. Runs once per feed instance — after the switch, `trade` is the settled choice.
+   */
+  private armTradeWatchdog(socket: WebSocket): void {
+    this.clearTradeWatchdog();
+    if (this.tradeFallbackApplied || this.tradeStreamMode !== 'auto' || !this.isRunning) return;
+
+    this.lastTradeMessageTs = 0;
+    this.tradeWatchdog = setTimeout(() => {
+      this.tradeWatchdog = null;
+      if (this.intentionalStop || !this.isRunning) return;
+      if (this.wsTrade !== socket) return;
+      if (this.lastTradeMessageTs > 0) return; // real trades are flowing
+      if (Date.now() - this.lastDepthMessageTs > this.tradeSilenceMs) return; // vendor unreachable
+
+      console.warn(
+        `[BinanceFeed] ${this.symbol}@aggTrade delivered no trades in ${this.tradeSilenceMs}ms while depth is live — falling back to @trade`
+      );
+      this.tradeStream = 'trade';
+      this.tradeFallbackApplied = true;
+
+      // Detach first so the abandoned socket can neither reconnect nor emit into the new stream.
+      try {
+        socket.removeAllListeners();
+        socket.on('error', () => {
+          /* expected: the silent socket is being abandoned */
+        });
+        socket.terminate();
+      } catch {
+        /* already settled */
+      }
+      if (this.wsTrade === socket) this.wsTrade = null;
+      this.connectTradeStream();
+    }, this.tradeSilenceMs);
+    this.tradeWatchdog.unref?.();
+  }
+
+  private clearTradeWatchdog(): void {
+    if (this.tradeWatchdog) {
+      clearTimeout(this.tradeWatchdog);
+      this.tradeWatchdog = null;
+    }
   }
 
   private connectDepthStream() {
@@ -185,6 +295,8 @@ export class BinanceFuturesFeed {
         const rawAsks = msg.asks || msg.a;
 
         if (rawBids && rawAsks) {
+          // Depth flowing == the vendor is provably reachable (used by the trade-stream watchdog).
+          this.lastDepthMessageTs = Date.now();
           const bids: [number, number][] = rawBids.map(([p, q]: [string, string]) => [parseFloat(p), parseFloat(q)]);
           const asks: [number, number][] = rawAsks.map(([p, q]: [string, string]) => [parseFloat(p), parseFloat(q)]);
           this.callbacks.onOrderbookSnapshot(bids, asks, msg.lastUpdateId || msg.u || Date.now());

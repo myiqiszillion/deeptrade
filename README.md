@@ -56,10 +56,10 @@
 
 | Instrument | Provider | History | Realtime | Footprint | DOM |
 |---|---|---|---|---|---|
-| **BTCUSDT** | Binance | ticks | aggTrade | có giới hạn | depth20 |
-| **ES/MES/NQ/MNQ** | none (mặc định) | none | unavailable | unavailable | unavailable |
-| **CME qua Tradovate** | Tradovate | bars/quote-based | tùy credential | partial | vendor-dependent |
-| **CME qua Databento** | chưa triển khai (scaffold) | unavailable | unavailable | unavailable | unavailable |
+| **BTCUSDT** | Binance | ticks | trade per-fill (opt-in aggTrade) | có giới hạn | depth20 |
+| **ES/MES/NQ/MNQ/YM/RTY/GC/CL/NG…** | Databento Live (`GLBX.MDP3`) | chưa có (tích luỹ tick sống) | **trades + mbp-1 realtime** | có (từ trades thật) | top-of-book |
+| **ES/NQ/… qua Tradovate** | Tradovate | bars/quote-based | tùy credential | partial | vendor-dependent |
+| Chưa cấu hình vendor (`FUTURES_PROVIDER=none`) | none | none | unavailable | unavailable | unavailable |
 
 > **Chính sách Fail-Closed:** Khi chưa có license/credential cho nhà cung cấp futures, toàn bộ feed và lịch sử CME mặc định là `UNAVAILABLE`. Hệ thống tuyệt đối không sinh dữ liệu giả hay nến giả.
 
@@ -113,6 +113,10 @@ DeepChart có hệ thống test phân tầng rõ ràng (Unit, Integration, Proto
 | `pnpm test:protocol` | Chống protocol drift giữa server và client WebSocket messages (`scripts/check-protocol-drift.mjs`) |
 | `pnpm verify:p0` | 13 test kiểm tra tính toàn vẹn server và rate limiting |
 | `pnpm test:offline` | Alias của `pnpm test` |
+
+> **Lưu ý:** các integration test (`chartSmoke`, `historyApi`, `websocket`) chạy trên bản build thật
+> (`server/dist`, `client/dist`), nên chúng tự động gọi `pnpm build` khi artifact bị thiếu hoặc cũ hơn
+> source. Nhờ vậy `pnpm test` chạy được ngay trên một bản clone mới mà không cần build thủ công trước.
 
 ---
 

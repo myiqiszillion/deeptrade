@@ -27,7 +27,7 @@ import {
  * (`md/cancelChart`) and the socket closed once the range is delivered.
  */
 
-export interface TradovateHistoryOptions {
+interface TradovateHistoryOptions {
   /** Minutes per bar (`chartDescription.elementSize` with `underlyingType: 'MinuteBar'`). */
   barMinutes?: number;
   /** How many bars to request (`timeRange.asMuchAsElements`). */

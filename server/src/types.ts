@@ -1,7 +1,7 @@
 import { FuturesInstrument } from './futuresConfig.js';
 import { GEXProfile, OptionsFlowTrade } from './gexEngine.js';
 
-export type OrderSide = 'buy' | 'sell' | 'unknown';
+type OrderSide = 'buy' | 'sell' | 'unknown';
 
 export type AggressorProvenance =
   | 'EXCHANGE_NATIVE' // Native flag from exchange (e.g. Binance isBuyerMaker, CME MBO)
@@ -178,15 +178,6 @@ export interface AbsorptionAlert {
   description: string;
 }
 
-export interface DataCoverage {
-  provider: string;
-  realtime: 'LIVE' | 'UNAVAILABLE' | 'DEGRADED';
-  history: 'NONE' | 'BARS' | 'TICKS';
-  footprint: 'AVAILABLE' | 'UNAVAILABLE' | 'PARTIAL';
-  orderbook: 'NONE' | 'L2' | 'MBO' | 'PARTIAL';
-  gapStatus: 'NONE' | 'DETECTED' | 'RECOVERED' | 'UNRECOVERED';
-}
-
 export type WSClientMessage =
   | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'binance' | 'simulator' | 'cme' }
   | { type: 'REPLAY_CONTROL'; action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP' | 'RETURN_TO_LIVE'; speed?: number; timestamp?: number }
@@ -220,6 +211,12 @@ export type WSServerMessage =
       historyBars?: HistoricalBar[];
       /** 'LIVE' when a real feed streams this instrument, 'UNAVAILABLE' when none is wired. */
       feedStatus?: 'LIVE' | 'UNAVAILABLE';
+      /**
+       * Credential-free reason for the current feed state (e.g. "no licensed realtime vendor
+       * configured for futures"). Secrets/URLs are redacted at the adapter boundary, so the UI can
+       * explain WHY an instrument has no data instead of guessing.
+       */
+      feedReason?: string;
       mode?: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
     }
   | { type: 'TICK'; tick: Tick }

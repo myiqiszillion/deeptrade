@@ -1,7 +1,7 @@
-export type OrderSide = 'buy' | 'sell' | 'unknown';
+type OrderSide = 'buy' | 'sell' | 'unknown';
 
-export type AssetClass = 'EQUITY_INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND' | 'CRYPTO';
-export type ContractType = 'CONTINUOUS' | 'SPECIFIC';
+type AssetClass = 'EQUITY_INDEX' | 'COMMODITY' | 'ENERGY' | 'BOND' | 'CRYPTO';
+type ContractType = 'CONTINUOUS' | 'SPECIFIC';
 
 export interface FuturesInstrument {
   symbol: string;
@@ -205,15 +205,6 @@ export interface AbsorptionAlert {
   description: string;
 }
 
-export interface DataCoverage {
-  provider: string;
-  realtime: 'LIVE' | 'UNAVAILABLE' | 'DEGRADED';
-  history: 'NONE' | 'BARS' | 'TICKS';
-  footprint: 'AVAILABLE' | 'UNAVAILABLE' | 'PARTIAL';
-  orderbook: 'NONE' | 'L2' | 'MBO' | 'PARTIAL';
-  gapStatus: 'NONE' | 'DETECTED' | 'RECOVERED' | 'UNRECOVERED';
-}
-
 export interface ReplayProgress {
   isPlaying: boolean;
   currentIndex: number;
@@ -296,6 +287,8 @@ export type WSServerMessage =
       /** REAL vendor bars preceding the live session; plain candles, no per-price breakdown. */
       historyBars?: HistoricalBar[];
       feedStatus?: 'LIVE' | 'UNAVAILABLE';
+      /** Credential-free reason for the feed state, so the UI can explain a missing feed. */
+      feedReason?: string;
       mode?: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
     }
   | { type: 'TICK'; tick: Tick }

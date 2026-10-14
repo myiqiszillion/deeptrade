@@ -4,7 +4,7 @@ import { marketDataStore } from '../storage/marketDataStore.js';
 
 type RevocationListener = (userId: string, revokedEntitlement: Entitlement) => void;
 
-export class EntitlementService {
+class EntitlementService {
   private entitlements = new Map<string, Entitlement[]>(); // userId -> Entitlement[]
   private revocationListeners: RevocationListener[] = [];
 

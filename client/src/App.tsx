@@ -168,6 +168,10 @@ export const App: React.FC = () => {
   // for them, and the server never fabricates one.
   const [historyBars, setHistoryBars] = useState<HistoricalBar[]>([]);
   const [feedStatus, setFeedStatus] = useState<'LIVE' | 'UNAVAILABLE'>('UNAVAILABLE');
+  // Credential-free reason reported by the server (explains WHY a symbol has no data).
+  const [feedReason, setFeedReason] = useState<string | undefined>();
+  // Last server-side rejection/error (e.g. ENTITLEMENT_DENIED for a licensed instrument).
+  const [serverError, setServerError] = useState<string | undefined>();
 
   // High-frequency tick buffering: ticks arrive every 30-120ms. Buffering them and
   // flushing to React state at ~8Hz keeps the Time & Sales tape lossless while cutting
@@ -177,6 +181,12 @@ export const App: React.FC = () => {
   const symbolRef = useRef(savedSettings.symbol || 'BTCUSDT');
   const desiredSymbolRef = useRef(savedSettings.symbol || 'BTCUSDT');
   const timeframeRef = useRef(savedSettings.timeframe || '1m');
+  /**
+   * Instruments the server refused (fail-closed). The client must stop insisting on them: the
+   * server re-syncs the session to an instrument it CAN serve, and re-requesting a denied symbol
+   * forever would leave the chart permanently empty.
+   */
+  const deniedSymbolsRef = useRef<Set<string>>(new Set());
 
   // History pagination state
   const [hasMoreHistory, setHasMoreHistory] = useState(true);
@@ -225,16 +235,33 @@ export const App: React.FC = () => {
         setIsConnected(connected);
         if (!connected) setFeedStatus('UNAVAILABLE');
       },
+      onError: (err) => {
+        // The server rejects licensed/unsupported requests explicitly — surface it instead of
+        // leaving the chart silently empty with no explanation.
+        setServerError(err.code === 'ENTITLEMENT_DENIED' ? err.message : `${err.code}: ${err.message}`);
+        if (err.code === 'ENTITLEMENT_DENIED') {
+          // Remember the refusal so the next INIT_STATE (the server's own instrument) is adopted
+          // instead of re-requesting a symbol that can never be authorized.
+          deniedSymbolsRef.current.add(desiredSymbolRef.current);
+        }
+      },
       onInitState: (data) => {
+        const desired = desiredSymbolRef.current;
+        const wasDenied = deniedSymbolsRef.current.has(desired);
         // After a reconnect the server may be back on its default contract or timeframe. Ask it to
-        // switch instead of silently reverting the UI.
-        if (data.symbol !== desiredSymbolRef.current || (data.timeframe && data.timeframe !== timeframeRef.current)) {
+        // switch instead of silently reverting the UI — unless this instrument was refused, in
+        // which case the server's state is exactly what we must adopt.
+        if (!wasDenied && (data.symbol !== desired || (data.timeframe && data.timeframe !== timeframeRef.current))) {
           wsClient.subscribe(
-            desiredSymbolRef.current,
-            desiredSymbolRef.current === 'BTCUSDT' ? 'binance' : 'cme',
+            desired,
+            desired === 'BTCUSDT' ? 'binance' : 'cme',
             timeframeRef.current
           );
           return;
+        }
+        if (wasDenied) {
+          deniedSymbolsRef.current.delete(desired);
+          desiredSymbolRef.current = data.symbol;
         }
 
         // A symbol switch (or reconnect) must reset per-instrument market state,
@@ -263,6 +290,8 @@ export const App: React.FC = () => {
         setHistorySource(data.historySource ?? 'NONE');
         setHistoryBars(data.historyBars ?? []);
         if (data.feedStatus) setFeedStatus(data.feedStatus);
+        setFeedReason(data.feedReason);
+        setServerError(undefined);
         if (data.timeframe) {
           timeframeRef.current = data.timeframe;
           setTimeframe(data.timeframe);
@@ -402,6 +431,8 @@ export const App: React.FC = () => {
     setIsLoadingHistory(false);
     setSymbol(sym);
     setFeedStatus('UNAVAILABLE');
+    setFeedReason(undefined);
+    setServerError(undefined);
     setHistorySource('NONE');
     setOrderbook({ bids: [], asks: [], timestamp: 0, lastUpdateId: 0 });
     setVolumeProfile({ poc: 0, vah: 0, val: 0, totalVolume: 0, levels: [] });
@@ -492,7 +523,7 @@ export const App: React.FC = () => {
           {(['DOM', 'Profile', 'Tape', 'GEX', 'Flow'] as const).map((panel) => <button key={panel} className="terminal-button" aria-pressed={activePanel === panel} onClick={() => setActivePanel(activePanel === panel ? null : panel)}>{panel}</button>)}
         </div>
       </nav>
-      {showHelp && <div className="help-strip"><span>Drag to pan ? Scroll to zoom ? Fit view to reset ? Analytics tabs open one panel at a time. Historical candles do not contain footprint data.</span><button className="terminal-icon" aria-label="Close help" onClick={() => setShowHelp(false)}><X size={14} /></button></div>}
+      {showHelp && <div className="help-strip"><span>Drag to pan · Scroll to zoom · Fit view to reset · Analytics tabs open one panel at a time. Historical candles do not contain footprint data.</span><button className="terminal-icon" aria-label="Close help" onClick={() => setShowHelp(false)}><X size={14} /></button></div>}
       {/* Main Content Workspace */}
       <div className="workspace flex-1 min-h-0 flex overflow-hidden">
         {/* Center: Main Footprint Canvas & CVD Panel */}
@@ -521,7 +552,7 @@ export const App: React.FC = () => {
               crosshairX={crosshairX}
               onCrosshairChange={setCrosshairX}
             />
-            {bars.length === 0 && historyBars.length === 0 && <div className="chart-empty-state"><div className="empty-state-card"><span className="empty-state-eyebrow">{symbol} / {timeframe}</span><h2>Waiting for market data</h2><p>{isConnected ? 'No validated market records are available for this instrument.' : 'Connecting to the chart engine.'}</p><span className="text-[11px] text-slate-500">{symbol === 'BTCUSDT' ? 'Binance public market data is unavailable.' : 'Databento CME access, contract permissions, or market-data configuration is unavailable.'} No simulated data is displayed.</span></div></div>}
+            {bars.length === 0 && historyBars.length === 0 && <div className="chart-empty-state"><div className="empty-state-card"><span className="empty-state-eyebrow">{symbol} / {timeframe}</span><h2>Waiting for market data</h2><p>{isConnected ? 'No validated market records are available for this instrument.' : 'Connecting to the chart engine.'}</p><span className="text-[11px] text-slate-500">{serverError ? serverError : feedReason ? `Feed: ${feedReason}.` : symbol === 'BTCUSDT' ? 'Binance public market data is unavailable.' : 'No licensed futures feed is configured for this instrument.'} No simulated data is displayed.</span>{symbol !== 'BTCUSDT' && isConnected && <button className="terminal-button mt-3" onClick={() => handleSelectSymbol('BTCUSDT')}>View BTCUSDT (live Binance feed)</button>}</div></div>}
           </div>
 
           <CVDPanel
@@ -554,7 +585,6 @@ export const App: React.FC = () => {
               orderbook={orderbook}
               currentPrice={currentPrice}
               symbol={symbol}
-              isFutures={symbol !== 'BTCUSDT'}
               tickSize={instrument?.tickSize}
             />
           )}
@@ -583,10 +613,11 @@ export const App: React.FC = () => {
       />}
 
       <footer className="terminal-status">
-        <span className={feedStatus === 'LIVE' && isConnected ? 'text-emerald-400' : 'text-amber-400'}>● {feedStatus === 'LIVE' && isConnected ? 'Feed realtime' : 'Feed unavailable'}</span>
+        <span title={feedReason ? `Feed: ${feedReason}` : undefined} className={feedStatus === 'LIVE' && isConnected ? 'text-emerald-400' : 'text-amber-400'}>● {feedStatus === 'LIVE' && isConnected ? 'Feed realtime' : 'Feed unavailable'}</span>
         <span>History: {historySource === 'REAL_TICKS' ? 'real ticks' : historySource === 'REAL_BARS' ? 'real bars' : 'none'}</span>
         {isLoadingHistory && <span className="text-sky-400">Loading history…</span>}
         {!hasMoreHistory && <span>History limit reached</span>}
+        {serverError && <span className="text-amber-400 truncate max-w-[420px]" title={serverError}>{serverError}</span>}
         <span className="ml-auto">{sessionMode === 'LIVE' ? 'Chart workspace' : sessionMode.replaceAll('_', ' ')}</span>
       </footer>
     </div>

@@ -32,7 +32,7 @@ import WebSocket from 'ws';
 
 export type TradovateEnv = 'demo' | 'live';
 
-export interface TradovateEndpoints {
+interface TradovateEndpoints {
   /** REST base, no trailing slash. */
   restBase: string;
   /** Market-data WebSocket URL (quotes + DOM + chart). */
@@ -80,7 +80,7 @@ export interface TradovatePriceSize {
   size?: number;
 }
 
-export interface TradovateQuoteEntries {
+interface TradovateQuoteEntries {
   Bid?: TradovatePriceSize;
   Offer?: TradovatePriceSize;
   Trade?: TradovatePriceSize;
@@ -141,24 +141,6 @@ export interface TradovateChart {
   bars?: TradovateChartBar[];
 }
 
-/** Chart request shape documented in EX-10 (`md/getchart`). */
-export interface TradovateChartRequest {
-  symbol: string;
-  chartDescription: {
-    /** Tick | DailyBar | MinuteBar | Custom | DOM */
-    underlyingType: 'MinuteBar' | 'DailyBar' | 'Tick';
-    elementSize: number;
-    /** Volume | Range | UnderlyingUnits | Renko | MomentumRange | PointAndFigure | OFARange */
-    elementSizeUnit: 'UnderlyingUnits';
-    withHistogram: boolean;
-  };
-  timeRange: {
-    asMuchAsElements?: number;
-    closestTimestamp?: string;
-    asFarAsTimestamp?: string;
-  };
-}
-
 /** One element of an 'a' frame's JSON array. */
 export interface TradovateSocketItem {
   /** Event name, e.g. 'md'. */
@@ -171,7 +153,7 @@ export interface TradovateSocketItem {
   s?: number;
 }
 
-export interface TradovateFrame {
+interface TradovateFrame {
   /** 'o' connection open, 'h' heartbeat, 'a' data array. */
   kind: string;
   items: TradovateSocketItem[];
@@ -203,7 +185,7 @@ const AUTH_TIMEOUT_MS = 20000;
 const REST_TIMEOUT_MS = 20000;
 
 /** Thrown when Tradovate refuses credentials (bad user/pass, locked account, captcha). */
-export class TradovateAuthError extends Error {}
+class TradovateAuthError extends Error {}
 
 /**
  * Exchange credentials for an access token.
@@ -268,7 +250,7 @@ export interface TradovateSocketLike {
 
 export type TradovateSocketFactory = (url: string) => TradovateSocketLike;
 
-export interface TradovateClientOptions {
+interface TradovateClientOptions {
   env: TradovateEnv;
   accessToken: string;
   /** Called for every item of every 'a' frame (quotes, doms and acks alike). */

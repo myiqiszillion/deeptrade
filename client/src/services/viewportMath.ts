@@ -1,6 +1,7 @@
 /**
  * Pure functions for viewport coordinate transformations and layout calculations.
  */
+import { decimalsForTick } from './priceFormat';
 
 export function calculatePriceToY(
   price: number,
@@ -23,18 +24,12 @@ export function calculateYToPrice(
 ): number {
   const diffY = panY - y;
   const ticks = diffY / priceScale;
-  return Math.round((anchorPrice + ticks * tickSize) / tickSize) * tickSize;
-}
-
-export function calculateAutoFollowPanX(
-  canvasWidth: number,
-  barCount: number,
-  barWidth: number,
-  barSpacing: number,
-  rightMargin = 80
-): number {
-  const totalWidth = barCount * (barWidth + barSpacing);
-  return canvasWidth - totalWidth - rightMargin;
+  const price = anchorPrice + ticks * tickSize;
+  // Snap onto the tick grid AND the tick's own decimal precision: `Math.round(p / tick) * tick`
+  // alone reintroduces IEEE-754 residue (0.1 -> 5850.1000000000004), which would leak into the
+  // crosshair price readout. Same rule as the server's `normalizeToTick`.
+  if (!Number.isFinite(price) || !Number.isFinite(tickSize) || tickSize <= 0) return price;
+  return Number((Math.round(price / tickSize) * tickSize).toFixed(decimalsForTick(tickSize)));
 }
 
 export function clampScale(

@@ -14,11 +14,6 @@ export class TapeEngine {
     this.absorptionVolumeThreshold = absorptionVolumeThreshold;
   }
 
-  public setThresholds(deepTradeThresholdUsd: number, absorptionVolumeThreshold: number) {
-    this.deepTradeThresholdUsd = deepTradeThresholdUsd;
-    this.absorptionVolumeThreshold = absorptionVolumeThreshold;
-  }
-
   public processTick(
     tick: Tick,
     currentBook?: OrderbookSnapshot | null,

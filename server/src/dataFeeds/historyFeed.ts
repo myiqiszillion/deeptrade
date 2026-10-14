@@ -34,7 +34,7 @@ async function getJson(url: string): Promise<unknown | null> {
  * Rejects non-finite numbers, malformed numbers with trailing chars (e.g. "100.5abc"),
  * empty IDs, and string booleans like "false" that would misclassify buy/sell.
  */
-export function parseBinanceAggTrades(rows: unknown[], seenIds = new Set<string>()): Tick[] {
+function parseBinanceAggTrades(rows: unknown[], seenIds = new Set<string>()): Tick[] {
   if (!Array.isArray(rows) || rows.length === 0) return [];
 
   const pageTicks: Tick[] = [];

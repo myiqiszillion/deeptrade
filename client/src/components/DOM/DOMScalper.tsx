@@ -2,15 +2,14 @@ import React from 'react';
 import { OrderbookSnapshot } from '../../types';
 import { formatPrice } from '../../services/priceFormat';
 
-interface DOMLadderProps {
+interface DOMScalperProps {
   orderbook: OrderbookSnapshot;
   currentPrice: number;
   symbol: string;
-  isFutures: boolean;
   tickSize?: number;
 }
 
-export const DOMLadder: React.FC<DOMLadderProps> = ({
+export const DOMScalper: React.FC<DOMScalperProps> = ({
   orderbook,
   currentPrice,
   symbol,
@@ -141,5 +140,3 @@ export const DOMLadder: React.FC<DOMLadderProps> = ({
     </div>
   );
 };
-
-export const DOMScalper = DOMLadder;

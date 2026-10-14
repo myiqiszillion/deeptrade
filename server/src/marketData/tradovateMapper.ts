@@ -27,7 +27,7 @@ import { TradovateDom, TradovateDomLevel, TradovatePriceSize, TradovateQuote } f
  */
 
 /** Raw candidate handed to validateTrade(); the validator stays the single normalization point. */
-export interface RawTradeCandidate {
+interface RawTradeCandidate {
   ts: number;
   price: number;
   size: number;
@@ -40,7 +40,7 @@ export interface RawTradeCandidate {
 }
 
 /** Raw single-level depth change handed to validateDepth(). */
-export interface RawDepthDeltaCandidate {
+interface RawDepthDeltaCandidate {
   kind: 'delta';
   ts: number;
   side: 'bid' | 'ask';
@@ -52,7 +52,7 @@ export interface RawDepthDeltaCandidate {
 }
 
 /** Raw full-ladder replacement handed to validateDepth(). */
-export interface RawDepthSnapshotCandidate {
+interface RawDepthSnapshotCandidate {
   kind: 'snapshot';
   ts: number;
   bids: [number, number][];
@@ -62,12 +62,12 @@ export interface RawDepthSnapshotCandidate {
   sourceProvider?: string;
 }
 
-export interface QuoteMappingResult {
+interface QuoteMappingResult {
   trades: RawTradeCandidate[];
   depth: RawDepthDeltaCandidate[];
 }
 
-export interface MapperCounters {
+interface MapperCounters {
   /** Prints seen but with no derivable aggressor side. */
   droppedUnresolvedSide: number;
   /** Frames whose timestamp was absent/undecodable. */
@@ -77,7 +77,7 @@ export interface MapperCounters {
 }
 
 /** How a print's aggressor side was determined — surfaced for diagnostics. */
-export type SideRule = 'quote' | 'tick' | 'unresolved';
+type SideRule = 'quote' | 'tick' | 'unresolved';
 
 function toEpochMs(timestamp: unknown): number | null {
   if (typeof timestamp !== 'string' || timestamp.length === 0) return null;
@@ -102,7 +102,7 @@ function readEntry(entry: TradovatePriceSize | undefined): { price: number | nul
  * Lee-Ready classification. Returns the side plus the rule that produced it, so callers can
  * tell a firm quote-rule read from a weaker tick-rule inference.
  */
-export function classifyAggressor(
+function classifyAggressor(
   tradePrice: number,
   bidPrice: number | null,
   offerPrice: number | null,

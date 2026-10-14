@@ -1,7 +1,7 @@
 import { DataType, User } from './types.js';
 import { entitlementService } from './entitlementService.js';
 
-export interface AuthorizationContext {
+interface AuthorizationContext {
   user: User | null;
   symbol: string;
   provider?: string;

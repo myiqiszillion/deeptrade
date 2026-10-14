@@ -37,9 +37,9 @@ const WHALE_LOTS_EQUIVALENT = 10;
 const CRYPTO_WHALE_USD = 50000;
 const GEX_REFRESH_MS = parseInt(process.env.GEX_REFRESH_MS || '300000', 10);
 
-export type HistorySource = 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
+type HistorySource = 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
 
-export interface HistoryProvider {
+interface HistoryProvider {
   fetchBinanceAggTrades(symbol: string, pages?: number): Promise<Tick[]>;
   fetchTradovateBars(
     vendorSymbol: string,
@@ -48,7 +48,7 @@ export interface HistoryProvider {
   ): Promise<HistoricalBar[]>;
 }
 
-export const defaultHistoryProvider: HistoryProvider = {
+const defaultHistoryProvider: HistoryProvider = {
   fetchBinanceAggTrades,
   fetchTradovateBars: fetchTradovateHistoryBars,
 };
@@ -60,7 +60,7 @@ export const defaultHistoryProvider: HistoryProvider = {
  * Multiple tabs watching the same instrument share the same underlying feed
  * and engines without duplicate connections or cross-tab state pollution.
  */
-export class MarketContext {
+class MarketContext {
   public readonly symbol: string;
   public readonly instrument: FuturesInstrument;
   public feed: MarketDataFeed | null = null;
@@ -79,7 +79,6 @@ export class MarketContext {
   private subscribers = new Set<ChartSession>();
 
   private historySource: HistorySource = 'NONE';
-  private historyBars: HistoricalBar[] = [];
   private historyBarsByTf = new Map<string, HistoricalBar[]>();
   private historyTicks: Tick[] = [];
   private historyRequest = new AbortController();
@@ -751,7 +750,6 @@ export class MarketContext {
       });
       if (stored.bars.length > 0) {
         this.historyBarsByTf.set(timeframe, stored.bars);
-        this.historyBars = stored.bars;
         this.historySource = 'REAL_BARS';
         return stored.bars;
       }
@@ -780,7 +778,6 @@ export class MarketContext {
         if (bars.length > 0) {
           marketDataStore.saveBars(bars, this.symbol, timeframe, 'tradovate');
           this.historyBarsByTf.set(timeframe, bars);
-          this.historyBars = bars;
           this.historySource = 'REAL_BARS';
         }
         return bars;
@@ -796,7 +793,6 @@ export class MarketContext {
         });
         if (stored.bars.length > 0) {
           this.historyBarsByTf.set(timeframe, stored.bars);
-          this.historyBars = stored.bars;
           this.historySource = 'REAL_BARS';
           return stored.bars;
         }
@@ -895,6 +891,7 @@ export class MarketContext {
       historySource: this.historySource,
       historyBars: this.historyBarsByTf.get(timeframe) || [],
       feedStatus: this.feedStatus,
+      feedReason: this.feedReason,
       mode: session.isReplay() ? session.mode : 'LIVE',
     };
   }

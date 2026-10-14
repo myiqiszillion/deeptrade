@@ -17,7 +17,7 @@ import {
   WSServerMessage,
 } from '../types';
 
-export interface WSListeners {
+interface WSListeners {
   onInitState?: (data: {
     symbol: string;
     instrument?: FuturesInstrument;
@@ -34,6 +34,8 @@ export interface WSListeners {
     historySource?: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
     historyBars?: HistoricalBar[];
     feedStatus?: 'LIVE' | 'UNAVAILABLE';
+    /** Credential-free reason for the feed state (shown when an instrument has no data). */
+    feedReason?: string;
     mode?: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
   }) => void;
   onTick?: (tick: Tick) => void;
@@ -61,7 +63,7 @@ export interface WSListeners {
   onError?: (error: { code: string; message: string }) => void;
 }
 
-export class DeepChartWSClient {
+class DeepChartWSClient {
   private ws: WebSocket | null = null;
   private url: string;
   private listeners: WSListeners = {};

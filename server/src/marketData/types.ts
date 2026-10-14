@@ -8,7 +8,7 @@ export type AggressorProvenance =
 
 export type DataDepthLevel = 'TOP_OF_BOOK' | 'L2_20' | 'L2_50' | 'FULL_MBO';
 
-export interface TradeQualityFlags {
+interface TradeQualityFlags {
   isCoalesced?: boolean; // Vendor coalesced multiple trades into this quote/update
   isSuspect?: boolean;
   isGapBoundary?: boolean;
@@ -44,7 +44,7 @@ export interface DepthLevel {
 }
 
 /** A full L2 replacement for one symbol. */
-export interface MarketDepthSnapshot {
+interface MarketDepthSnapshot {
   kind: 'snapshot';
   ts: number;
   bids: DepthLevel[];
@@ -56,7 +56,7 @@ export interface MarketDepthSnapshot {
 }
 
 /** A single-level L2 change (size 0 = remove that price). */
-export interface MarketDepthDelta {
+interface MarketDepthDelta {
   kind: 'delta';
   ts: number;
   side: 'bid' | 'ask';

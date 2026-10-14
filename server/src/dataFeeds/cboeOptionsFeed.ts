@@ -11,7 +11,7 @@
  * the README carries the data disclaimer.
  */
 
-export interface CboeOptionRow {
+interface CboeOptionRow {
   strike: number;
   type: 'CALL' | 'PUT';
   expiration: string;
@@ -24,7 +24,7 @@ export interface CboeOptionRow {
   lastPrice: number;
 }
 
-export interface CboeChainSnapshot {
+interface CboeChainSnapshot {
   underlying: string;
   spotPrice: number;
   fetchedAt: number;

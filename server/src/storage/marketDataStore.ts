@@ -5,7 +5,7 @@ import { FootprintBar, HistoricalBar, Tick } from '../types.js';
 import { MarketTrade } from '../marketData/types.js';
 import { Entitlement, User } from '../auth/types.js';
 
-export interface BarQueryOptions {
+interface BarQueryOptions {
   provider: string;
   symbol: string;
   timeframe: string;
@@ -13,7 +13,7 @@ export interface BarQueryOptions {
   limit?: number;
 }
 
-export interface BarQueryResult {
+interface BarQueryResult {
   bars: HistoricalBar[];
   hasMore: boolean;
   cursor?: {
@@ -24,7 +24,7 @@ export interface BarQueryResult {
   };
 }
 
-export interface TradeQueryOptions {
+interface TradeQueryOptions {
   provider: string;
   symbol: string;
   beforeTime?: number;
@@ -32,7 +32,7 @@ export interface TradeQueryOptions {
   limit?: number;
 }
 
-export interface TradeQueryResult {
+interface TradeQueryResult {
   trades: Tick[];
   hasMore: boolean;
   cursor?: {
@@ -43,7 +43,7 @@ export interface TradeQueryResult {
   };
 }
 
-export interface GapRecord {
+interface GapRecord {
   id: number;
   symbol: string;
   provider: string;
@@ -512,23 +512,6 @@ export class MarketDataStore {
   public isTokenJtiRevoked(jti: string): boolean {
     const stmt = this.db.prepare(`SELECT 1 FROM revoked_tokens WHERE jti = ?`);
     return !!stmt.get(jti);
-  }
-
-  public purgeExpiredRevocations(): void {
-    const nowSec = Math.floor(Date.now() / 1000);
-    this.db.exec(`DELETE FROM revoked_tokens WHERE expires_at < ${nowSec}`);
-  }
-
-  /**
-   * Retention cleanup: delete trades and bars older than retention period.
-   */
-  public purgeOldData(olderThanMs: number): void {
-    const cutoff = Date.now() - olderThanMs;
-    this.db.exec(`
-      DELETE FROM trades WHERE ts < ${cutoff};
-      DELETE FROM bars WHERE time < ${cutoff};
-      DELETE FROM gaps WHERE to_ts < ${cutoff};
-    `);
   }
 
   /**

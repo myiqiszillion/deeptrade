@@ -201,14 +201,6 @@ export class GEXEngine {
     return this.currentProfiles.get(underlying);
   }
 
-  public getAllProfiles(): Record<string, GEXProfile> {
-    const result: Record<string, GEXProfile> = {};
-    for (const [k, v] of this.currentProfiles.entries()) {
-      result[k] = v;
-    }
-    return result;
-  }
-
   public addFlowTrade(trade: OptionsFlowTrade) {
     this.recentFlow.unshift(trade);
     if (this.recentFlow.length > 100) {

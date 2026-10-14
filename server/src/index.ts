@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { WebSocket, WebSocketServer } from 'ws';
 import { entitlementService } from './auth/entitlementService.js';
 import { AccessPolicy } from './auth/accessPolicy.js';
-import { verifyToken } from './auth/token.js';
+import { verifyToken, assertProductionSecretValid } from './auth/token.js';
 import { DataType, User } from './auth/types.js';
 import { FUTURES_INSTRUMENTS } from './futuresConfig.js';
 import { MarketContextManager, TIMEFRAMES } from './marketData/marketContext.js';
@@ -25,6 +25,20 @@ try {
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const HOST = process.env.HOST || '0.0.0.0';
+
+// Fail fast on a misconfigured signing secret. Without this the first token-bearing request would
+// throw inside an async request/connection handler — an unhandled rejection that terminates the
+// process — instead of a clear, immediate startup error.
+if (process.env.NODE_ENV === 'production') {
+  try {
+    assertProductionSecretValid(process.env.AUTH_JWT_SECRET);
+  } catch (err) {
+    console.error(`[DeepChart Server] Fatal configuration error: ${(err as Error).message}`);
+    process.exit(1);
+  }
+} else if (process.env.AUTH_REQUIRED === '1' && !process.env.AUTH_JWT_SECRET) {
+  console.warn('[DeepChart Server] AUTH_REQUIRED=1 without AUTH_JWT_SECRET — using the development signing secret.');
+}
 
 // Per-connection chart sessions
 const sessions = new Map<WebSocket, ChartSession>();
@@ -109,6 +123,20 @@ function extractToken(req: IncomingMessage): string | null {
   }
 
   return null;
+}
+
+/**
+ * `verifyToken` throws when a production deployment is missing its signing secret. A misconfigured
+ * secret must never take the process down mid-request, so verification failures fail closed
+ * (treated as an invalid token) after being logged once by the caller's own path.
+ */
+function safeVerifyToken(token: string): ReturnType<typeof verifyToken> {
+  try {
+    return verifyToken(token);
+  } catch (err) {
+    console.error(`[DeepChart Server] Token verification unavailable: ${(err as Error).message}`);
+    return null;
+  }
 }
 
 // Multi-instrument market context manager
@@ -212,7 +240,14 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse): Promise<v
   }
 }
 
-const httpServer = createServer(async (req, res) => {
+/** Parse a numeric query parameter and ignore non-finite garbage — NaN must never reach SQLite. */
+function parsePositiveIntParam(raw: string | null): number | undefined {
+  if (raw === null) return undefined;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+async function handleHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.url?.startsWith('/healthz')) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     let symbolParam = url.searchParams.get('symbol');
@@ -280,16 +315,14 @@ const httpServer = createServer(async (req, res) => {
     const symbol = url.searchParams.get('symbol') || 'BTCUSDT';
     const timeframe = url.searchParams.get('timeframe') || '1m';
     const provider = url.searchParams.get('provider') || (symbol === 'BTCUSDT' ? 'binance' : (process.env.FUTURES_PROVIDER || 'none'));
-    const beforeTimeStr = url.searchParams.get('beforeTime');
-    const beforeTime = beforeTimeStr ? parseInt(beforeTimeStr, 10) : undefined;
-    const limitStr = url.searchParams.get('limit');
-    const limit = limitStr ? parseInt(limitStr, 10) : 300;
+    const beforeTime = parsePositiveIntParam(url.searchParams.get('beforeTime'));
+    const limit = parsePositiveIntParam(url.searchParams.get('limit')) ?? 300;
 
     // Entitlement / Auth check
     const token = extractToken(req);
     let user: User | null = null;
     if (token) {
-      const payload = verifyToken(token);
+      const payload = safeVerifyToken(token);
       if (payload) {
         const dbUser = marketDataStore.getUser(payload.sub);
         user = dbUser || { id: payload.sub, username: payload.username, role: payload.role, status: 'active' };
@@ -322,6 +355,21 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
   await serveStatic(req, res);
+}
+
+// Safety net: an exception inside the async handler would otherwise surface as an unhandled
+// rejection and terminate the process. Malformed Host headers and garbage query parameters are
+// attacker-controlled, so they must fail with a normal 500 response instead.
+const httpServer = createServer((req, res) => {
+  void handleHttpRequest(req, res).catch((err) => {
+    console.error('[DeepChart Server] HTTP request failed:', err);
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
+    res.writeHead(500, { 'content-type': MIME_TYPES['.json'] });
+    res.end(JSON.stringify({ error: 'Internal server error' }));
+  });
 });
 
 interface ExtWebSocket extends WebSocket {
@@ -371,7 +419,7 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
   const token = extractToken(req);
   let user: User | null = null;
   if (token) {
-    const payload = verifyToken(token);
+    const payload = safeVerifyToken(token);
     if (payload) {
       const dbUser = marketDataStore.getUser(payload.sub);
       user = dbUser || { id: payload.sub, username: payload.username, role: payload.role, status: 'active' };
@@ -493,6 +541,13 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
             code: 'ENTITLEMENT_DENIED',
             message: `User '${session.user?.id || 'guest'}' lacks entitlement for ${requestedSymbol}`,
           });
+          // Re-sync the client to the instrument it IS allowed to watch. Without this the UI would
+          // stay stuck on the refused symbol (stale header/status) while the stream it actually
+          // receives belongs to another contract.
+          const activeCtx = contextManager.getContext(session.subscribedSymbol);
+          if (activeCtx && !session.isReplay()) {
+            session.send(activeCtx.buildInitState(session, session.subscribedTimeframe));
+          }
           return;
         }
 

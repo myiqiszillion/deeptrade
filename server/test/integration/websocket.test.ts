@@ -4,9 +4,12 @@ import { once } from 'node:events';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import { ensureBuiltArtifacts } from './ensureBuild.js';
 
 export async function runWebSocketIntegrationTests(): Promise<void> {
   console.log('[integration/websocket.test] Running WebSocket integration tests...');
+
+  ensureBuiltArtifacts();
 
   const root = fileURLToPath(new URL('../../', import.meta.url));
   const probe = net.createServer();
@@ -23,6 +26,9 @@ export async function runWebSocketIntegrationTests(): Promise<void> {
     DEMO: '0',
     MAX_SESSIONS: '5',
     MAX_SESSIONS_PER_USER: '2',
+    // Keep the suite hermetic: a developer .env with live vendor credentials must not leak in.
+    FUTURES_PROVIDER: 'none',
+    DATABENTO_TRANSPORT_READY: '0',
   };
 
   const server = spawn(process.execPath, [fileURLToPath(new URL('../../dist/index.js', import.meta.url))], {

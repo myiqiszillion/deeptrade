@@ -11,9 +11,9 @@ let sessionCounter = 0;
  * VWAP and tape updates. Trading accounts, orders and prop firm risk engines are not part
  * of this edition.
  */
-export type SessionMode = 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
+type SessionMode = 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
 
-export interface IReplaySession {
+interface IReplaySession {
   dispose(): void;
   start(speed?: number): void;
   pause(): void;

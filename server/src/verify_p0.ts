@@ -39,6 +39,9 @@ async function startServer(): Promise<ChildProcess> {
       PORT: TEST_PORT.toString(),
       DEV_HOOKS: '1',
       DEMO: '0',
+      // Keep the suite hermetic: a developer .env with live vendor credentials must not leak in.
+      FUTURES_PROVIDER: 'none',
+      DATABENTO_TRANSPORT_READY: '0',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -107,7 +110,7 @@ function killServerTree(proc: ChildProcess | null) {
 
 async function runVerifyP0() {
   console.log('======================================================');
-  console.log('ðŸ§ª RUNNING DEEPCHART P0 VERIFICATION SUITE (13 TESTS)');
+  console.log('🧪 RUNNING DEEPCHART P0 VERIFICATION SUITE (13 TESTS)');
   console.log('======================================================\n');
 
   let serverProc: ChildProcess | null = null;
@@ -169,9 +172,9 @@ async function runVerifyP0() {
     await sleep(2000);
 
     // ==========================================
-    // TEST 1: Replay khÃ´ng Äƒn Ä‘uÃ´i (Buffer isolation)
+    // TEST 1: Replay không ăn đuôi (Buffer isolation)
     // ==========================================
-    console.log('\n--- TEST 1: Replay khÃ´ng Äƒn Ä‘uÃ´i (Buffer Isolation) ---');
+    console.log('\n--- TEST 1: Replay không ăn đuôi (Buffer Isolation) ---');
     // Start replay at 1x so the assertion can prove the playhead actually advances
     ws.send(JSON.stringify({ type: 'REPLAY_CONTROL', action: 'START', speed: 1 }));
     
@@ -422,7 +425,7 @@ async function runVerifyP0() {
     console.log('✅ TEST 13 PASSED: nothing is fabricated for an instrument without a real feed.');
 
     console.log('\n======================================================');
-    console.log('ðŸŽ‰ ALL 13 P0 TEST CASES PASSED SUCCESSFULLY!');
+    console.log('🎉 ALL 13 P0 TEST CASES PASSED SUCCESSFULLY!');
     console.log('======================================================\n');
   } finally {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -447,7 +450,7 @@ runVerifyP0()
     setTimeout(() => process.exit(0), 250);
   })
   .catch((err) => {
-    console.error('\nâŒ VERIFY P0 SUITE FAILED:', err);
+    console.error('\n❌ VERIFY P0 SUITE FAILED:', err);
     process.exit(1);
   });
 

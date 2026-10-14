@@ -134,7 +134,8 @@ class ScriptedSockets {
   };
 
   public get tradeSockets(): ScriptedSocket[] {
-    return this.created.filter((s) => s.url.includes('aggTrade'));
+    // Both trade stream flavors count: the feed starts on @aggTrade and may switch to @trade.
+    return this.created.filter((s) => s.url.includes('@aggTrade') || s.url.includes('@trade'));
   }
 
   public get depthSockets(): ScriptedSocket[] {
@@ -198,6 +199,16 @@ function socketAdapter() {
 
 function aggTrade(price: number, size: number): unknown {
   return { e: 'aggTrade', E: Date.now(), s: 'BTCUSDT', a: '1', p: String(price), q: String(size), T: Date.now(), m: false };
+}
+
+/** Per-fill stream row (`@trade`), the fallback flavor the feed can switch to. */
+function tradeFill(price: number, size: number, id = '2'): unknown {
+  return { e: 'trade', E: Date.now(), T: Date.now(), s: 'BTCUSDT', t: id, p: String(price), q: String(size), X: 'MARKET', m: false };
+}
+
+/** Lifecycle carriers (`X: 'NA'`) are not trades and must never reach the engines/VWAP. */
+function tradeLifecycleRow(): unknown {
+  return { e: 'trade', E: Date.now(), T: Date.now(), s: 'BTCUSDT', t: '3', p: '0', q: '0', X: 'NA', m: false };
 }
 
 function depthMessage(price = 80000.1): unknown {
@@ -349,6 +360,104 @@ async function runVerifyLifecycle(): Promise<void> {
     check('F5 invalid events never reach LIVE', !invalid.feed.isConnected() && invalid.trades.length === 0);
     const fourth = await settle(invalid.feed.waitForLive(150), 600);
     check('F6 invalid events cannot satisfy waitForLive', fourth === 'rejected', `outcome=${fourth}`);
+  }
+
+  // Case G — a silent @aggTrade stream must fall back to the per-fill stream.
+  // Regression for the real failure mode where some networks accept @aggTrade, deliver nothing for
+  // it, and would otherwise leave BTCUSDT permanently UNAVAILABLE while depth keeps streaming.
+  console.log('\n--- Case G: silent aggTrade falls back to @trade ---');
+  {
+    const previousMode = process.env.BINANCE_TRADE_STREAM;
+    const previousSilence = process.env.BINANCE_TRADE_SILENCE_MS;
+    process.env.BINANCE_TRADE_STREAM = 'auto'; // opt into aggTrade-first + watchdog
+    process.env.BINANCE_TRADE_SILENCE_MS = '400'; // the feed reads this per instance
+    try {
+      const h = socketAdapter();
+      await h.feed.connect();
+      h.sockets.trade.open();
+      h.sockets.depth.open();
+      h.sockets.depth.message(depthMessage()); // vendor is provably reachable
+      check('G1 an open socket with no trades is not LIVE', !h.feed.isConnected());
+
+      await sleep(200);
+      h.sockets.depth.message(depthMessage(80000.2)); // depth keeps ticking, aggTrade stays silent
+      await sleep(600);
+
+      check(
+        'G2 a silent aggTrade stream switches to the @trade stream',
+        h.sockets.created.some((s) => s.url.endsWith('@trade')),
+        `streams=${h.sockets.created.map((s) => s.url.split('/').pop()).join(',')}`
+      );
+
+      const fallback = h.sockets.trade;
+      fallback.open();
+      fallback.message(tradeLifecycleRow()); // zero-price carrier rows are not trades
+      check('G3 lifecycle rows (X=NA) never count as trades', !h.feed.isConnected() && h.trades.length === 0);
+
+      fallback.message(tradeFill(80010, 2));
+      check(
+        'G4 the fallback stream reaches LIVE with real fills',
+        h.feed.isConnected() && h.trades[h.trades.length - 1]?.price === 80010,
+        `trades=${h.trades.length}`
+      );
+
+      fallback.drop();
+      const beforeReconnect = h.sockets.tradeSockets.length;
+      await sleep(3300);
+      check(
+        'G5 the fallback stream keeps reconnecting on @trade',
+        h.sockets.tradeSockets.length === beforeReconnect + 1 && h.sockets.trade.url.endsWith('@trade'),
+        `trade sockets=${h.sockets.tradeSockets.length}`
+      );
+      check(
+        'G6 the stream never flips back to @aggTrade (fallback happens once)',
+        h.sockets.created.filter((s) => s.url.endsWith('@aggTrade')).length === 1,
+        `aggTrade sockets=${h.sockets.created.filter((s) => s.url.endsWith('@aggTrade')).length}`
+      );
+
+      await h.feed.disconnect();
+    } finally {
+      if (previousMode === undefined) delete process.env.BINANCE_TRADE_STREAM;
+      else process.env.BINANCE_TRADE_STREAM = previousMode;
+      if (previousSilence === undefined) delete process.env.BINANCE_TRADE_SILENCE_MS;
+      else process.env.BINANCE_TRADE_SILENCE_MS = previousSilence;
+    }
+  }
+
+  // Case H — the DEFAULT stream must deliver immediately (no silent-stream stall at startup).
+  console.log('\n--- Case H: default stream delivers with no stall ---');
+  {
+    const previousMode = process.env.BINANCE_TRADE_STREAM;
+    const previousSilence = process.env.BINANCE_TRADE_SILENCE_MS;
+    delete process.env.BINANCE_TRADE_STREAM; // default mode
+    process.env.BINANCE_TRADE_SILENCE_MS = '300';
+    try {
+      const h = socketAdapter();
+      await h.feed.connect();
+      check(
+        'H1 the default trade stream is the always-delivered @trade stream',
+        h.sockets.trade.url.endsWith('@trade'),
+        `url=${h.sockets.trade.url.split('/').pop()}`
+      );
+
+      h.sockets.trade.open();
+      h.sockets.trade.message(tradeFill(80020, 3));
+      check('H2 a real fill reaches LIVE with no watchdog involved', h.feed.isConnected());
+
+      await sleep(600); // past the silence window: no fallback may be attempted
+      check(
+        'H3 the default stream never needs a fallback',
+        h.sockets.tradeSockets.length === 1,
+        `trade sockets=${h.sockets.tradeSockets.length}`
+      );
+
+      await h.feed.disconnect();
+    } finally {
+      if (previousMode === undefined) delete process.env.BINANCE_TRADE_STREAM;
+      else process.env.BINANCE_TRADE_STREAM = previousMode;
+      if (previousSilence === undefined) delete process.env.BINANCE_TRADE_SILENCE_MS;
+      else process.env.BINANCE_TRADE_SILENCE_MS = previousSilence;
+    }
   }
 
   console.log('\n======================================================');

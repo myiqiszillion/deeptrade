@@ -70,7 +70,7 @@ export function resolveVendorSymbol(
   return `@${root}`;
 }
 
-export interface TradovateAdapterOptions {
+interface TradovateAdapterOptions {
   /** Test seam: replaces the real WebSocket with a scripted one. */
   socketFactory?: TradovateSocketFactory;
   /** Test seam: overrides REST auth so the suite never touches the network. */

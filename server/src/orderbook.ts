@@ -90,22 +90,5 @@ export class OrderbookManager {
       lastUpdateId: this.lastUpdateId,
     };
   }
-
-  public getBestBid(): number | null {
-    if (this.bids.size === 0) return null;
-    let max = -Infinity;
-    for (const p of this.bids.keys()) {
-      if (p > max) max = p;
-    }
-    return max === -Infinity ? null : max;
-  }
-
-  public getBestAsk(): number | null {
-    if (this.asks.size === 0) return null;
-    let min = Infinity;
-    for (const p of this.asks.keys()) {
-      if (p < min) min = p;
-    }
-    return min === Infinity ? null : min;
-  }
 }
+

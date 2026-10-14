@@ -59,7 +59,7 @@ export function credentialFreeMessage(message: string): string {
 }
 
 /** Parse `TRADOVATE_ENV`, defaulting to the demo cluster (never silently points at live). */
-export function parseTradovateEnv(raw: string | undefined): TradovateEnv {
+function parseTradovateEnv(raw: string | undefined): TradovateEnv {
   return raw?.trim().toLowerCase() === 'live' ? 'live' : 'demo';
 }
 
