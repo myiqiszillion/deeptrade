@@ -1,3 +1,4 @@
+import { evidence } from './dataEvidence.js';
 // History provider wired to Databento Historical — replaces defaultHistoryProvider (no-op)
 import { DatabentoHttpClient } from '../databento/client.js';
 import { resolveDatabentoConfig } from '../databento/config.js';
@@ -78,7 +79,7 @@ export function createDatabentoHistoryProvider(client?: DatabentoHttpClient): Hi
           options.elements,
           stypeIn
         );
-        return bars;
+        return bars.map(b=>({...b,dataEvidence:evidence(c.sourceKind)}));
       } catch (err: any) {
         // 400 symbology / dataset mismatch / 422 range mismatch — return empty cleanly
         const msg = String(err?.message || '');
@@ -127,6 +128,7 @@ export function createDatabentoHistoryProvider(client?: DatabentoHttpClient): Hi
         );
         return trades.map(t => ({
           ...resolveTradeIdentity({ ...t, id: t.tradeId }),
+          dataEvidence: evidence(c.sourceKind),
           timestamp: t.timestamp,
           price: t.price,
           size: t.size,

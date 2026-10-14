@@ -71,6 +71,7 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
           </button>
         </div>
         <div className="flex items-center gap-2">
+          <span data-testid="profile-unknown-volume" title="Volume with UNKNOWN side; zero signed delta contribution">UNKNOWN side {formatVolume(volumeProfile.unknownVolume || 0)}</span>
           {activeTab === 'VP' && (
             <span
               className={`px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider border ${
@@ -85,7 +86,9 @@ export const ProfileOverlay: React.FC<ProfileOverlayProps> = ({
                   : 'bg-sky-500/20 text-sky-300 border-sky-500/30'
               }`}
             >
-              {sortedVpLevels.length === 0 || volumeProfile.provenance === 'UNAVAILABLE'
+              {volumeProfile.dataEvidence
+                ? `${volumeProfile.dataEvidence.source} · ${volumeProfile.dataEvidence.quality} · ${volumeProfile.dataEvidence.coverage === 'COMPLETE' ? 'PARTIAL' : volumeProfile.dataEvidence.coverage}`
+                : sortedVpLevels.length === 0 || volumeProfile.provenance === 'UNAVAILABLE'
                 ? 'UNAVAILABLE'
                 : volumeProfile.isEstimated || volumeProfile.provenance === 'ESTIMATED'
                 ? 'ESTIMATED'

@@ -25,7 +25,7 @@ const repoRoot = process.cwd();
 fs.mkdirSync(output, { recursive: true });
 function fixture(index, side, price, size) {
   return { id: `fixture-${index}`, ts: Date.UTC(2026, 9, 12, 15, 33, 58) + index * 1000,
-    price, size, side, sourceProvider: 'fixture', aggressorProvenance: side === 'UNKNOWN' ? 'UNKNOWN' : 'EXCHANGE_NATIVE' };
+    price, size, side, dataEvidence: {source:'LOCAL_FIXTURE',quality:'EXACT',coverage:'PARTIAL',reason:'Offline fixture observation'}, sourceProvider: 'fixture', aggressorProvenance: side === 'UNKNOWN' ? 'UNKNOWN' : 'EXCHANGE_NATIVE' };
 }
 const trades = [fixture(0, 'BUY', 100, 2), fixture(1, 'SELL', 100.25, 3), fixture(2, 'UNKNOWN', 100, 4), fixture(3, 'BUY', 100.5, 5)];
 try {
@@ -97,11 +97,18 @@ try {
   assert.equal(volume, 14, 'Final Footprint received all fixture volume');
   assert.equal(state.ProfileOverlay.volumeProfile.totalVolume, 14, 'Final Profile propagated through normal WS');
   assert.equal(state.CVDPanel.currentCVD, 4);
+  assert.equal(state.ProfileOverlay.volumeProfile.unknownVolume,4);
+  assert((await page.getByTestId('profile-unknown-volume').textContent()).includes('4'));
   assert.equal(state.FootprintCanvas.symbol, 'ES'); assert.equal(state.FootprintCanvas.timeframe, '1m');
   assert.equal(state.TerminalHeader.instrument.symbol, 'ES'); assert.equal(state.TerminalHeader.instrument.pointValue, 50);
   assert.equal(state.ProfileOverlay.volumeProfile.poc, 100);
   assert.equal(state.ProfileOverlay.volumeProfile.provenance, 'EXACT');
   assert.notEqual(state.ProfileOverlay.volumeProfile.coverage, 'COMPLETE');
+  assert.equal(state.ProfileOverlay.volumeProfile.dataEvidence.source,'LOCAL_FIXTURE');
+  assert.equal(state.ProfileOverlay.volumeProfile.dataEvidence.coverage,'PARTIAL');
+  const provenanceBadge=await page.getByTestId('data-provenance').textContent();
+  assert(provenanceBadge.includes('LOCAL_FIXTURE') && provenanceBadge.includes('PARTIAL') && provenanceBadge.includes('CVD observed baseline'));
+
   const bars = state.FootprintCanvas.bars;
   assert.deepEqual(bars.map(b => [b.time, b.open, b.high, b.low, b.close, b.volume, b.buyVolume, b.sellVolume]), [
     [Date.UTC(2026, 9, 12, 15, 33), 100, 100.25, 100, 100.25, 5, 2, 3],
@@ -149,6 +156,8 @@ try {
   assert.equal(nqState.FootprintCanvas.symbol, 'NQ');
   assert.equal(nqState.TerminalHeader.instrument.symbol, 'NQ'); assert.equal(nqState.TerminalHeader.instrument.pointValue, 20);
   assert.equal(nqState.FootprintCanvas.bars.reduce((n, b) => n + b.volume, 0), 6);
+  assert.equal(nqState.ProfileOverlay.volumeProfile.dataEvidence.source,'LOCAL_FIXTURE');
+  assert.equal(nqState.ProfileOverlay.volumeProfile.dataEvidence.coverage,'PARTIAL');
   assert.equal(nqState.CVDPanel.currentCVD, -6); assert.equal(nqState.ProfileOverlay.volumeProfile.totalVolume, 6);
   assert.equal(externalCalls, 0); assert.deepEqual(browserErrors, []);
   await page.screenshot({ path: path.join(output, 'terminal.png') });

@@ -1,3 +1,4 @@
+import { contractKey, contractWindow, evidenceOf } from './dataEvidence.js';
 import { FootprintEngine } from '../footprintEngine.js';
 import { FuturesInstrument, getOrRegisterInstrument } from '../futuresConfig.js';
 import { GEXEngine, GEXProfile } from '../gexEngine.js';
@@ -125,6 +126,7 @@ export class MarketContext {
 
   private recentVendorTickIds = new Map<string, string>();
   private identityBlocked = false;
+  private observedContract: string | undefined;
   private persistenceBlocked = false;
   private durability = { received: 0, accepted: 0, pending: 0, persisted: 0, failed: 0, projectionFailed: 0, published: 0, restored: 0, lastCommittedId: null as string | null };
   public getDurability() {
@@ -133,6 +135,7 @@ export class MarketContext {
   }
   private blockPersistence(reason: string): void {
     this.persistenceBlocked = true;
+    this.profile.setCoverage('PARTIAL', reason);
     this.feedReason = `Trade persistence BLOCKED: ${reason}; Operator reconciliation required`;
     this.setFeedStatus('UNAVAILABLE');
     void this.feed?.disconnect().catch(err => console.warn(`[Trade persistence] disconnect failed: ${(err as Error).message}`));
@@ -158,6 +161,7 @@ export class MarketContext {
 
   private blockIdentity(trade: MarketTrade, reason: string): void {
     this.identityBlocked = true;
+    this.profile.setCoverage('PARTIAL', reason);
     this.feedReason = `Trade identity BLOCKED: ${reason}; Operator reconciliation required`;
     console.warn(`[Trade identity] ${this.symbol}: ${this.feedReason}`);
     this.setFeedStatus('UNAVAILABLE');
@@ -244,7 +248,9 @@ export class MarketContext {
 
   public acceptanceSnapshot() {
     if (!this.acceptance) throw new Error('Not an isolated acceptance context');
-    return { bars: this.ensureFootprintEngine('1m').getAllBars(), profile: this.profile.getVolumeProfile() };
+    const dataEvidence=this.profile.getDataEvidence();
+    return { bars: this.ensureFootprintEngine('1m').getAllBars().map(b=>({...b,dataEvidence})),
+      profile: {...this.profile.getVolumeProfile(),coverage:dataEvidence.coverage,coverageReason:dataEvidence.reason} };
   }
 
   public getDepthHistory(fromMs?: number, toMs?: number) {
@@ -450,7 +456,12 @@ export class MarketContext {
       this.blockIdentity(trade, (err as Error).message);
       return;
     }
-    trade = { ...trade, ...identity };
+    trade = { ...trade, ...identity, dataEvidence: evidenceOf({...trade,...identity}) };
+    const contract=contractKey(trade);
+    if (contract && this.observedContract && contract !== this.observedContract) {
+      this.blockIdentity(trade, 'Contract changed inside observation cohort; explicit new cohort required');
+      return;
+    }
     const tickId = identity.id;
     const signature = JSON.stringify([trade.ts, trade.price, trade.size, trade.side.toLowerCase()]);
     const known = this.recentVendorTickIds.get(tickId);
@@ -458,6 +469,7 @@ export class MarketContext {
     try { storedStatus = this.acceptance ? 'UNSEEN' : marketDataStore.tradeIdentityStatus(this.provider, this.symbol, tickId, trade); }
     catch (err) { this.durability.failed++; this.blockPersistence((err as Error).message); return; }
     if ((known !== undefined && known !== signature) || storedStatus === 'CONFLICT') {
+      this.profile.setCoverage('PARTIAL','Identity conflict; observed cohort incomplete');
       this.blockIdentity(trade, 'conflicting payload for existing identity; rejected without overwrite');
       return;
     }
@@ -468,6 +480,7 @@ export class MarketContext {
 
     const tick: Tick = {
       ...identity,
+      dataEvidence: trade.dataEvidence,
       eventTsNs: trade.eventTsNs,
       id: tickId,
       timestamp: trade.ts,
@@ -497,6 +510,7 @@ export class MarketContext {
       this.durability.lastCommittedId = tick.id;
     }
     // Cache and analytics change only after the SQL commit, never on a failed write.
+    this.observedContract ||= contract;
     this.trackVendorTickId(tickId, signature);
     this.lastTradeTs = Date.now();
     if (this.feedStatus !== 'LIVE') this.setFeedStatus('LIVE');
@@ -562,6 +576,8 @@ export class MarketContext {
       return;
     }
 
+    // Record profile provenance before BAR DTO fan-out so the latest trade is included in observation boundaries.
+    this.profile.processTick(tick);
     // 1. Process footprint for each active timeframe
     const now = Date.now();
     for (const [tf, engine] of this.footprintEngines.entries()) {
@@ -610,8 +626,7 @@ export class MarketContext {
       }
     }
 
-    // 2. Process Profile & VWAP
-    this.profile.processTick(tick);
+    // 2. Process VWAP (profile was updated before footprint DTO fan-out)
     if (this.acceptance) this.profile.setCoverage('PARTIAL', 'Bounded acceptance observation; not full session');
     const vwapPoint = this.vwap.processTick(tick);
 
@@ -857,7 +872,9 @@ export class MarketContext {
 
       if (combined.length > 0) {
         // Dedup and sort merged ticks strictly by timestamp ascending
-        const uniqueSortedTicks = uniqueTradeTicks(combined);
+        const window=contractWindow(uniqueTradeTicks(combined));
+        const uniqueSortedTicks = window.ticks;
+        this.observedContract=contractKey(uniqueSortedTicks.find(t=>contractKey(t)) || {});
 
         this.historyTicks = uniqueSortedTicks.slice(-5000);
 
@@ -883,6 +900,7 @@ export class MarketContext {
         // Reset engines with deterministic first timestamp before seeding
         const firstTs = uniqueSortedTicks[0]?.timestamp || 0;
         this.profile.reset(firstTs);
+        this.profile.setCoverage('PARTIAL', `History merge observation; ${window.excluded} other-contract rows excluded; no full-session coverage proof`);
         this.vwap.reset(firstTs);
 
         for (const [tf] of this.footprintEngines) {
@@ -1094,6 +1112,7 @@ export class MarketContext {
       this.cleanupTimer = null;
     }
 
+    session.setEvidenceProvider(this.symbol, () => this.profile.getDataEvidence());
     session.subscribedSymbol = this.symbol;
     session.subscriptions.set(this.symbol, timeframe);
     const gen = session.subscriptionGeneration;
@@ -1118,10 +1137,13 @@ export class MarketContext {
       const isRecentEnough = newestTradeTs >= Math.max(Date.now() - 24 * 3600 * 1000, newestHistoryTs - 3600 * 1000);
 
       if (storedTrades.trades.length > 0 && isRecentEnough) {
-        this.historyTicks = uniqueTradeTicks(storedTrades.trades);
+        const window=contractWindow(uniqueTradeTicks(storedTrades.trades));
+        this.historyTicks = window.ticks;
+        this.observedContract = contractKey(this.historyTicks.find(t=>contractKey(t)) || {});
         this.durability.restored += this.historyTicks.length;
         const firstTs = this.historyTicks[0]?.timestamp || 0;
         this.profile.reset(firstTs);
+        this.profile.setCoverage('PARTIAL', `Bounded SQLite restoration; ${window.excluded} other-contract rows excluded; full session not verified`);
         this.vwap.reset(firstTs);
         const engine = this.ensureFootprintEngine(timeframe);
         for (const t of this.historyTicks) {
@@ -1161,6 +1183,7 @@ export class MarketContext {
 
   public removeSubscriber(session: ChartSession): void {
     this.subscribers.delete(session);
+    session.clearEvidenceProvider(this.symbol);
   }
 
   public changeTimeframe(session: ChartSession, timeframe: string): void {
@@ -1243,6 +1266,7 @@ export class MarketContext {
       this.gexTimer = null;
     }
     await this.stopFeed();
+    for (const session of this.subscribers) session.clearEvidenceProvider(this.symbol);
     this.subscribers.clear();
     this.historyBarsByTf.clear();
     this.pendingHistoryFetches.clear();

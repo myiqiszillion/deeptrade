@@ -1,3 +1,4 @@
+import { evidence } from '../marketData/dataEvidence.js';
 /**
  * Databento Live Realtime Client.
  *
@@ -129,6 +130,7 @@ export function parseDbnRecord(
     if (action === 'T' && isValidPrice && isValidSize) {
       const side = sideChar === 'B' ? 'BUY' : sideChar === 'A' ? 'SELL' : 'UNKNOWN';
       result.trade = {
+        dataEvidence: evidence(context?.sourceKind || (sourceProvider.includes('fixture') ? 'LOCAL_FIXTURE' : 'UNKNOWN')),
         eventTsNs: tsEventNs.toString(),
         ts: tsMs,
         price: Number(rawPrice) / 1e9,
@@ -531,6 +533,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
       try {
         const norm = normalizeTrade(parsed as DbTradeRecord, isTradesSchema ? this.dataset : undefined);
         const mt: MarketTrade = {
+          dataEvidence: evidence('LOCAL_FIXTURE'),
           ts: norm.timestamp,
           price: norm.price,
           size: norm.size,
@@ -714,6 +717,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
         while (buffer.length >= DBN_CONSTANTS.HEADER_SIZE) {
           if (this.acceptance && this.generation !== currentGen) return;
           const { parsed, recLen } = parseDbnRecord(buffer, this.symbol, this.provider, this.dbnVersion, {
+            sourceKind: (this.ordinary?.createConnection || this.acceptance?.createConnection) ? 'LOCAL_FIXTURE' : 'VENDOR_LIVE',
             dataset: this.dataset,
             schema: this.schema,
           });

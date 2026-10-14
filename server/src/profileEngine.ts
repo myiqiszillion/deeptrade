@@ -1,3 +1,4 @@
+import { ObservationEvidence } from './marketData/dataEvidence.js';
 import { TPOBracket, TPOProfileData, VolumeProfileData, VolumeProfileLevel, Tick, HistoricalBar, classifyAggressorSide, ProfileProvenance, ProfileCoverage } from './types.js';
 import { normalizeToTick } from './priceMath.js';
 
@@ -9,6 +10,7 @@ export class ProfileEngine {
   private coverage: ProfileCoverage = 'UNKNOWN';
   private coverageReason?: string;
   private hasEstimatedData = false;
+  private observation = new ObservationEvidence();
 
   // TPO state
   private tpoBracketDurationMs = 30 * 60 * 1000; // 30 minutes per bracket
@@ -31,6 +33,7 @@ export class ProfileEngine {
     this.coverage = 'UNKNOWN';
     this.coverageReason = undefined;
     this.hasEstimatedData = false;
+    this.observation = new ObservationEvidence();
     this.sessionStartTime = sessionStartTime;
     this.tpoPriceLevels.clear();
     this.brackets = [];
@@ -39,9 +42,13 @@ export class ProfileEngine {
   }
 
   public setCoverage(coverage: ProfileCoverage, reason?: string): void {
+    if (coverage === 'COMPLETE') { coverage='PARTIAL'; reason='COMPLETE request has no session completeness proof; downgraded to PARTIAL'; }
     this.coverage = coverage;
+    this.observation.partial(reason || 'Coverage not verified');
     this.coverageReason = reason;
   }
+
+  public getDataEvidence() { return this.observation.snapshot(); }
 
   public getCoverage(): ProfileCoverage {
     return this.coverage;
@@ -69,6 +76,7 @@ export class ProfileEngine {
   public processHistoricalBars(bars: HistoricalBar[]): void {
     if (!bars || bars.length === 0) return;
     this.hasEstimatedData = true;
+    this.observation.estimated();
     this.provenance = 'ESTIMATED';
     this.coverage = 'PARTIAL';
     this.coverageReason = 'Profile generated from synthetic OHLCV distribution';
@@ -138,6 +146,7 @@ export class ProfileEngine {
   }
 
   public processTick(tick: Tick) {
+    this.observation.observe(tick);
     // Invariant: Once seeded with synthetic OHLCV volume, incoming ticks cannot convert profile to EXACT
     if (this.hasEstimatedData) {
       this.provenance = 'ESTIMATED';
@@ -206,6 +215,7 @@ export class ProfileEngine {
   public getVolumeProfile(): VolumeProfileData {
     if (this.volumeLevels.size === 0 || this.totalVolume === 0) {
       return {
+        dataEvidence: this.observation.snapshot(),
         poc: 0,
         vah: 0,
         val: 0,
@@ -232,6 +242,7 @@ export class ProfileEngine {
         volume: vol,
         buyVolume: data.buyVol,
         sellVolume: data.sellVol,
+        unknownVolume: data.unknownVol || 0,
         delta,
       });
 
@@ -275,11 +286,13 @@ export class ProfileEngine {
     const val = sortedPrices[Math.max(0, Math.min(sortedPrices.length - 1, lowerIdx + 1))];
 
     return {
+      dataEvidence: this.observation.snapshot(),
       poc,
       vah: Math.max(poc, vah),
       val: Math.min(poc, val),
       totalVolume: this.totalVolume,
       levels,
+      unknownVolume: levels.reduce((sum,level)=>sum+(level.unknownVolume || 0),0),
       provenance: this.provenance,
       coverage: this.coverage,
       coverageReason: this.coverageReason,
@@ -290,6 +303,7 @@ export class ProfileEngine {
   public getTPOProfile(): TPOProfileData {
     if (this.tpoPriceLevels.size === 0) {
       return {
+        dataEvidence: this.observation.snapshot(),
         poc: 0,
         vah: 0,
         val: 0,
@@ -346,6 +360,7 @@ export class ProfileEngine {
     const val = sortedPrices[Math.max(0, Math.min(sortedPrices.length - 1, lowerIdx + 1))];
 
     return {
+      dataEvidence: this.observation.snapshot(),
       poc,
       vah: Math.max(poc, vah),
       val: Math.min(poc, val),

@@ -20,6 +20,7 @@
     "test:terminal:offline": "node scripts/verify_regular_terminal.mjs",
     "test:isolation": "node scripts/offline_isolation_probe.mjs",
     "test:ordinary:offline": "pnpm --filter @deepchart/server exec tsx test/ordinaryRuntime.test.ts",
+    "test:provenance:offline": "pnpm --filter @deepchart/server exec tsx test/provenance.test.ts",
     "test:durability:offline": "pnpm --filter @deepchart/server exec tsx test/durability.test.ts",
     "test:identity:offline": "pnpm --filter @deepchart/server exec tsx test/tradeIdentity.test.ts",
     "mcp": "pnpm --filter @deepchart/server exec tsx src/mcp/server.ts",

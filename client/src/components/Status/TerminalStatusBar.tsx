@@ -1,5 +1,5 @@
 import React from 'react';
-import { EnhancedFeedStatus } from '../../types';
+import { DataEvidence, EnhancedFeedStatus } from '../../types';
 
 interface TerminalStatusBarProps {
   feedStatus: 'LIVE' | 'UNAVAILABLE' | EnhancedFeedStatus;
@@ -13,6 +13,7 @@ interface TerminalStatusBarProps {
   lastUpdateTs?: number | null;
   dataSource?: string;
   delayNotice?: string;
+  dataEvidence?: DataEvidence;
 }
 
 export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
@@ -27,6 +28,7 @@ export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
   lastUpdateTs = null,
   dataSource,
   delayNotice,
+  dataEvidence,
 }) => {
   // Resolve unified display status
   let displayStatus: EnhancedFeedStatus = 'UNAVAILABLE';
@@ -119,11 +121,14 @@ export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
             {historySource === 'REAL_TICKS'
               ? 'Real trades'
               : historySource === 'REAL_BARS'
-                ? 'Vendor bars'
+                ? 'OHLCV bars · source unverified'
                 : 'Streaming only'}
           </span>
         </span>
 
+        <span data-testid="data-provenance" title={dataEvidence?.reason || 'Source and observation coverage not verified'} className="text-[#F59E0B]">
+          {dataEvidence?.source || 'UNKNOWN'} · {dataEvidence?.quality || 'UNKNOWN'} · {dataEvidence?.coverage === 'COMPLETE' ? 'PARTIAL' : dataEvidence?.coverage || 'UNKNOWN'} · CVD observed baseline
+        </span>
         {isLoadingHistory && <span className="text-[#22D3EE] animate-pulse">Loading history…</span>}
         {!hasMoreHistory && <span className="text-[#4E5965]">Archive start</span>}
 

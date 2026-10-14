@@ -23,7 +23,8 @@ function record(sequence:number, delta=123n, side='B', size=2, instrument=10252,
 }
 function decode(b:Buffer, symbol='ES'):MarketTrade { return parseDbnRecord(b,symbol,'fixture',3,{schema:'trades',dataset:'GLBX.MDP3'}).parsed!.trade!; }
 function tick(t:MarketTrade):Tick { return {id:t.id!,timestamp:t.ts,price:t.price,size:t.size,side:t.side.toLowerCase() as Tick['side'],sequenceId:String(t.sequenceId),vendorIdentity:t.vendorIdentity,eventTsNs:t.eventTsNs}; }
-const cohort=[decode(record(100)),decode(record(101)),decode(record(102,123n,'A')),decode(record(103,456n,'N',4)),decode(record(800,-1000000n+789n,'B',1)),decode(record(4294967295,1000n,'A',1)),decode(record(0,1100n,'B',1)),decode(record(0,1200n,'B',1,10253))];
+const cohort=[decode(record(100)),decode(record(101)),decode(record(102,123n,'A')),decode(record(103,456n,'N',4)),decode(record(800,-1000000n+789n,'B',1)),decode(record(4294967295,1000n,'A',1)),decode(record(0,1100n,'B',1)),decode(record(0,1200n,'B',1,10252))];
+assert.notEqual(decode(record(0,1200n,'B',1,10253)).id,cohort[7].id,'Instrument distinction remains part of stable ID; different contracts use separate cohorts');
 const expected={count:8,volume:14,buyVolume:7,sellVolume:3,unknownVolume:4,cvd:4};
 assert.equal(new Set(cohort.map(t=>t.id)).size,8);
 assert.notEqual(decode(record(100,123n,'A')).id,cohort[0].id,'Native side alone distinguishes otherwise identical records');

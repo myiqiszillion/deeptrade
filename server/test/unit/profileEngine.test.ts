@@ -152,8 +152,8 @@ export async function runProfileEngineTests(): Promise<void> {
     assert.equal(engine.getCoverage(), 'UNKNOWN');
 
     engine.setCoverage('COMPLETE');
-    assert.equal(engine.getCoverage(), 'COMPLETE');
-    assert.equal(engine.getVolumeProfile().coverage, 'COMPLETE');
+    assert.equal(engine.getCoverage(), 'PARTIAL', 'Unverified COMPLETE claim must be downgraded');
+    assert.equal(engine.getVolumeProfile().coverage, 'PARTIAL');
 
     engine.setCoverage('PARTIAL', 'Feed gap during session');
     assert.equal(engine.getCoverage(), 'PARTIAL');

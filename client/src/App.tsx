@@ -1396,6 +1396,7 @@ export const App: React.FC = () => {
 
       {/* Terminal Status Bar */}
       <TerminalStatusBar
+        dataEvidence={volumeProfile.dataEvidence}
         feedStatus={feedStatus}
         isConnected={isConnected}
         historySource={historySource}

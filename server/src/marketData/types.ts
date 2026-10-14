@@ -19,6 +19,7 @@ interface TradeQualityFlags {
  * Vendor payloads must never reach Footprint/Profile/VWAP/Tape/Replay directly.
  */
 export interface MarketTrade {
+  dataEvidence?: import('./dataEvidence.js').DataEvidence;
   vendorIdentity?: import('./tradeIdentity.js').VendorTradeIdentity;
   eventTsNs?: string;
   identityKind?: 'VENDOR_RECORD_V1' | 'LOCAL_DELIVERY_V1' | 'LEGACY';

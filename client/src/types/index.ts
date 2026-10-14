@@ -1,3 +1,4 @@
+export interface DataEvidence { source: 'VENDOR_LIVE'|'VENDOR_HISTORICAL'|'LOCAL_FIXTURE'|'PERSISTED_VENDOR'|'HISTORICAL_ESTIMATE'|'LEGACY'|'UNKNOWN'|'MIXED'; quality: 'EXACT'|'ESTIMATED'|'UNKNOWN'; coverage:'COMPLETE'|'PARTIAL'|'UNKNOWN';reason:string; delivery?:'OBSERVED'|'SQLITE'|'REPLAY';originalSource?:DataEvidence['source'];contracts?:string[];fromTs?:number;toTs?:number;cvdBaseline?:'OBSERVED_START'; }
 export type OrderSide = 'buy' | 'sell' | 'unknown';
 
 export type AssetClass =
@@ -59,6 +60,7 @@ export type AggressorProvenance =
   | 'UNKNOWN';
 
 export interface Tick {
+  dataEvidence?: DataEvidence;
   id: string;
   timestamp: number;
   price: number;
@@ -105,6 +107,7 @@ export interface FootprintPriceLevel {
 }
 
 export interface FootprintBar {
+  dataEvidence?: DataEvidence;
   id: string;
   time: number;
   open: number;
@@ -134,6 +137,7 @@ export interface FootprintBar {
  * per-price bid/ask split. It is drawn as a plain candle behind the live footprint.
  */
 export interface HistoricalBar {
+  dataEvidence?: DataEvidence;
   /** Bar OPEN time, epoch milliseconds. */
   time: number;
   open: number;
@@ -150,6 +154,7 @@ export interface HistoricalBar {
 }
 
 export interface VolumeProfileLevel {
+  unknownVolume?: number;
   price: number;
   volume: number;
   buyVolume: number;
@@ -161,6 +166,8 @@ export type ProfileProvenance = 'EXACT' | 'ESTIMATED' | 'UNAVAILABLE';
 export type ProfileCoverage = 'COMPLETE' | 'PARTIAL' | 'UNKNOWN';
 
 export interface VolumeProfileData {
+  unknownVolume?: number;
+  dataEvidence?: DataEvidence;
   poc: number;
   vah: number;
   val: number;
@@ -180,6 +187,7 @@ export interface TPOBracket {
 }
 
 export interface TPOProfileData {
+  dataEvidence?: DataEvidence;
   poc: number;
   vah: number;
   val: number;
@@ -311,6 +319,7 @@ export type WSClientMessage =
 export type WSServerMessage =
   | {
       type: 'INIT_STATE';
+      dataEvidence?: DataEvidence;
       symbol: string;
       instrument?: FuturesInstrument;
       bars: FootprintBar[];

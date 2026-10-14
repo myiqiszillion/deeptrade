@@ -1,3 +1,4 @@
+import { encodeTradeSource, restoreTradeSource } from '../marketData/dataEvidence.js';
 import { DatabaseSync } from 'node:sqlite';
 import { resolve, dirname } from 'node:path';
 import { mkdirSync, existsSync, statSync, unlinkSync } from 'node:fs';
@@ -708,7 +709,7 @@ export class MarketDataStore implements IMarketDataStore {
         if (existing === 'DUPLICATE') { duplicateIds.push(tradeId); continue; }
         const result = this.insertTradeStmt.run(provider, symbol, tradeId, ts, t.price, t.size, side,
           t.aggressorProvenance || 'UNKNOWN', t.receiveTs ?? Date.now(),
-          t.sequenceId !== undefined ? String(t.sequenceId) : null, t.sourceProvider || provider,
+          t.sequenceId !== undefined ? String(t.sequenceId) : null, encodeTradeSource(t.sourceProvider || provider, t),
           t.qualityFlags?.isCoalesced ? 1 : 0);
         if (Number(result.changes) !== 1) throw new Error('Trade INSERT did not insert exactly one row');
         insertedIds.push(tradeId);
@@ -1080,7 +1081,7 @@ export class MarketDataStore implements IMarketDataStore {
       receiveTs: r.receive_ts ? Number(r.receive_ts) : undefined,
       aggressorProvenance: r.aggressor_provenance as any,
       sequenceId: r.sequence_id ?? undefined,
-      sourceProvider: r.source_provider ?? undefined,
+      ...restoreTradeSource(r.source_provider),
       qualityFlags: r.is_coalesced ? { isCoalesced: true } : undefined,
     }));
   }
@@ -1129,7 +1130,7 @@ export class MarketDataStore implements IMarketDataStore {
       receiveTs: r.receive_ts ? Number(r.receive_ts) : undefined,
       aggressorProvenance: r.aggressor_provenance as any,
       sequenceId: r.sequence_id ?? undefined,
-      sourceProvider: r.source_provider ?? undefined,
+      ...restoreTradeSource(r.source_provider),
       qualityFlags: r.is_coalesced ? { isCoalesced: true } : undefined,
     }));
 

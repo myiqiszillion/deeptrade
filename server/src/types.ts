@@ -1,3 +1,4 @@
+import type { DataEvidence } from './marketData/dataEvidence.js';
 import { FuturesInstrument } from './futuresConfig.js';
 import { GEXProfile, OptionsFlowTrade } from './gexEngine.js';
 import { AlertEvent } from './alerts/types.js';
@@ -11,6 +12,7 @@ export type AggressorProvenance =
   | 'UNKNOWN';        // Undecidable or not provided
 
 export interface Tick {
+  dataEvidence?: DataEvidence;
   vendorIdentity?: import('./marketData/tradeIdentity.js').VendorTradeIdentity;
   eventTsNs?: string;
   identityKind?: 'VENDOR_RECORD_V1' | 'LOCAL_DELIVERY_V1' | 'LEGACY';
@@ -60,6 +62,7 @@ interface FootprintPriceLevel {
 }
 
 export interface FootprintBar {
+  dataEvidence?: DataEvidence;
   id: string;
   time: number; // Open timestamp
   open: number;
@@ -98,6 +101,7 @@ export function classifyAggressorSide(tick: Tick): 'buy' | 'sell' | 'unknown' {
  * instead of a convention someone could forget — there is no `levels` field to fabricate.
  */
 export interface HistoricalBar {
+  dataEvidence?: DataEvidence;
   /** Bar OPEN time, epoch milliseconds. */
   time: number;
   open: number;
@@ -115,6 +119,7 @@ export interface HistoricalBar {
 }
 
 export interface VolumeProfileLevel {
+  unknownVolume?: number;
   price: number;
   volume: number;
   buyVolume: number;
@@ -126,6 +131,8 @@ export type ProfileProvenance = 'EXACT' | 'ESTIMATED' | 'UNAVAILABLE';
 export type ProfileCoverage = 'COMPLETE' | 'PARTIAL' | 'UNKNOWN';
 
 export interface VolumeProfileData {
+  unknownVolume?: number;
+  dataEvidence?: DataEvidence;
   poc: number;
   vah: number;
   val: number;
@@ -145,6 +152,7 @@ export interface TPOBracket {
 }
 
 export interface TPOProfileData {
+  dataEvidence?: DataEvidence;
   poc: number;
   vah: number;
   val: number;
@@ -192,6 +200,7 @@ export interface AbsorptionAlert {
 export type WSServerMessage =
   | {
       type: 'INIT_STATE';
+      dataEvidence?: DataEvidence;
       symbol: string;
       instrument: FuturesInstrument;
       bars: FootprintBar[];

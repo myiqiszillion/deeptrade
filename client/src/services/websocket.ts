@@ -1,6 +1,7 @@
 import {
   AbsorptionAlert,
   DeepTrade,
+  DataEvidence,
   EnhancedFeedStatus,
   FootprintBar,
   FuturesInstrument,
@@ -42,6 +43,7 @@ export function readAuthToken(): string | null {
 
 export interface WSListeners {
   onInitState?: (data: {
+    dataEvidence?: DataEvidence;
     symbol: string;
     instrument?: FuturesInstrument;
     bars: FootprintBar[];

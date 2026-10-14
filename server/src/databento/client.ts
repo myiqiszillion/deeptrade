@@ -50,6 +50,7 @@ interface DatabentoClientOptions {
 }
 
 export class DatabentoHttpClient {
+  public readonly sourceKind: 'LOCAL_FIXTURE' | 'VENDOR_HISTORICAL';
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly fetchFn: typeof fetch;
@@ -62,6 +63,7 @@ export class DatabentoHttpClient {
       (globalThis as any)[Symbol.for('deepchart.offline.guard')].fail('credentialed HTTP provider requires mock fetch');
     }
     const cfg = resolveDatabentoConfig();
+    this.sourceKind=options.fetchFn?'LOCAL_FIXTURE':'VENDOR_HISTORICAL';
     this.requestsEnabled = options.requestsEnabled !== false;
     this.apiKey = options.apiKey || process.env.DATABENTO_API_KEY || '';
     this.baseUrl = (options.baseUrl || process.env.DATABENTO_HIST_URL || cfg.histBaseUrl).replace(/\/+$/, '');

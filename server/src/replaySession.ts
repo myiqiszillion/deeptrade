@@ -1,3 +1,5 @@
+import { contractWindow } from './marketData/dataEvidence.js';
+import type { WSServerMessage } from './types.js';
 import { BacktestReplayEngine } from './backtestEngine.js';
 import { FootprintEngine } from './footprintEngine.js';
 import { FuturesInstrument } from './futuresConfig.js';
@@ -42,6 +44,7 @@ export class ReplaySession {
     ticks: Tick[] = []
   ) {
     this.session.setMode('REPLAY');
+    this.session.setEvidenceProvider(this.symbol, () => ({...this.profileEngine.getDataEvidence(),delivery:'REPLAY'}),true);
     const durationMs = TIMEFRAMES[timeframe] || 60000;
     this.footprintEngine = new FootprintEngine(instrument.tickSize, durationMs, 3.0, 1.0, 3);
     const startTs = ticks[0]?.timestamp || 0;
@@ -49,7 +52,7 @@ export class ReplaySession {
     this.vwapEngine = new VWAPEngine(startTs);
 
     if (ticks.length > 0) {
-      this.replayEngine.loadTicks(ticks);
+      this.replayEngine.loadTicks(contractWindow(ticks).ticks);
     }
 
     this.replayEngine.setCallback((tick: Tick) => {
@@ -57,22 +60,22 @@ export class ReplaySession {
       this.profileEngine.processTick(tick);
       const vwapPoint = this.vwapEngine.processTick(tick);
 
-      this.session.send({ type: 'TICK', tick });
+      this.send({ type: 'TICK', tick });
       if (affectedBars && affectedBars.length > 0) {
         for (const bar of affectedBars) {
-          this.session.send({ type: 'BAR_UPDATE', bar });
+          this.send({ type: 'BAR_UPDATE', bar });
         }
       } else {
         if (correctedBar) {
-          this.session.send({ type: 'BAR_UPDATE', bar: correctedBar });
+          this.send({ type: 'BAR_UPDATE', bar: correctedBar });
         }
         if (closedBar) {
-          this.session.send({ type: 'BAR_CLOSE', bar: closedBar });
+          this.send({ type: 'BAR_CLOSE', bar: closedBar });
         }
-        this.session.send({ type: 'BAR_UPDATE', bar: currentBar });
+        this.send({ type: 'BAR_UPDATE', bar: currentBar });
       }
       if (vwapPoint) {
-        this.session.send({ type: 'VWAP_UPDATE', point: vwapPoint });
+        this.send({ type: 'VWAP_UPDATE', point: vwapPoint });
       }
 
       // Synced REPLAY_FRAME: price + volume + best-effort GEX/IV/ES/NQ/signal for that timestamp
@@ -89,7 +92,7 @@ export class ReplaySession {
           const nqBars = marketDataStore.queryBars({ provider: 'databento', symbol: 'NQ', timeframe: this.timeframe, limit: 1, beforeTime: tick.timestamp + 1 } as any);
           nqPrice = nqBars.bars[0]?.close ?? null;
         } catch {}
-        this.session.send({
+        this.send({
           type: 'REPLAY_FRAME',
           frame: {
             timestamp: tick.timestamp,
@@ -103,7 +106,7 @@ export class ReplaySession {
 
       const now = Date.now();
       if (now - this.lastProfileUpdate > 500) {
-        this.session.send({
+        this.send({
           type: 'PROFILE_UPDATE',
           volumeProfile: this.profileEngine.getVolumeProfile(),
           tpo: this.profileEngine.getTPOProfile(),
@@ -125,7 +128,7 @@ export class ReplaySession {
         this.sendProfileAndVwapUpdate();
       }
 
-      this.session.send({
+      this.send({
         type: 'REPLAY_STATE',
         progress: {
           ...progress,
@@ -141,7 +144,7 @@ export class ReplaySession {
         const isEnded = progress.currentIndex >= progress.totalTicks;
         const nextMode = isEnded ? 'REPLAY_ENDED' : 'REPLAY';
         this.session.setMode(nextMode);
-        this.session.send({
+        this.send({
           type: 'REPLAY_STATE',
           progress: {
             ...progress,
@@ -171,13 +174,15 @@ export class ReplaySession {
       limit: options.limit ?? 5000,
     });
 
-    this.replayEngine.loadTicks(ticks);
+    this.replayEngine.loadTicks(contractWindow(ticks).ticks);
     this.rebuildState();
     return this.replayEngine.getRecordedCount();
   }
 
+  private send(msg: WSServerMessage): void { this.session.send({...msg,symbol:this.symbol}); }
+
   public sendProfileAndVwapUpdate(): void {
-    this.session.send({
+    this.send({
       type: 'PROFILE_UPDATE',
       volumeProfile: this.profileEngine.getVolumeProfile(),
       tpo: this.profileEngine.getTPOProfile(),
@@ -188,7 +193,7 @@ export class ReplaySession {
     const bars = this.footprintEngine.getAllBars();
     const currentBar = this.footprintEngine.getCurrentBar();
 
-    this.session.send({
+    this.send({
       type: 'INIT_STATE',
       symbol: this.symbol,
       instrument: this.instrument,
@@ -205,12 +210,13 @@ export class ReplaySession {
       deepTradeThresholdUsd: 50000,
     });
     if (currentBar) {
-      this.session.send({ type: 'BAR_UPDATE', bar: currentBar });
+      this.send({ type: 'BAR_UPDATE', bar: currentBar });
     }
   }
 
   public start(speed = 1): void {
     this.session.setMode('REPLAY');
+    this.session.setEvidenceProvider(this.symbol, () => ({...this.profileEngine.getDataEvidence(),delivery:'REPLAY'}),true);
     this.replayEngine.start(speed);
   }
 
@@ -261,6 +267,7 @@ export class ReplaySession {
   }
 
   public dispose(): void {
+    this.session.clearEvidenceProvider(this.symbol,true);
     if (this.progressInterval) {
       clearInterval(this.progressInterval);
       this.progressInterval = null;

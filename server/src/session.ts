@@ -1,3 +1,4 @@
+import { annotateMessage, DataEvidence, evidence } from './marketData/dataEvidence.js';
 import { WebSocket } from 'ws';
 import { User } from './auth/types.js';
 import { WSServerMessage } from './types.js';
@@ -36,6 +37,9 @@ export class ChartSession {
   public isAuthenticated = false;
 
   private messageTimestamps: number[] = [];
+  public clearEvidenceProvider(symbol: string, replay=false): void { this.evidenceProviders.delete(`${replay}:${symbol}`); }
+  private evidenceProviders = new Map<string, () => DataEvidence>();
+  public setEvidenceProvider(symbol: string, provider: () => DataEvidence, replay=false): void { this.evidenceProviders.set(`${replay}:${symbol}`,provider); }
 
   constructor(private readonly socket: WebSocket) {}
 
@@ -79,7 +83,9 @@ export class ChartSession {
       this.socket.close(1008, 'Client buffer overflow');
       return;
     }
-    this.socket.send(JSON.stringify(msg));
+    const symbol=msg.symbol || this.subscribedSymbol;
+    const provider=this.evidenceProviders.get(`${this.isReplay()}:${symbol}`);
+    this.socket.send(JSON.stringify(annotateMessage(msg,provider?.() || evidence('UNKNOWN'))));
   }
 
   /** Close this session with a code and reason. */
