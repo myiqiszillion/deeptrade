@@ -64,6 +64,11 @@ try {
   assert(messages.some(m => m.type === 'INIT_STATE' && m.symbol === 'ES'));
   const context = await backend.offlineTerminalTestContext('ES');
   context.provider = 'fixture'; // Explicit provenance; no vendor factory is started.
+  const healthClock = { wall: () => Date.UTC(2026,9,13,15), mono: () => 100 };
+  context.clock = healthClock; context.health.clock = healthClock;
+  context.health.begin(); context.health.signal('AUTHENTICATED'); context.health.signal('SUBSCRIBING'); context.health.signal('ACKNOWLEDGED'); context.refreshFeedHealth();
+  await page.waitForTimeout(150);
+  assert((await page.getByTestId('feed-health').textContent()).includes('INDETERMINATE'));
   for (const trade of trades) context.handleTrade(trade); // Runtime private method, test-only process.
   await page.waitForTimeout(800);
   async function components() {
@@ -77,11 +82,11 @@ try {
           if (fiber.child) stack.push(fiber.child);
           if (fiber.sibling) stack.push(fiber.sibling);
           const name = fiber.type?.name;
-          if (['FootprintCanvas', 'CVDPanel', 'ProfileOverlay', 'TerminalHeader'].includes(name)) {
+          if (['FootprintCanvas', 'CVDPanel', 'ProfileOverlay', 'TerminalHeader', 'TerminalStatusBar'].includes(name)) {
             const p = fiber.memoizedProps;
             result[name] = { bars: p.bars, historyBars: p.historyBars, currentCVD: p.currentCVD,
               volumeProfile: p.volumeProfile, symbol: p.symbol, timeframe: p.timeframe, chartMode: p.chartMode, tickSize: p.tickSize,
-              instrument: p.instrument, feedStatus: p.feedStatus };
+              instrument: p.instrument, feedStatus: p.feedStatus, isConnected: p.isConnected, feedHealth: p.feedHealth };
           }
       }
       return result;
@@ -109,6 +114,14 @@ try {
   const provenanceBadge=await page.getByTestId('data-provenance').textContent();
   assert(provenanceBadge.includes('LOCAL_FIXTURE') && provenanceBadge.includes('PARTIAL') && provenanceBadge.includes('CVD observed baseline'));
 
+  assert.equal(state.TerminalStatusBar.isConnected,true,'Actual browser lifecycle callback must reach registered App listener');
+  assert.equal(state.TerminalStatusBar.feedHealth.state,'LIVE');
+  assert((await page.getByTestId('feed-health').textContent()).includes('LIVE'));
+  healthClock.mono = () => 61101; context.refreshFeedHealth(); await page.waitForTimeout(150);
+  assert((await page.getByTestId('feed-health').textContent()).includes('STALE'));
+  assert((await page.getByTestId('feed-health').getAttribute('title')).includes('UNKNOWN'));
+  context.health.signal('CONTROL'); context.refreshFeedHealth(); await page.waitForTimeout(150);
+  assert((await page.getByTestId('feed-health').textContent()).includes('INDETERMINATE'));
   const bars = state.FootprintCanvas.bars;
   assert.deepEqual(bars.map(b => [b.time, b.open, b.high, b.low, b.close, b.volume, b.buyVolume, b.sellVolume]), [
     [Date.UTC(2026, 9, 12, 15, 33), 100, 100.25, 100, 100.25, 5, 2, 3],
@@ -122,7 +135,8 @@ try {
   await page.locator('button[title="Switch to candles mode"]').click();
   await page.waitForTimeout(200);
   const candleState = await components(); assert.equal(candleState.FootprintCanvas.chartMode, 'candles');
-  assert.deepEqual(candleState.FootprintCanvas.bars, bars);
+  assert.deepEqual(candleState.FootprintCanvas.bars.map(({dataEvidence,...numeric})=>numeric), bars.map(({dataEvidence,...numeric})=>numeric));
+  assert(candleState.FootprintCanvas.bars.every(b=>b.dataEvidence.source==='LOCAL_FIXTURE'&&b.dataEvidence.coverage==='PARTIAL'));
   const stopIndex = messages.length;
   const finalTrade = fixture(4, 'UNKNOWN', 101, 1);
   context.handleTrade(finalTrade);
@@ -135,6 +149,8 @@ try {
   assert(messages.slice(stopIndex).some(m => m.type === 'BAR_UPDATE' && m.bar.volume === 10));
   assert(messages.slice(stopIndex).some(m => m.type === 'PROFILE_UPDATE' && m.volumeProfile.totalVolume === 15));
   assert.equal(context.feedStatus, 'UNAVAILABLE');
+  assert((await page.getByTestId('feed-health').textContent()).includes('UNAVAILABLE'));
+  assert(messages.slice(stopIndex).some(m => m.type==='INIT_STATE' && m.feedHealth?.state==='UNAVAILABLE'));
   // Invoke the real header's normal symbol-selection callback, not a test reducer.
   await page.evaluate(() => {
     const root = document.getElementById('root');
@@ -158,6 +174,9 @@ try {
   assert.equal(nqState.FootprintCanvas.bars.reduce((n, b) => n + b.volume, 0), 6);
   assert.equal(nqState.ProfileOverlay.volumeProfile.dataEvidence.source,'LOCAL_FIXTURE');
   assert.equal(nqState.ProfileOverlay.volumeProfile.dataEvidence.coverage,'PARTIAL');
+  assert((await page.getByTestId('feed-health').textContent()).includes('DISABLED'));
+  nq.health.stop('Fixture persistence BLOCKED',true); nq.refreshFeedHealth(); await page.waitForTimeout(150);
+  assert((await page.getByTestId('feed-health').textContent()).includes('BLOCKED'));
   assert.equal(nqState.CVDPanel.currentCVD, -6); assert.equal(nqState.ProfileOverlay.volumeProfile.totalVolume, 6);
   assert.equal(externalCalls, 0); assert.deepEqual(browserErrors, []);
   await page.screenshot({ path: path.join(output, 'terminal.png') });

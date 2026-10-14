@@ -59,6 +59,7 @@ export interface WSListeners {
     historySource?: 'NONE' | 'REAL_TICKS' | 'REAL_BARS';
     historyBars?: HistoricalBar[];
     feedStatus?: 'LIVE' | 'UNAVAILABLE';
+    feedHealth?: import('../types').FeedHealthSnapshot;
     mode?: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
   }) => void;
   onTick?: (tick: Tick) => void;
@@ -103,6 +104,7 @@ export class DeepChartWSClient {
   private reconnectTimer: any = null;
   private disconnectTimer: any = null;
   private pingTimer: any = null;
+  private pendingPing: { token: number; mono: number } | null = null;
   private staleCheckTimer: any = null;
   private intentionalClose = false;
 
@@ -160,8 +162,12 @@ export class DeepChartWSClient {
     };
   }
 
+  private broadcast(action: (listeners: WSListeners) => void) {
+    for (const listeners of new Set([this.listeners, ...Array.from(this.listenersMap.values(), entry => entry.listeners)])) action(listeners);
+  }
+
   private notifyHealth() {
-    this.listeners.onFeedHealthUpdate?.(this.getFeedHealth());
+    this.broadcast(l => l.onFeedHealthUpdate?.(this.getFeedHealth()));
   }
 
   private startStaleChecker() {
@@ -169,11 +175,11 @@ export class DeepChartWSClient {
     this.staleCheckTimer = setInterval(() => {
       if (!this.isConnected) return;
       const now = Date.now();
-      // True stale condition: No messages received from server across staleThresholdMs.
-      // If messages (pongs, orderbook, status) are arriving, the feed is healthy even if market has no trades.
+      // Browser transport silence only. PONG/status activity never attests vendor freshness.
+      // Authoritative vendor health arrives separately in the backend INIT_STATE snapshot.
       if (this.lastMessageTs && (now - this.lastMessageTs > this.staleThresholdMs)) {
         this.subscriptionState = 'STALE';
-        this.listeners.onFeedStatusChange?.('STALE');
+        // Browser transport silence is separate from backend vendor health.
       } else if (this.subscriptionState === 'STALE') {
         this.subscriptionState = 'RECOVERING';
       }
@@ -199,7 +205,7 @@ export class DeepChartWSClient {
       // Re-use an already open or connecting socket (e.g. React 18 StrictMode remount)
       if (this.ws.readyState === WebSocket.OPEN) {
         this.isConnected = true;
-        this.listeners.onConnectionChange?.(true);
+        this.broadcast(l => l.onConnectionChange?.(true));
         this.notifyHealth();
         return;
       }
@@ -226,7 +232,7 @@ export class DeepChartWSClient {
       this.ws.onopen = () => {
         this.isConnected = true;
         this.reconnectCount = 0;
-        this.listeners.onConnectionChange?.(true);
+        this.broadcast(l => l.onConnectionChange?.(true));
         this.startPing();
         this.startStaleChecker();
         this.notifyHealth();
@@ -312,9 +318,10 @@ export class DeepChartWSClient {
               dispatch(l => l.onHistoryResponse?.(msg));
               break;
             case 'PONG':
-              if (typeof (msg as any).timestamp === 'number') {
-                const rtt = Math.max(1, Date.now() - (msg as any).timestamp);
-                dispatch(l => l.onLatencyUpdate?.(rtt));
+              if (this.pendingPing && (msg as any).timestamp === this.pendingPing.token) {
+                const rtt = performance.now() - this.pendingPing.mono;
+                this.pendingPing = null;
+                if (Number.isFinite(rtt) && rtt >= 0) dispatch(l => l.onLatencyUpdate?.(Math.round(rtt)));
               }
               break;
             case 'ERROR':
@@ -337,8 +344,8 @@ export class DeepChartWSClient {
         this.isConnected = false;
         this.reconnectCount++;
         this.subscriptionState = 'UNSUBSCRIBED';
-        this.listeners.onConnectionChange?.(false);
-        this.listeners.onLatencyUpdate?.(0);
+        this.broadcast(l => l.onConnectionChange?.(false));
+        this.broadcast(l => l.onLatencyUpdate?.(0));
         this.notifyHealth();
 
         if (this.intentionalClose) {
@@ -351,11 +358,11 @@ export class DeepChartWSClient {
         if (code === 1008) {
           // Authentication / entitlement refused: retrying cannot help until the user signs in.
           console.warn(`[DeepChart WS] Server refused the session (${code}): ${reason}`);
-          this.listeners.onServerClose?.({ code, reason: reason || 'Not authorized' });
+          this.broadcast(l => l.onServerClose?.({ code, reason: reason || 'Not authorized' }));
           return;
         }
         if (code === 1013) {
-          this.listeners.onServerClose?.({ code, reason: reason || 'Server at capacity' });
+          this.broadcast(l => l.onServerClose?.({ code, reason: reason || 'Server at capacity' }));
           console.log('[DeepChart WS] Server at capacity. Retrying in 15s...');
           this.reconnectTimer = setTimeout(() => this.connect(), 15000);
           return;
@@ -465,7 +472,9 @@ export class DeepChartWSClient {
     const sendPing = () => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         try {
-          this.ws.send(JSON.stringify({ type: 'PING', timestamp: Date.now() }));
+          const token = Date.now();
+          this.pendingPing = { token, mono: performance.now() };
+          this.ws.send(JSON.stringify({ type: 'PING', timestamp: token }));
         } catch {}
       }
     };
@@ -474,6 +483,7 @@ export class DeepChartWSClient {
   }
 
   private stopPing() {
+    this.pendingPing = null;
     if (this.pingTimer) {
       clearInterval(this.pingTimer);
       this.pingTimer = null;
@@ -500,7 +510,7 @@ export class DeepChartWSClient {
         const socket = this.ws;
         this.ws = null;
         this.isConnected = false;
-        this.listeners.onConnectionChange?.(false);
+        this.broadcast(l => l.onConnectionChange?.(false));
         socket.onopen = null;
         socket.onmessage = null;
         socket.onclose = null;

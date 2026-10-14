@@ -356,6 +356,8 @@ export type WSServerMessage =
   | { type: 'HISTORY_RESPONSE'; symbol: string; timeframe: string; provider?: string; bars: HistoricalBar[]; hasMore: boolean; cursor?: number | { provider: string; symbol: string; timeframe?: string; beforeTime: number; beforeId?: string }; requestId?: string }
   | { type: 'ALERT_EVENT'; alert: AlertEvent; symbol?: string };
 
+export interface FeedHealthSnapshot { state: string; reason: string; times: Record<string, number | null>; counters: Record<string, number>; policy: string }
+
 export type EnhancedFeedStatus =
   | 'LIVE'
   | 'REALTIME'

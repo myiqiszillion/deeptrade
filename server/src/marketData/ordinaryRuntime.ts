@@ -1,3 +1,4 @@
+import { healthClock, HealthClock } from './feedHealth.js';
 /** Ordinary backend approval is immutable at boot; credentials alone never activate it. */
 export interface TradesRuntimeProfile {
   version: 1; approved: true; approvalId: string; expiresAt: string;
@@ -28,12 +29,12 @@ export class OrdinaryRuntimeGate {
   readonly reason: string;
   readonly counters = { connectionAttempts: 0, subscriptionCommands: 0, subscriptionAcks: 0 };
   private readonly key: string;
-  constructor(env: NodeJS.ProcessEnv, now = Date.now()) {
+  constructor(env: NodeJS.ProcessEnv, now = Date.now(), private clock: HealthClock = healthClock) {
     const result = validateOrdinaryProfile(env, now);
     this.profile = result.profile; this.reason = result.reason;
     this.key = result.profile ? env.DATABENTO_API_KEY!.trim() : '';
   }
-  allows(symbol: string): boolean { return !!this.profile && symbol === this.profile.symbol && Date.parse(this.profile.expiresAt) > Date.now(); }
+  allows(symbol: string): boolean { return !!this.profile && symbol === this.profile.symbol && Date.parse(this.profile.expiresAt) > this.clock.wall(); }
   credentials(): string { return this.key; }
   claimConnection(symbol: string): void {
     if (!this.allows(symbol)) throw new Error('Ordinary runtime scope/expiry denied');

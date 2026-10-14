@@ -1,10 +1,28 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { test, expect } from '@playwright/test';
 
 test.describe('DeepChart Trading Terminal E2E Verification Suite', () => {
   const browserErrors: Error[] = [];
+  let diagnostics: any[] = [];
+  test.afterEach(async ({ page }, info) => {
+    if (info.status === info.expectedStatus) return;
+    const dir=join(homedir(),'.codex','private-acceptance',`phase05-browser-failure-${Date.now()}`); mkdirSync(dir,{recursive:true});
+    await page.screenshot({path:join(dir,'failure.png'),fullPage:true});
+    const load=await page.evaluate(()=>({url:location.origin+location.pathname,readyState:document.readyState,rootChildren:document.getElementById('root')?.childElementCount,bodyText:document.body.innerText.slice(0,2000),feedHealthText:document.querySelector('[data-testid=feed-health]')?.textContent,feedHealthReason:document.querySelector('[data-testid=feed-health]')?.getAttribute('title'),navigation:performance.getEntriesByType('navigation').map(x=>x.toJSON())}));
+    writeFileSync(join(dir,'diagnostics.json'),JSON.stringify({test:info.title,status:info.status,events:diagnostics,load},null,2));
+    console.error('Preserved browser failure diagnostics: '+dir);
+  });
 
   test.beforeEach(async ({ page }) => {
-    browserErrors.length = 0;
+    browserErrors.length = 0; diagnostics=[];
+    const safeUrl=(u:string)=>{try{const x=new URL(u);return x.origin+x.pathname;}catch{return 'unparsed';}};
+    page.on('console',m=>{if(m.type()==='error'||m.type()==='warning')diagnostics.push({kind:'console',type:m.type(),message:m.text().replace(/(?:Bearer|token|jwt|api_key)[=: ]+[^ ]+/gi,'[REDACTED]')});});
+    page.on('requestfailed',r=>diagnostics.push({kind:'requestfailed',url:safeUrl(r.url()),failure:r.failure()}));
+    page.on('response',r=>{if(r.request().resourceType()==='document'||r.status()>=400)diagnostics.push({kind:'response',url:safeUrl(r.url()),status:r.status()});});
+    page.on('load',()=>diagnostics.push({kind:'load',at:Date.now()}));
+    page.on('domcontentloaded',()=>diagnostics.push({kind:'domcontentloaded',at:Date.now()}));
     page.on('pageerror', (err) => {
       console.error('[Browser Exception]:', err.message);
       browserErrors.push(err);
@@ -223,8 +241,14 @@ test.describe('DeepChart Trading Terminal E2E Verification Suite', () => {
     // Contains FEED indicator (either REALTIME, UNAVAILABLE, or RECONNECTING)
     await expect(statusBar).toContainText(/FEED:/i);
 
-    const feedText = await statusBar.innerText();
-    expect(feedText).toMatch(/FEED:\s*(REALTIME|UNAVAILABLE|RECONNECTING)/i);
+    const health = page.getByTestId('feed-health');
+    // Socket-open can precede INIT_STATE. Wait for backend evidence, not a fixed sleep.
+    // A previously stopped OFF context may truthfully remain UNAVAILABLE.
+    await expect(health).toHaveAttribute('title', /activation OFF|start is OFF|provider=none|feed stopped|past observations/i);
+    const feedText = await health.innerText();
+    expect(feedText).toMatch(/FEED:\s*(DISABLED|UNAVAILABLE)/i);
+    expect(feedText).not.toMatch(/FEED:\s*(LIVE|REALTIME)/i);
+    console.log('[TC10 backend health]', feedText, await health.getAttribute('title'));
 
     expect(browserErrors.length).toBe(0);
   });

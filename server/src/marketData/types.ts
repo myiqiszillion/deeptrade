@@ -75,9 +75,10 @@ interface MarketDepthDelta {
 export type MarketDepthEvent = MarketDepthSnapshot | MarketDepthDelta;
 
 /** Vendor-agnostic connection state. Public protocol maps this to LIVE | UNAVAILABLE. */
-type FeedConnectionState = 'UNAVAILABLE' | 'CONNECTING' | 'LIVE' | 'ERROR';
+type FeedConnectionState = 'UNAVAILABLE' | 'DISABLED' | 'CONNECTING' | 'TRANSPORT' | 'AUTHENTICATED' | 'SUBSCRIBING' | 'ACKNOWLEDGED' | 'CONTROL' | 'LIVE' | 'ERROR';
 
 export interface FeedStatusEvent {
+  approvalExpiresAt?: string;
   state: FeedConnectionState;
   /** Human-readable, credential-free explanation (e.g. "no API key configured"). */
   reason?: string;

@@ -25,6 +25,6 @@ export function createMarketDataFeed(symbol: string, _instrument: FuturesInstrum
   }
   const reason = gate?.profile ? `Symbol ${symbol} denied by approved ordinary runtime profile` : gate?.reason || 'No approved ordinary runtime profile: vendor activation OFF';
   return { provider: 'none', feed: { provider: 'none', symbol,
-    connect: async () => { handlers.onStatus({ state: 'UNAVAILABLE', reason, provider: 'none', symbol }); },
+    connect: async () => { handlers.onStatus({ state: 'DISABLED', reason, provider: 'none', symbol }); },
     disconnect: async () => {}, isConnected: () => false } };
 }

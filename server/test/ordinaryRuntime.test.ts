@@ -69,7 +69,7 @@ try {
   assert.equal(gate.counters.subscriptionAcks, 0, 'Authentication is not subscription ACK');
   assert.deepEqual(commands, ['schema=trades|stype_in=continuous|symbols=ES.c.0|snapshot=0|is_last=1']);
   const ack = Buffer.alloc(320); ack[0] = 80; ack[1] = 0x17; ack[319] = 1; vendorSocket!.write(ack);
-  await wait(() => gate.counters.subscriptionAcks === 1); assert.equal(ctx.feedStatus, 'LIVE');
+  await wait(() => gate.counters.subscriptionAcks === 1); assert.equal(ctx.feedStatus, 'UNAVAILABLE'); assert.equal(ctx.getFeedHealth().state, 'INDETERMINATE');
   await new Promise<void>(r => http.listen(0, '127.0.0.1', r));
   const open = async () => { const c = new WebSocket(`ws://127.0.0.1:${(http.address() as net.AddressInfo).port}`); clients.push(c); await new Promise<void>((r, j) => { c.once('open', r); c.once('error', j); }); return c; };
   await Promise.all([open(), open(), open()]); await wait(() => ctx.subscriberCount === 3);

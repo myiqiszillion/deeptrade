@@ -186,9 +186,10 @@ export class ControlledTradesSession {
     if (this.timer) { (this.options.deadlineClock?.clear ?? clearTimeout)(this.timer); this.timer = undefined; }
     // disconnect synchronously destroys TCP before final analytics publication.
     void this.client?.disconnect();
+    this.context.health.stop(reason);
     this.context.flushAcceptanceTerminal();
     this.context.feedReason = reason;
-    this.context.setFeedStatus('UNAVAILABLE');
+    this.context.setFeedStatus('UNAVAILABLE', true);
     this.state = state;
     this.publish(true);
     ControlledTradesSession.lease = undefined;

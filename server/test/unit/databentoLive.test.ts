@@ -257,9 +257,11 @@ export async function runDatabentoLiveTests(): Promise<void> {
     assert.ok(ws.url.includes('dataset=GLBX.MDP3'), `URL should contain dataset, got ${ws.url}`);
     assert.ok(ws.url.includes('symbols=ES'), `URL should contain symbols, got ${ws.url}`);
     assert.equal(client.isConnected(), true);
-    assert.ok(statuses.some((s) => s.state === 'LIVE'));
+    assert.ok(statuses.some((s) => s.state === 'TRANSPORT'));
 
     ws.emitMessage({ status: 'ok', type: 'auth_success' });
+    assert(!statuses.some(s => s.state === 'LIVE'));
+    ws.emitMessage({ status: 'ok', type: 'subscription_ack' });
 
     ws.emitMessage({
       hd: { instrument_id: 101, ts_event: 1711033200000000000 },

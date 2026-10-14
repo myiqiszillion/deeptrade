@@ -227,6 +227,7 @@ export type WSServerMessage =
       recentTicks?: Tick[];
       /** 'LIVE' when a real feed streams this instrument, 'UNAVAILABLE' when none is wired. */
       feedStatus?: 'LIVE' | 'UNAVAILABLE';
+      feedHealth?: ReturnType<import('./marketData/feedHealth.js').FeedHealth['snapshot']>;
       mode?: 'LIVE' | 'REPLAY' | 'REPLAY_PAUSED' | 'REPLAY_ENDED';
     }
   | { type: 'TICK'; tick: Tick; symbol?: string }

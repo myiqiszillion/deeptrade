@@ -14,6 +14,7 @@ interface TerminalStatusBarProps {
   dataSource?: string;
   delayNotice?: string;
   dataEvidence?: DataEvidence;
+  feedHealth?: import('../../types').FeedHealthSnapshot;
 }
 
 export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
@@ -29,10 +30,13 @@ export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
   dataSource,
   delayNotice,
   dataEvidence,
+  feedHealth,
 }) => {
   // Resolve unified display status
   let displayStatus: EnhancedFeedStatus = 'UNAVAILABLE';
-  if (!isConnected) {
+  if (feedHealth && feedHealth.state !== 'LIVE') {
+    displayStatus = feedHealth.state === 'STALE' ? 'STALE' : feedHealth.state === 'MARKET_CLOSED' ? 'MARKET_CLOSED' : 'UNAVAILABLE';
+  } else if (!isConnected) {
     displayStatus = 'RECONNECTING';
   } else if (feedStatus === 'LIVE' || feedStatus === 'REALTIME') {
     displayStatus = 'REALTIME';
@@ -54,13 +58,13 @@ export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
       label: 'REALTIME',
       color: 'text-[#19C37D]',
       dotClass: 'bg-[#19C37D] shadow-[0_0_8px_#19C37D]',
-      title: 'Real-time CME Globex licensed vendor feed (live sub-second tick stream)',
+      title: 'Recent backend market observation; latency and licensing not established by this badge',
     },
     REALTIME: {
       label: 'REALTIME',
       color: 'text-[#19C37D]',
       dotClass: 'bg-[#19C37D] shadow-[0_0_8px_#19C37D]',
-      title: 'Real-time CME Globex licensed vendor feed (live sub-second tick stream)',
+      title: 'Recent backend market observation; latency and licensing not established by this badge',
     },
     DELAYED: {
       label: delayNotice || 'DELAYED (15M)',
@@ -72,7 +76,7 @@ export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
       label: 'STALE',
       color: 'text-[#F59E0B]',
       dotClass: 'bg-[#F59E0B] animate-pulse',
-      title: 'Feed connected but no recent ticks received',
+      title: 'Vendor activity silence exceeds local policy; quiet versus stalled not determined',
     },
     RECONNECTING: {
       label: 'RECONNECTING',
@@ -95,14 +99,15 @@ export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
   };
 
   const currentCfg = statusConfig[displayStatus];
+  const shownHealth = !isConnected && feedHealth?.state === 'LIVE' ? 'UNAVAILABLE' : feedHealth?.state;
 
   return (
     <footer className="terminal-status-bar select-none" role="contentinfo">
       {/* Left: Feed Status */}
-      <div className="flex items-center gap-1.5 shrink-0" title={currentCfg.title}>
+      <div data-testid="feed-health" className="flex items-center gap-1.5 shrink-0" title={!isConnected && feedHealth?.state === 'LIVE' ? 'Browser disconnected; last backend observation is retained, current vendor freshness unknown' : feedHealth?.reason || currentCfg.title}>
         <span className={`w-2 h-2 rounded-full ${currentCfg.dotClass}`} />
         <span className={`font-semibold tracking-wide ${currentCfg.color}`}>
-          FEED: {currentCfg.label}
+          FEED: {shownHealth || currentCfg.label}
         </span>
         {dataSource && (
           <span className="text-[9px] px-1 py-0.2 bg-white/5 text-slate-400 rounded hidden md:inline">
@@ -165,7 +170,7 @@ export const TerminalStatusBar: React.FC<TerminalStatusBarProps> = ({
       {/* Right: Technical Diagnostics */}
       <div className="ml-auto flex items-center gap-3 text-[#7F8B97] text-[10px] shrink-0 font-mono">
         <span className="hidden md:inline">
-          <span className="text-[#4E5965]">Latency:</span>{' '}
+          <span className="text-[#4E5965]">Browser RTT:</span>{' '}
           <span className="text-[#E7EDF3]">{typeof latencyMs === 'number' && latencyMs > 0 ? `${latencyMs}ms` : '--'}</span>
         </span>
 

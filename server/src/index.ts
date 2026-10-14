@@ -484,6 +484,7 @@ export const httpServer = createServer(async (req, res) => {
           uptimeSec: Math.round(process.uptime()),
           sessions: sessions.size,
           feedStatus: ctx?.feedStatus || 'UNAVAILABLE',
+          feedHealth: ctx?.getFeedHealth(),
         })
       );
       return;
@@ -499,6 +500,7 @@ export const httpServer = createServer(async (req, res) => {
         timeframe: '1m',
         feed: ctx?.provider || 'none',
         feedStatus: ctx?.feedStatus || 'UNAVAILABLE',
+          feedHealth: ctx?.getFeedHealth(),
         feedReason: ctx?.feedReason,
         tradeDurability: ctx?.getDurability(),
         lastTradeTs: ctx?.lastTradeTs || 0,
@@ -549,6 +551,7 @@ export const httpServer = createServer(async (req, res) => {
           symbol: ctx.symbol,
           provider: ctx.provider,
           feedStatus: ctx.feedStatus,
+          feedHealth: ctx.getFeedHealth(),
           subscribers: ctx.subscriberCount,
           lastTradeTs: ctx.lastTradeTs,
           lastDepthTs: ctx.lastDepthTs,
@@ -690,6 +693,7 @@ export const httpServer = createServer(async (req, res) => {
         symbol: ctx.symbol,
         provider: ctx.provider,
         feedStatus: ctx.feedStatus,
+          feedHealth: ctx.getFeedHealth(),
         feedReason: ctx.feedReason,
         tradeDurability: ctx.getDurability(),
         subscribers: ctx.subscriberCount,

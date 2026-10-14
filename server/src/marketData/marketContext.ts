@@ -1,3 +1,4 @@
+import { FeedHealth, HealthClock, healthClock } from './feedHealth.js';
 import { contractKey, contractWindow, evidenceOf } from './dataEvidence.js';
 import { FootprintEngine } from '../footprintEngine.js';
 import { FuturesInstrument, getOrRegisterInstrument } from '../futuresConfig.js';
@@ -95,6 +96,24 @@ export class MarketContext {
   public provider = 'none';
   public feedStatus: 'LIVE' | 'UNAVAILABLE' = 'UNAVAILABLE';
   public feedReason: string | undefined = 'no feed connected yet';
+  public readonly health: FeedHealth;
+  private healthTimer?: NodeJS.Timeout;
+  private healthSignature = '';
+  private healthExpiryHandled = false;
+  public getFeedHealth() { return this.health.snapshot(SessionCalendar.getSessionInfo(this.clock.wall(), this.instrument.sessionScheduleId).isOpen); }
+  public refreshFeedHealth() {
+    if (this.health.expired() && !this.healthExpiryHandled) {
+      this.healthExpiryHandled = true; ++this.activeFeedToken;
+      // disconnect destroys TCP synchronously, before terminal snapshot/final projection publication.
+      void this.feed?.disconnect();
+      this.health.stop('Approval expired; renewed profile and Operator reconciliation required', true);
+      this.flushTrailingAnalytics();
+    }
+    const h = this.getFeedHealth();
+    this.feedReason = h.reason;
+    const signature = h.state + h.reason;
+    if (signature !== this.healthSignature) { this.healthSignature = signature; this.setFeedStatus(h.state === 'LIVE' ? 'LIVE' : 'UNAVAILABLE', true); }
+  }
   public lastTradeTs = 0;
   public lastDepthTs = 0;
 
@@ -135,9 +154,10 @@ export class MarketContext {
   }
   private blockPersistence(reason: string): void {
     this.persistenceBlocked = true;
+    this.health.stop(`Persistence failure: ${reason}; Operator reconciliation required`, true);
     this.profile.setCoverage('PARTIAL', reason);
     this.feedReason = `Trade persistence BLOCKED: ${reason}; Operator reconciliation required`;
-    this.setFeedStatus('UNAVAILABLE');
+    this.setFeedStatus('UNAVAILABLE', true);
     void this.feed?.disconnect().catch(err => console.warn(`[Trade persistence] disconnect failed: ${(err as Error).message}`));
   }
   private readonly MAX_DEDUP_IDS = 5000;
@@ -161,10 +181,11 @@ export class MarketContext {
 
   private blockIdentity(trade: MarketTrade, reason: string): void {
     this.identityBlocked = true;
+    this.health.stop(`Identity/contract failure: ${reason}; Operator reconciliation required`, true);
     this.profile.setCoverage('PARTIAL', reason);
     this.feedReason = `Trade identity BLOCKED: ${reason}; Operator reconciliation required`;
     console.warn(`[Trade identity] ${this.symbol}: ${this.feedReason}`);
-    this.setFeedStatus('UNAVAILABLE');
+    this.setFeedStatus('UNAVAILABLE', true);
     this.acceptance?.onOutcome(trade, 'REJECTED');
     // Synchronous socket destruction in disconnect prevents further ordinary record dispatch.
     void this.feed?.disconnect().catch(err => console.warn(`[Trade identity] disconnect failed: ${(err as Error).message}`));
@@ -193,8 +214,10 @@ export class MarketContext {
     private onTickRecord?: (tick: Tick) => void,
     private historyProvider: HistoryProvider = defaultHistoryProvider,
     private acceptance?: IsolatedAcceptanceContext,
-    private feedFactory: typeof createMarketDataFeed = createMarketDataFeed
+    private feedFactory: typeof createMarketDataFeed = createMarketDataFeed,
+    private clock: HealthClock = healthClock
   ) {
+    this.health = new FeedHealth(clock);
     this.symbol = symbol;
     this.instrument = instrument;
     this.gexEngine = gexEngine;
@@ -325,10 +348,12 @@ export class MarketContext {
       onStatus: (status: FeedStatusEvent) => {
         if (token !== this.activeFeedToken) return;
         if (status.provider !== provider || this.persistenceBlocked || this.identityBlocked) return;
+        if (status.state === 'CONNECTING') this.health.begin(status.approvalExpiresAt);
+        else this.health.signal(status.state, status.reason);
         const prevStatus = this.feedStatus;
         this.feedReason = status.reason;
-        const nextStatus = status.state === 'LIVE' ? 'LIVE' : 'UNAVAILABLE';
-        this.setFeedStatus(nextStatus);
+        this.refreshFeedHealth();
+        const nextStatus = this.feedStatus;
 
         // Reconnect gap detection: if returning to LIVE after being UNAVAILABLE
         if (prevStatus === 'UNAVAILABLE' && nextStatus === 'LIVE' && this.lastTradeTs > 0) {
@@ -348,6 +373,8 @@ export class MarketContext {
       },
       onError: (error: Error) => {
         if (token !== this.activeFeedToken) return;
+        this.health.stop('Vendor error: ' + error.message);
+        this.refreshFeedHealth();
         console.warn(`[Feed:${provider}] ${this.symbol}: ${error.message}`);
         this.setFeedStatus('UNAVAILABLE');
       },
@@ -358,6 +385,8 @@ export class MarketContext {
 
     this.feed = feed;
     this.provider = provider;
+    if (provider !== 'none') this.health.begin();
+    this.healthTimer = setInterval(() => this.refreshFeedHealth(), 1000); this.healthTimer.unref();
     this.feedReason = provider === 'none' ? 'no licensed realtime vendor configured for futures' : 'connecting';
     console.log(`[MarketContext] Feed provider '${provider}' starting for ${this.symbol}`);
 
@@ -366,6 +395,7 @@ export class MarketContext {
     } catch (err) {
       if (token !== this.activeFeedToken) return;
       this.feedReason = (err as Error).message;
+      this.health.stop(this.feedReason); this.refreshFeedHealth();
       this.setFeedStatus('UNAVAILABLE');
       console.warn(`[Feed:${provider}] ${this.symbol} failed to connect: ${this.feedReason}`);
     }
@@ -404,6 +434,7 @@ export class MarketContext {
     this.historyRequest.abort();
     this.isBackfillingHistory = false;
     this.liveBuffer = [];
+    if (this.healthTimer) { clearInterval(this.healthTimer); this.healthTimer = undefined; }
     const previous = this.feed;
     this.feed = null;
     if (previous) {
@@ -413,16 +444,14 @@ export class MarketContext {
         console.warn(`[Feed:${previous.provider}] disconnect failed: ${(err as Error).message}`);
       }
     }
-    if (!this.acceptance) {
-      this.flushTrailingAnalytics();
-      if (!this.persistenceBlocked && !this.identityBlocked) this.feedReason = 'feed stopped';
-      this.setFeedStatus('UNAVAILABLE');
-    }
+    this.health.stop();
+    if (!this.acceptance || this.acceptance.normalFanout) this.flushTrailingAnalytics();
+    this.refreshFeedHealth();
     this.feedLifecycleState = 'STOPPED';
   }
 
-  public setFeedStatus(next: 'UNAVAILABLE' | 'LIVE'): void {
-    if (next === this.feedStatus) return;
+  public setFeedStatus(next: 'UNAVAILABLE' | 'LIVE', force = false): void {
+    if (next === this.feedStatus && !force) return;
     this.feedStatus = next;
     console.log(`[MarketContext] ${this.symbol}: ${this.feedStatus}${this.feedReason ? ` (${this.feedReason})` : ''}`);
 
@@ -513,7 +542,8 @@ export class MarketContext {
     this.observedContract ||= contract;
     this.trackVendorTickId(tickId, signature);
     this.lastTradeTs = Date.now();
-    if (this.feedStatus !== 'LIVE') this.setFeedStatus('LIVE');
+    this.health.accepted(trade.ts, !this.acceptance, trade.receiveTs, trade.eventTsNs, trade.vendorIdentity?.[10]);
+    this.refreshFeedHealth();
 
     // Venue message sequence is retained, but has no proven symbol-local trade continuity.
 
@@ -530,7 +560,7 @@ export class MarketContext {
       this.profile.processTick(tick);
       this.profile.setCoverage('PARTIAL', 'Bounded acceptance observation; not full session');
       this.historyTicks.push(tick);
-      this.durability.published++;
+      this.durability.published++; this.health.published();
       this.acceptance.onOutcome(trade, 'ACCEPTED');
       for (const session of this.subscribers) {
         session.send({ type: 'TICK', symbol: this.symbol, tick });
@@ -567,7 +597,7 @@ export class MarketContext {
     if (!this.acceptance) microstructureEngine.recordTick(tick);
 
     if (this.isBackfillingHistory) {
-      this.durability.published++;
+      this.durability.published++; this.health.published();
       this.liveBuffer.push(tick);
       for (const session of this.subscribers) {
         if (session.isReplay()) continue;
@@ -692,7 +722,7 @@ export class MarketContext {
       this.trailingAnalyticsTimer = setTimeout(() => this.flushTrailingAnalytics(), 500);
       this.trailingAnalyticsTimer.unref();
     }
-    this.durability.published++;
+    this.durability.published++; this.health.published();
     this.acceptance?.onOutcome(trade, 'ACCEPTED');
   }
 
@@ -1236,6 +1266,7 @@ export class MarketContext {
       historyBars: this.historyBarsByTf.get(timeframe) || [],
       recentTicks: this.getHistoryTicks().slice(-50).reverse(),
       feedStatus: this.feedStatus,
+      feedHealth: this.getFeedHealth(),
       mode: session.isReplay() ? session.mode : 'LIVE',
     };
   }

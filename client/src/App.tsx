@@ -319,6 +319,7 @@ export const App: React.FC = () => {
   // REAL vendor bars from before the live session. Plain candles: no per-price footprint exists
   // for them, and the server never fabricates one.
   const [historyBars, setHistoryBars] = useState<HistoricalBar[]>([]);
+  const [feedHealth, setFeedHealth] = useState<import('./types').FeedHealthSnapshot | undefined>();
   const [feedStatus, setFeedStatus] = useState<EnhancedFeedStatus>('UNAVAILABLE');
 
   // High-frequency tick buffering: ticks arrive every 30-120ms. Buffering them and
@@ -666,6 +667,7 @@ export const App: React.FC = () => {
           }
         }
         if (data.feedStatus) setFeedStatus(data.feedStatus);
+        setFeedHealth(data.feedHealth);
         if (data.timeframe) {
           timeframeRef.current = data.timeframe;
           setTimeframe(data.timeframe);
@@ -789,7 +791,6 @@ export const App: React.FC = () => {
       setRecentTicks((prev) => [...pending, ...prev].slice(0, 100));
       if (lastPriceRef.current !== null) {
         setCurrentPrice(lastPriceRef.current);
-        setFeedStatus('LIVE');
       }
     }, 120);
 
@@ -815,6 +816,7 @@ export const App: React.FC = () => {
     setIsLoadingHistory(false);
     setSymbol(sym);
     setFeedStatus('UNAVAILABLE');
+    setFeedHealth(undefined);
     setHistorySource('NONE');
     setOrderbook({ bids: [], asks: [], timestamp: 0, lastUpdateId: 0 });
     setVolumeProfile({ poc: 0, vah: 0, val: 0, totalVolume: 0, levels: [], provenance: 'UNAVAILABLE', coverage: 'UNKNOWN', isEstimated: false });
@@ -1397,6 +1399,7 @@ export const App: React.FC = () => {
       {/* Terminal Status Bar */}
       <TerminalStatusBar
         dataEvidence={volumeProfile.dataEvidence}
+        feedHealth={feedHealth}
         feedStatus={feedStatus}
         isConnected={isConnected}
         historySource={historySource}
