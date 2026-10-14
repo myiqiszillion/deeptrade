@@ -30,7 +30,7 @@ export function contractKey(t: {vendorIdentity?: readonly unknown[]}): string | 
 }
 export function contractWindow(ticks: Tick[]): {ticks: Tick[]; excluded: number} {
   const latest=[...ticks].sort((a,b)=>b.timestamp-a.timestamp).find(t=>contractKey(t));const key=latest&&contractKey(latest);
-  const filtered=key?ticks.filter(t=>!contractKey(t)||contractKey(t)===key):ticks;
+  const filtered=key?ticks.filter(t=>contractKey(t)===key):ticks;
   return {ticks:filtered,excluded:ticks.length-filtered.length};
 }
 const prefix='trade-source-v1:';

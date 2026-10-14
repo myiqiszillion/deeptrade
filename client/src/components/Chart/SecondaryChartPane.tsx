@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { DeepChartWSClient } from '../../services/websocket';
 import {
   FootprintBar,
   FuturesInstrument,
@@ -49,18 +48,12 @@ export const SecondaryChartPane: React.FC<SecondaryChartPaneProps> = ({
   const [deepTrades, setDeepTrades] = useState<DeepTrade[]>([]);
   const [absorptions, setAbsorptions] = useState<AbsorptionAlert[]>([]);
   const [gexProfile, setGexProfile] = useState<GEXProfile | undefined>();
+  const [feedHealth, setFeedHealth] = useState<import('../../types').FeedHealthSnapshot | undefined>();
   const [feedStatus, setFeedStatus] = useState<'LIVE' | 'CONNECTING' | 'UNAVAILABLE'>('CONNECTING');
   const [isConnected, setIsConnected] = useState(wsClient.getFeedHealth().isConnected);
   const [viewport, setViewport] = useState<ChartViewport | undefined>();
 
   useEffect(() => {
-    // Send subscribe command to multiplexer
-    wsClient.send({
-      type: 'SUBSCRIBE',
-      symbol,
-      timeframe,
-    });
-
     wsClient.addListener(id, symbol, {
       onConnectionChange: (connected) => {
         setIsConnected(connected);
@@ -74,13 +67,14 @@ export const SecondaryChartPane: React.FC<SecondaryChartPaneProps> = ({
         setVwapPoints(data.vwap || []);
         setGexProfile(data.gexProfile);
         setFeedStatus(data.feedStatus === 'LIVE' ? 'LIVE' : 'UNAVAILABLE');
+        setFeedHealth(data.feedHealth);
         if (data.bars && data.bars.length > 0) {
           setCurrentPrice(data.bars[data.bars.length - 1].close);
         }
       },
       onTick: (tick) => {
         setCurrentPrice(tick.price);
-        if (feedStatus !== 'LIVE') setFeedStatus('LIVE');
+
       },
       onBarUpdate: (bar) => {
         setBars((prev) => {
@@ -121,8 +115,9 @@ export const SecondaryChartPane: React.FC<SecondaryChartPaneProps> = ({
       },
     });
 
+    wsClient.subscribePane(id, symbol, timeframe);
     return () => {
-      wsClient.send({ type: 'UNSUBSCRIBE', symbol });
+      wsClient.unsubscribePane(id);
       wsClient.removeListener(id);
     };
   }, [id, symbol, timeframe]);
@@ -131,7 +126,7 @@ export const SecondaryChartPane: React.FC<SecondaryChartPaneProps> = ({
     setSymbol(newSym);
     setBars([]);
     setHistoryBars([]);
-    setCurrentPrice(0);
+    setCurrentPrice(0); setFeedStatus('CONNECTING'); setFeedHealth(undefined);
     onSymbolChange?.(newSym);
   };
 
@@ -186,13 +181,17 @@ export const SecondaryChartPane: React.FC<SecondaryChartPaneProps> = ({
 
           {/* Feed Status */}
           <span
+            data-testid="pane-feed-health" title={feedHealth?.reason}
             className={`px-1.5 py-0.2 rounded text-[9px] font-bold tracking-wider uppercase ${
               feedStatus === 'LIVE'
                 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                 : 'bg-zinc-800 text-zinc-500'
             }`}
           >
-            {feedStatus}
+            {!isConnected && feedHealth?.state === 'LIVE' ? 'UNAVAILABLE' : feedHealth?.state || feedStatus}
+          </span>
+          <span data-testid="pane-provenance" title={bars.at(-1)?.dataEvidence?.reason}>
+            {bars.at(-1)?.dataEvidence?.source || 'UNKNOWN'} · {bars.at(-1)?.dataEvidence?.quality || 'UNKNOWN'} · {bars.at(-1)?.dataEvidence?.coverage || 'UNKNOWN'}
           </span>
         </div>
 

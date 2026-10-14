@@ -113,6 +113,7 @@ export class DeepChartWSClient {
   private lastMessageTs: number | null = null;
   private lastTradeTs: number | null = null;
   private subscriptionState: 'UNSUBSCRIBED' | 'PENDING' | 'ACTIVE' | 'STALE' | 'RECOVERING' | 'ERROR' = 'UNSUBSCRIBED';
+  private paneSubscriptions = new Map<string, { symbol: string; timeframe: string }>();
   private activeSubscription: { symbol: string; source?: string; timeframe?: string } | null = null;
   private staleThresholdMs = 15000;
 
@@ -237,6 +238,7 @@ export class DeepChartWSClient {
         this.startStaleChecker();
         this.notifyHealth();
         console.log('[DeepChart WS] Connected to server.');
+        for (const [id,pane] of this.paneSubscriptions) this.send({type:'SUBSCRIBE',subscriptionId:id,...pane});
 
         // Automatic resubscribe after reconnect
         if (this.activeSubscription) {
@@ -415,6 +417,15 @@ export class DeepChartWSClient {
       timeframe: tf,
       source,
     });
+  }
+
+  public subscribePane(id: string, symbol: string, timeframe: string) {
+    this.paneSubscriptions.set(id,{symbol,timeframe});
+    this.send({type:'SUBSCRIBE',subscriptionId:id,symbol,timeframe});
+  }
+  public unsubscribePane(id: string) {
+    const entry = this.paneSubscriptions.get(id); this.paneSubscriptions.delete(id);
+    if (entry) this.send({type:'UNSUBSCRIBE',subscriptionId:id,symbol:entry.symbol});
   }
 
   public unsubscribe(symbol?: string) {

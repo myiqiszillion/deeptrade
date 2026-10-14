@@ -14,14 +14,15 @@ interface MicrostructureSnapshot {
 }
 
 export class MicrostructureEngine {
-  private ticks: Tick[] = [];
+  private ticks = new Map<string, Tick[]>();
   private windowMs = 60_000;
 
-  public recordTick(t: Tick) {
-    this.ticks.push(t);
+  public recordTick(t: Tick, symbol: string) {
+    const ticks = this.ticks.get(symbol) || []; this.ticks.set(symbol, ticks);
+    ticks.push(t);
     const cutoff = Date.now() - this.windowMs;
-    while (this.ticks.length > 0 && this.ticks[0].timestamp < cutoff) this.ticks.shift();
-    if (this.ticks.length > 5000) this.ticks.shift();
+    while (ticks.length > 0 && ticks[0].timestamp < cutoff) ticks.shift();
+    if (ticks.length > 5000) ticks.shift();
   }
 
   public snapshot(symbol: string, book: OrderbookSnapshot | null): MicrostructureSnapshot {
@@ -38,7 +39,7 @@ export class MicrostructureEngine {
     const liquidityImbalance = totalDepth > 0 ? (bidDepth - askDepth) / totalDepth : 0;
 
     const cutoff = ts - this.windowMs;
-    const windowTicks = this.ticks.filter(t => t.timestamp >= cutoff);
+    const windowTicks = (this.ticks.get(symbol) || []).filter(t => t.timestamp >= cutoff);
     const tradeIntensity = windowTicks.length / (this.windowMs / 1000);
     const buy = windowTicks.filter(t => t.side === 'buy').length;
     const sell = windowTicks.filter(t => t.side === 'sell').length;

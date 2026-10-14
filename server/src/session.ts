@@ -31,6 +31,9 @@ export class ChartSession {
   public subscribedTimeframe = '1m';
   public subscriptions = new Map<string, string>(); // symbol -> timeframe
   public subscriptionGeneration = 0;
+  public subscriptionOwners = new Map<string, { symbol: string; timeframe: string }>();
+  private ownerGenerations = new Map<string, number>();
+  public generationFor(owner = 'default'): number { return owner === 'default' ? this.subscriptionGeneration : this.ownerGenerations.get(owner) || 0; }
   public replaySession: IReplaySession | null = null;
   public mode: SessionMode = 'LIVE';
   public user: User | null = null;
@@ -52,8 +55,9 @@ export class ChartSession {
     return this.subscriptions.get(symbol) || this.subscribedTimeframe;
   }
 
-  public nextGeneration(): number {
-    return ++this.subscriptionGeneration;
+  public nextGeneration(owner = 'default'): number {
+    if (owner === 'default') return ++this.subscriptionGeneration;
+    const gen = this.generationFor(owner) + 1; this.ownerGenerations.set(owner, gen); return gen;
   }
 
   public isReplay(): boolean {

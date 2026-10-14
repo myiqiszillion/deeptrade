@@ -127,6 +127,7 @@ export class MarketContext {
   }
 
   private activeFeedToken = 0;
+  private disposed = false;
   private orderbook: OrderbookManager;
   private tape: TapeEngine;
   private profile: ProfileEngine;
@@ -322,6 +323,7 @@ export class MarketContext {
   }
 
   private async doStartFeed(): Promise<void> {
+    if (this.disposed) throw new Error('Disposed context cannot restart');
     if (this.persistenceBlocked || this.identityBlocked) { this.setFeedStatus('UNAVAILABLE'); return; }
     if (this.feedLifecycleState === 'RUNNING' || this.feedLifecycleState === 'STARTING') {
       await this.doStopFeed();
@@ -338,15 +340,15 @@ export class MarketContext {
 
     const handlers = {
       onTrade: (trade: MarketTrade) => {
-        if (token !== this.activeFeedToken) return;
+        if (this.disposed || token !== this.activeFeedToken) return;
         this.handleTrade(trade);
       },
       onDepth: (event: MarketDepthEvent) => {
-        if (token !== this.activeFeedToken) return;
+        if (this.disposed || token !== this.activeFeedToken) return;
         this.handleDepth(event);
       },
       onStatus: (status: FeedStatusEvent) => {
-        if (token !== this.activeFeedToken) return;
+        if (this.disposed || token !== this.activeFeedToken) return;
         if (status.provider !== provider || this.persistenceBlocked || this.identityBlocked) return;
         if (status.state === 'CONNECTING') this.health.begin(status.approvalExpiresAt);
         else this.health.signal(status.state, status.reason);
@@ -372,7 +374,7 @@ export class MarketContext {
         }
       },
       onError: (error: Error) => {
-        if (token !== this.activeFeedToken) return;
+        if (this.disposed || token !== this.activeFeedToken) return;
         this.health.stop('Vendor error: ' + error.message);
         this.refreshFeedHealth();
         console.warn(`[Feed:${provider}] ${this.symbol}: ${error.message}`);
@@ -393,7 +395,7 @@ export class MarketContext {
     try {
       await feed.connect();
     } catch (err) {
-      if (token !== this.activeFeedToken) return;
+      if (this.disposed || token !== this.activeFeedToken) return;
       this.feedReason = (err as Error).message;
       this.health.stop(this.feedReason); this.refreshFeedHealth();
       this.setFeedStatus('UNAVAILABLE');
@@ -487,6 +489,9 @@ export class MarketContext {
     }
     trade = { ...trade, ...identity, dataEvidence: evidenceOf({...trade,...identity}) };
     const contract=contractKey(trade);
+    if (this.provider === 'databento' && contract && !this.observedContract && this.historyTicks.some(t=>!contractKey(t))) {
+      this.blockIdentity(trade, 'Legacy cache contract UNKNOWN; explicit reconciled cohort required before vendor ingestion'); return;
+    }
     if (contract && this.observedContract && contract !== this.observedContract) {
       this.blockIdentity(trade, 'Contract changed inside observation cohort; explicit new cohort required');
       return;
@@ -594,7 +599,7 @@ export class MarketContext {
     if (!this.acceptance && this.onTickRecord) {
       this.onTickRecord(tick);
     }
-    if (!this.acceptance) microstructureEngine.recordTick(tick);
+    if (!this.acceptance) microstructureEngine.recordTick(tick, this.symbol);
 
     if (this.isBackfillingHistory) {
       this.durability.published++; this.health.published();
@@ -1136,14 +1141,15 @@ export class MarketContext {
     return this.historyBoundary - newest > toleranceMs;
   }
 
-  public addSubscriber(session: ChartSession, timeframe: string): void {
+  public addSubscriber(session: ChartSession, timeframe: string, primary = true): void {
+    if (this.disposed) throw new Error('Disposed context cannot attach subscribers');
     if (this.cleanupTimer) {
       clearTimeout(this.cleanupTimer);
       this.cleanupTimer = null;
     }
 
     session.setEvidenceProvider(this.symbol, () => this.profile.getDataEvidence());
-    session.subscribedSymbol = this.symbol;
+    if (primary) { session.subscribedSymbol = this.symbol; session.subscribedTimeframe = timeframe; }
     session.subscriptions.set(this.symbol, timeframe);
     const gen = session.subscriptionGeneration;
     this.ensureFootprintEngine(timeframe);
@@ -1213,6 +1219,7 @@ export class MarketContext {
 
   public removeSubscriber(session: ChartSession): void {
     this.subscribers.delete(session);
+    session.subscriptions.delete(this.symbol);
     session.clearEvidenceProvider(this.symbol);
   }
 
@@ -1288,6 +1295,7 @@ export class MarketContext {
   }
 
   public async dispose(): Promise<void> {
+    this.disposed = true; ++this.activeFeedToken;
     if (this.cleanupTimer) {
       clearTimeout(this.cleanupTimer);
       this.cleanupTimer = null;
@@ -1297,7 +1305,7 @@ export class MarketContext {
       this.gexTimer = null;
     }
     await this.stopFeed();
-    for (const session of this.subscribers) session.clearEvidenceProvider(this.symbol);
+    for (const session of this.subscribers) { session.clearEvidenceProvider(this.symbol); session.subscriptions.delete(this.symbol); }
     this.subscribers.clear();
     this.historyBarsByTf.clear();
     this.pendingHistoryFetches.clear();
@@ -1310,6 +1318,7 @@ export class MarketContext {
 export class MarketContextManager {
   private contexts = new Map<string, MarketContext>();
   private pendingInits = new Map<string, Promise<MarketContext>>();
+  private disposed = false;
   private gexEngine: GEXEngine;
 
   constructor(
@@ -1335,6 +1344,7 @@ export class MarketContextManager {
   }
 
   public async getOrCreateContext(symbol: string): Promise<MarketContext> {
+    if (this.disposed) throw new Error('Context manager is disposed');
     let ctx = this.contexts.get(symbol);
     if (ctx) return ctx;
 
@@ -1353,6 +1363,7 @@ export class MarketContextManager {
             this.feedFactory
           );
           await newCtx.startFeed();
+          if (this.disposed) { await newCtx.dispose(); throw new Error('Context manager disposed during initialization'); }
           this.contexts.set(symbol, newCtx);
           return newCtx;
         } finally {
@@ -1364,53 +1375,52 @@ export class MarketContextManager {
     return initPromise;
   }
 
-  public async subscribe(
-    session: ChartSession,
-    symbol: string,
-    timeframe: string,
-    generation?: number
-  ): Promise<void> {
-    const gen = generation ?? session.subscriptionGeneration;
-
+  public async subscribe(session: ChartSession, symbol: string, timeframe: string, generation?: number, owner = 'default'): Promise<void> {
+    const gen = generation ?? session.generationFor(owner);
     const ctx = await this.getOrCreateContext(symbol);
-
-    // Guard: check if session is still alive and this request is still the newest generation
-    if (!session.isOpen || session.subscriptionGeneration !== gen) {
-      if (ctx.subscriberCount === 0 && ctx.symbol !== (process.env.DEFAULT_SYMBOL || 'ES')) {
-        ctx.scheduleCleanup(() => {
-          if (this.contexts.get(ctx.symbol) === ctx) {
-            this.contexts.delete(ctx.symbol);
-          }
-        });
-      }
-      return;
+    if (!session.isOpen || session.generationFor(owner) !== gen || this.disposed) { this.scheduleUnused(ctx); return; }
+    for (const [id, existing] of session.subscriptionOwners) {
+      if (id !== owner && existing.symbol === symbol && existing.timeframe !== timeframe) throw new Error('Same-symbol pane timeframe conflict; use matching timeframe or a separate browser session');
     }
-
-    ctx.addSubscriber(session, timeframe);
+    const previous = session.subscriptionOwners.get(owner);
+    session.subscriptionOwners.set(owner, { symbol, timeframe });
+    if (previous && previous.symbol !== symbol && !Array.from(session.subscriptionOwners.values()).some(x => x.symbol === previous.symbol)) this.detach(session, previous.symbol);
+    ctx.addSubscriber(session, timeframe, owner === 'default');
   }
 
-  public unsubscribe(session: ChartSession, symbol?: string): void {
-    const targetSymbol = symbol || session.subscribedSymbol;
-    if (targetSymbol) {
-      const ctx = this.contexts.get(targetSymbol);
-      if (ctx) {
-        ctx.removeSubscriber(session);
-        if (ctx.subscriberCount === 0 && ctx.symbol !== (process.env.DEFAULT_SYMBOL || 'ES')) {
-          ctx.scheduleCleanup(() => {
-            if (this.contexts.get(ctx.symbol) === ctx) {
-              this.contexts.delete(ctx.symbol);
-            }
-          });
-        }
-      }
+  private scheduleUnused(ctx: MarketContext): void {
+    if (ctx.subscriberCount === 0 && ctx.symbol !== (process.env.DEFAULT_SYMBOL || 'ES')) ctx.scheduleCleanup(() => {
+      if (this.contexts.get(ctx.symbol) === ctx) { this.contexts.delete(ctx.symbol); void ctx.dispose(); }
+    });
+  }
+  private detach(session: ChartSession, symbol: string): void {
+    const ctx = this.contexts.get(symbol);
+    if (ctx) { ctx.removeSubscriber(session); this.scheduleUnused(ctx); }
+    else { session.subscriptions.delete(symbol); session.clearEvidenceProvider(symbol); }
+  }
+  /** Without a symbol this is whole-socket teardown, including named pane owners. */
+  public unsubscribe(session: ChartSession, symbol?: string, owner?: string): void {
+    if (owner) {
+      session.nextGeneration(owner);
+      const existing = session.subscriptionOwners.get(owner);
+      if (!existing || (symbol && existing.symbol !== symbol)) return;
+      session.subscriptionOwners.delete(owner);
+      if (!Array.from(session.subscriptionOwners.values()).some(x => x.symbol === existing.symbol)) this.detach(session, existing.symbol);
+    } else if (symbol) {
+      for (const [id,x] of session.subscriptionOwners) if (x.symbol === symbol) { session.nextGeneration(id); session.subscriptionOwners.delete(id); }
+      this.detach(session, symbol);
+    } else {
+      for (const id of session.subscriptionOwners.keys()) session.nextGeneration(id);
+      const symbols = new Set([...session.subscriptions.keys(), ...Array.from(session.subscriptionOwners.values(), x=>x.symbol)]);
+      session.subscriptionOwners.clear();
+      for (const s of symbols) this.detach(session,s);
     }
   }
-
   public async disposeAll(): Promise<void> {
-    for (const ctx of this.contexts.values()) {
-      await ctx.dispose();
-    }
+    this.disposed = true;
+    await Promise.all(Array.from(this.contexts.values(), ctx => ctx.dispose()));
     this.contexts.clear();
+    await Promise.allSettled(Array.from(this.pendingInits.values()));
   }
 
   public getGexEngine(): GEXEngine {

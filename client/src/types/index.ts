@@ -305,8 +305,8 @@ export interface OptionsFlowTrade {
 }
 
 export type WSClientMessage =
-  | { type: 'SUBSCRIBE'; symbol: string; timeframe: string; source?: 'cme' | 'databento' | 'tradovate' | string }
-  | { type: 'UNSUBSCRIBE'; symbol?: string }
+  | { type: 'SUBSCRIBE'; subscriptionId?: string; symbol: string; timeframe: string; source?: 'cme' | 'databento' | 'tradovate' | string }
+  | { type: 'UNSUBSCRIBE'; subscriptionId?: string; symbol?: string }
   | {
       type: 'REPLAY_CONTROL';
       action: 'START' | 'PAUSE' | 'SEEK' | 'SET_SPEED' | 'STEP' | 'RETURN_TO_LIVE';

@@ -1321,7 +1321,7 @@ export const App: React.FC = () => {
                 initialTimeframe={gridTimeframes[0]}
                 crosshairTime={crosshairTime}
                 onCrosshairTimeChange={setCrosshairTime}
-                onClose={cycleLayoutMode}
+                onClose={() => { setLayoutMode('single'); saveSettings({ ...savedSettings, layoutMode: 'single' }); }}
                 onSymbolChange={(s) => {
                   const newSymbols = [...gridSymbols];
                   newSymbols[0] = s;
@@ -1337,7 +1337,7 @@ export const App: React.FC = () => {
                   initialTimeframe={gridTimeframes[1]}
                   crosshairTime={crosshairTime}
                   onCrosshairTimeChange={setCrosshairTime}
-                  onClose={cycleLayoutMode}
+                  onClose={() => { setLayoutMode('single'); saveSettings({ ...savedSettings, layoutMode: 'single' }); }}
                   onSymbolChange={(s) => {
                     const newSymbols = [...gridSymbols];
                     newSymbols[1] = s;
@@ -1354,7 +1354,7 @@ export const App: React.FC = () => {
                   initialTimeframe={gridTimeframes[2]}
                   crosshairTime={crosshairTime}
                   onCrosshairTimeChange={setCrosshairTime}
-                  onClose={cycleLayoutMode}
+                  onClose={() => { setLayoutMode('single'); saveSettings({ ...savedSettings, layoutMode: 'single' }); }}
                   onSymbolChange={(s) => {
                     const newSymbols = [...gridSymbols];
                     newSymbols[2] = s;

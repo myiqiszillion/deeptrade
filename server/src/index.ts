@@ -1670,6 +1670,8 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
       }
 
       if (msg.type === 'SUBSCRIBE') {
+        const owner = typeof (msg as any).subscriptionId === 'string' ? (msg as any).subscriptionId : 'default';
+        if (!/^[A-Za-z0-9_-]{1,40}$/.test(owner)) { session.send({type:'ERROR',code:'SUBSCRIPTION_OWNER_INVALID',message:'Invalid pane subscription owner'}); return; }
         const requestedSymbol = typeof msg.symbol === 'string' ? msg.symbol : undefined;
         const requestedTf = typeof msg.timeframe === 'string' ? msg.timeframe : session.subscribedTimeframe || '1m';
 
@@ -1716,26 +1718,18 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
         }
 
         // Only dispose replay session after validation and entitlement pass
-        if (session.replaySession) {
+        if (owner === 'default' && session.replaySession) {
           session.replaySession.dispose();
           session.replaySession = null;
         }
 
-        const gen = session.nextGeneration();
-        if (targetSymbol !== session.subscribedSymbol) {
-          await contextManager.subscribe(session, targetSymbol, requestedTf, gen);
-        } else if (requestedTf !== session.subscribedTimeframe) {
-          const ctx = contextManager.getContext(session.subscribedSymbol);
-          if (ctx && session.isOpen && session.subscriptionGeneration === gen) {
-            ctx.changeTimeframe(session, requestedTf);
-          }
-        } else {
-          // Re-send current state if subscribe called with same symbol and timeframe
-          const ctx = contextManager.getContext(session.subscribedSymbol);
-          if (ctx && session.isOpen && session.subscriptionGeneration === gen) {
-            session.send(ctx.buildInitState(session, session.subscribedTimeframe));
-          }
-        }
+        const gen = session.nextGeneration(owner);
+        try { await contextManager.subscribe(session, targetSymbol, requestedTf, gen, owner); }
+        catch (error) { session.send({type:'ERROR',symbol:targetSymbol,code:'SUBSCRIPTION_OWNERSHIP_CONFLICT',message:(error as Error).message}); }
+      } else if (msg.type === 'UNSUBSCRIBE') {
+        const owner = typeof (msg as any).subscriptionId === 'string' ? (msg as any).subscriptionId : 'default';
+        if (!/^[A-Za-z0-9_-]{1,40}$/.test(owner)) return;
+        contextManager.unsubscribe(session, typeof msg.symbol === 'string' ? msg.symbol : undefined, owner);
       } else if (msg.type === 'REPLAY_CONTROL') {
         const action = typeof msg.action === 'string' ? msg.action : '';
         const validActions = new Set(['START', 'PAUSE', 'SEEK', 'SET_SPEED', 'STEP', 'RETURN_TO_LIVE']);
