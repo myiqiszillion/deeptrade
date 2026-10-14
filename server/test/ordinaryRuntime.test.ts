@@ -1,4 +1,7 @@
 import '../../scripts/offline_guard.cjs';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { createServer } from 'node:http';
@@ -14,7 +17,8 @@ import { fetchWatchlistQuotes, quoteBoardEnabled } from '../src/marketData/quote
 const guard = (globalThis as any)[Symbol.for('deepchart.offline.guard')];
 const key = 'offline-ordinary-sentinel';
 const profile = { version: 1, approved: true, approvalId: 'offline-fixture', expiresAt: new Date(Date.now() + 60000).toISOString(), dataset: 'GLBX.MDP3', symbol: 'ES', vendorSymbol: 'ES.c.0', schema: 'trades', history: false, gex: false, quoteBoard: false, reconnect: false };
-const approved = { FUTURES_PROVIDER: 'databento', DATABENTO_RUNTIME_START: '1', DATABENTO_RUNTIME_PROFILE: JSON.stringify(profile), DATABENTO_API_KEY: key };
+const ledger = () => join(mkdtempSync(join(tmpdir(),'deepchart-lease-')),'approval.sqlite');
+const approved = { DATABENTO_APPROVAL_LEDGER: ledger(), FUTURES_PROVIDER: 'databento', DATABENTO_RUNTIME_START: '1', DATABENTO_RUNTIME_PROFILE: JSON.stringify(profile), DATABENTO_API_KEY: key };
 const envs: NodeJS.ProcessEnv[] = [ {}, { DATABENTO_API_KEY: key }, { ...approved, DATABENTO_RUNTIME_START: '0' }, { ...approved, FUTURES_PROVIDER: 'unknown' }, { ...approved, DATABENTO_RUNTIME_PROFILE: '' }, { ...approved, DATABENTO_RUNTIME_PROFILE: '{' }, { ...approved, DATABENTO_API_KEY: '' } ];
 for (const [k, v] of Object.entries({ schema: 'mbp-1', dataset: 'OPRA.PILLAR', symbol: 'NQ', vendorSymbol: 'NQ.c.0', history: true, gex: true, quoteBoard: true, reconnect: true, approved: false, extra: 'unknown', expiresAt: new Date(0).toISOString() })) envs.push({ ...approved, DATABENTO_RUNTIME_PROFILE: JSON.stringify({ ...profile, [k]: v }) });
 const handlers = { onTrade: () => {}, onDepth: () => {}, onStatus: () => {}, onError: () => {} };
@@ -34,7 +38,7 @@ assert.throws(() => initializeOrdinaryRuntime(approved), /immutable/);
 const gate = new OrdinaryRuntimeGate(approved);
 assert(gate.allows('ES')); assert(!gate.allows('NQ')); assert(!gate.allows('ES.c.0'));
 // Mutating the source config cannot broaden a frozen capability.
-const mutated = { ...approved }; const frozen = new OrdinaryRuntimeGate(mutated); mutated.DATABENTO_RUNTIME_PROFILE = '{}'; assert(frozen.allows('ES'));
+const mutated = { ...approved, DATABENTO_APPROVAL_LEDGER: ledger() }; const frozen = new OrdinaryRuntimeGate(mutated); mutated.DATABENTO_RUNTIME_PROFILE = '{}'; assert(frozen.allows('ES'));
 let attempts = 0; let vendorSocket: net.Socket | undefined; const commands: string[] = [];
 const vendor = net.createServer(socket => {
   attempts++; vendorSocket = socket; socket.write('cram=test-challenge\n');
@@ -99,7 +103,7 @@ try {
   await new Promise<void>(r => vendor.close(() => r()));
 }
 guard.assertBackend(); guard.assertClean();
-const expiryGate = new OrdinaryRuntimeGate({ ...approved, DATABENTO_RUNTIME_PROFILE: JSON.stringify({ ...profile, expiresAt: new Date(Date.now() + 150).toISOString() }) });
+const expiryGate = new OrdinaryRuntimeGate({ ...approved, DATABENTO_APPROVAL_LEDGER: ledger(), DATABENTO_RUNTIME_PROFILE: JSON.stringify({ ...profile, expiresAt: new Date(Date.now() + 150).toISOString() }) });
 let expired = false; const expirySocket = new net.Socket();
 const expiryFeed = createMarketDataFeed('ES', getOrRegisterInstrument('ES'), { ...handlers, onStatus: status => { if (status.reason?.includes('approval expired')) { assert.equal(expirySocket.destroyed, true); expired = true; } } }, expiryGate, (() => expirySocket) as any).feed;
 await expiryFeed.connect(); await wait(() => expired); await assert.rejects(expiryFeed.connect(), /scope\/expiry denied/);

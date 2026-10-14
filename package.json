@@ -28,7 +28,9 @@
     "test:identity:offline": "pnpm --filter @deepchart/server exec tsx test/tradeIdentity.test.ts",
     "mcp": "pnpm --filter @deepchart/server exec tsx src/mcp/server.ts",
     "benchmark": "pnpm --filter @deepchart/server exec tsx ../scripts/benchmark_baseline.ts",
-    "db:backup": "node scripts/backup_db.mjs"
+    "db:backup": "node scripts/backup_db.mjs",
+    "test:lifecycle:offline": "pnpm --filter @deepchart/server exec tsx test/lifecycle.test.ts && pnpm --filter @deepchart/server exec tsx test/recovery.test.ts",
+    "test:soak:offline": "node scripts/verify_multi_terminal.mjs --bounded-soak"
   },
   "engines": {
     "node": ">=22.13"

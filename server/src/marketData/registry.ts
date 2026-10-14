@@ -19,7 +19,7 @@ export function createMarketDataFeed(symbol: string, _instrument: FuturesInstrum
     const feed = new DatabentoLiveClient({ symbol: p.vendorSymbol, dataset: p.dataset, schema: p.schema,
       apiKey: gate.credentials(), handlers,
       ordinary: { createConnection: mockConnection, expiresAt: p.expiresAt,
-        beforeConnect: () => gate.claimConnection(symbol), onSubscription: () => gate.subscription(), onAck: () => gate.ack() },
+        isAuthorized: () => gate.allows(symbol), beforeConnect: () => gate.claimConnection(symbol), onSubscription: () => gate.subscription(), onAck: () => gate.ack() },
     });
     return { feed, provider: 'databento' };
   }

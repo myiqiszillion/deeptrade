@@ -19,7 +19,7 @@ const backend = await import('../server/dist/index.js');
 if (!backend.httpServer.listening) await new Promise(resolve => backend.httpServer.once('listening', resolve));
 const port = backend.httpServer.address().port;
 process.env.VITE_WS_URL = `ws://127.0.0.1:${port}`;
-let vite; let browser;
+let vite; let browser; let serverClosed=false;
 const messages = []; const browserErrors = [];
 const output = path.join(os.homedir(), '.codex', 'private-acceptance', `multi-terminal-offline-${Date.now()}`);
 const repoRoot = process.cwd();
@@ -100,9 +100,11 @@ try {
   // Primary switches to NQ using the real header; no duplicated ownership or ES data in NQ.
   await page.evaluate(()=>{const r=document.getElementById('root');const k=Object.keys(r).find(k=>k.startsWith('__reactContainer$'));const q=[r[k].stateNode.current];while(q.length){const f=q.pop();if(f.child)q.push(f.child);if(f.sibling)q.push(f.sibling);if(f.type?.name==='TerminalHeader'){f.memoizedProps.onSelectSymbol('NQ');return;}}throw new Error('Header missing');});
   const switched=await waitState(page,s=>s.canvases.length===1&&s.canvases[0].symbol==='NQ'&&s.profile.totalVolume===16);assert.equal(switched.cvd,3);assert.equal(es.subscriberCount,0);assert.equal(nq.subscriberCount,2);assert.equal(switched.health.state,'UNAVAILABLE');
+  const soak=process.argv.includes('--bounded-soak') ? await (await import('./lifecycle_soak.mjs')).runLifecycleSoak({page,page2,es,nq,record,state,waitState,checkCanvas,port,token,messages,seed:{ES:[...cohort.ES,finalES],NQ:[...cohort.NQ,finalNQ]}}) : undefined;
   await page.screenshot({path:path.join(output,'multi-terminal.png')});await page2.close();await page.close();
-  for(let i=0;i<30&&nq.subscriberCount;i++)await new Promise(r=>setTimeout(r,50));assert.equal(nq.subscriberCount,0);assert.equal(es.subscriberCount,0);assert.equal(externalCalls,0);assert.deepEqual(browserErrors,[]);
-  fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({scope:'OFFLINE FIXTURE — NOT LIVE',cohort,oracle,first,second,shared,final1,final2,switched,finalTrades:{ES:finalES,NQ:finalNQ},durability:{ES:es.getDurability(),NQ:nq.getDurability()},health:{ES:es.getFeedHealth(),NQ:nq.getFeedHealth()},externalCalls,browserErrors,messageCounts:messages.reduce((a,m)=>({...a,[`${m.symbol||'control'}:${m.type}`]:(a[`${m.symbol||'control'}:${m.type}`]||0)+1}),{})},null,2));
+  for(let i=0;i<30&&(nq.subscriberCount||es.subscriberCount);i++)await new Promise(r=>setTimeout(r,50));assert.equal(nq.subscriberCount,0);assert.equal(es.subscriberCount,0);assert.equal(externalCalls,0);assert.deepEqual(browserErrors,[]);
+  if(soak){await backend.closeServer();serverClosed=true;soak.cleanup=[es,nq].map(c=>({symbol:c.symbol,disposed:c.disposed,subscribers:c.subscriberCount,timers:[c.healthTimer,c.trailingAnalyticsTimer,c.cleanupTimer,c.gexTimer].filter(Boolean).length,liveQueue:c.liveBuffer.length,feed:c.feed}));assert(soak.cleanup.every(c=>c.disposed&&c.subscribers===0&&c.timers===0&&c.liveQueue===0&&c.feed===null));}
+  fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({scope:'OFFLINE FIXTURE — NOT LIVE',soak,cohort,oracle,first,second,shared,final1,final2,switched,finalTrades:{ES:finalES,NQ:finalNQ},durability:{ES:es.getDurability(),NQ:nq.getDurability()},health:{ES:es.getFeedHealth(),NQ:nq.getFeedHealth()},externalCalls,browserErrors,messageCounts:messages.reduce((a,m)=>({...a,[`${m.symbol||'control'}:${m.type}`]:(a[`${m.symbol||'control'}:${m.type}`]||0)+1}),{})},null,2));
   console.log('MULTI TERMINAL UI OFFLINE PASS: two authenticated browsers / ES primary + NQ secondary / independent state / final updates / owned cleanup');console.log('Offline evidence: '+output);
 } catch(error){console.error(error);process.exitCode=1;}
-finally{await browser?.close();await vite?.close();await backend.closeServer();process.exit(process.exitCode??0);}
+finally{await browser?.close();await vite?.close();if(!serverClosed)await backend.closeServer();process.exit(process.exitCode??0);}

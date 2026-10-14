@@ -30,7 +30,7 @@ function trade(c:HealthClock,i=1,instrument=10252) {const b=Buffer.alloc(48);b[0
 async function fixture() {
  // Singleton storage is guard-pinned :memory:; isolate each mock cohort from previous fixtures.
  assert.equal(process.env.STORAGE_PATH,':memory:'); (marketDataStore as any).db.exec('DELETE FROM trades; DELETE FROM bars;');
- const c=clock(),socket=new Socket(),gate=new OrdinaryRuntimeGate(env,c.wall(),c);let expire:()=>void=()=>{};
+ const c=clock(),socket=new Socket(),gate=new OrdinaryRuntimeGate({...env,DATABENTO_APPROVAL_LEDGER:join(mkdtempSync(join(tmpdir(),'deepchart-health-lease-')),'approval.sqlite')},c.wall(),c);let expire:()=>void=()=>{};
  const messages:any[]=[];const ws:any={readyState:1,bufferedAmount:0,send:(s:string)=>messages.push(JSON.parse(s))};
  let client!:DatabentoLiveClient;
  const factory:any=(_s:any,_i:any,handlers:any)=>({provider:'databento',feed:client=new DatabentoLiveClient({symbol:'ES.c.0',dataset:'GLBX.MDP3',schema:'trades',apiKey:'offline-health-sentinel',handlers,clock:c,timers:{set:(fn)=>{expire=fn;return {unref(){}} as any;},clear:()=>{}},ordinary:{expiresAt:gate.profile!.expiresAt,createConnection:(()=>socket) as any,beforeConnect:()=>gate.claimConnection('ES'),onSubscription:()=>gate.subscription(),onAck:()=>gate.ack()}})});

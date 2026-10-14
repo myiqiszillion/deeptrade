@@ -1,3 +1,4 @@
+import { ApprovalLease } from './approvalLease.js';
 import { healthClock, HealthClock } from './feedHealth.js';
 /** Ordinary backend approval is immutable at boot; credentials alone never activate it. */
 export interface TradesRuntimeProfile {
@@ -29,23 +30,35 @@ export class OrdinaryRuntimeGate {
   readonly reason: string;
   readonly counters = { connectionAttempts: 0, subscriptionCommands: 0, subscriptionAcks: 0 };
   private readonly key: string;
+  private lease?: ApprovalLease;
+  private expiresMono = 0;
   constructor(env: NodeJS.ProcessEnv, now = Date.now(), private clock: HealthClock = healthClock) {
     const result = validateOrdinaryProfile(env, now);
-    this.profile = result.profile; this.reason = result.reason;
-    this.key = result.profile ? env.DATABENTO_API_KEY!.trim() : '';
+    if (result.profile) {
+      try {
+        this.lease = new ApprovalLease(env.DATABENTO_APPROVAL_LEDGER || '', result.profile.approvalId, Date.parse(result.profile.expiresAt), now);
+        this.profile = result.profile;
+        this.expiresMono = this.clock.mono() + Date.parse(result.profile.expiresAt) - now;
+      } catch (error) { result.reason = 'Durable approval denied: ' + (error as Error).message; }
+    }
+    this.reason = result.reason;
+    this.key = this.profile ? env.DATABENTO_API_KEY!.trim() : '';
   }
-  allows(symbol: string): boolean { return !!this.profile && symbol === this.profile.symbol && Date.parse(this.profile.expiresAt) > this.clock.wall(); }
+  allows(symbol: string): boolean { return !!this.profile && symbol === this.profile.symbol && Date.parse(this.profile.expiresAt) > this.clock.wall() && this.clock.mono() < this.expiresMono && !!this.lease?.valid(this.clock.wall()); }
   credentials(): string { return this.key; }
   claimConnection(symbol: string): void {
     if (!this.allows(symbol)) throw new Error('Ordinary runtime scope/expiry denied');
-    if (this.counters.connectionAttempts !== 0) throw new Error('Ordinary runtime connection budget exhausted (1 attempt per boot; no retry)');
+    if (this.counters.connectionAttempts !== 0) throw new Error('Ordinary runtime connection budget exhausted (1 durable attempt per approval; no retry)');
+    this.lease!.consume('attempts', this.clock.wall());
     this.counters.connectionAttempts++;
   }
   subscription(): void {
     if (this.counters.connectionAttempts !== 1 || this.counters.subscriptionCommands !== 0) throw new Error('Ordinary subscription budget exhausted');
+    if (!this.allows('ES')) throw new Error('Ordinary runtime scope/expiry denied');
+    this.lease!.consume('commands', this.clock.wall());
     this.counters.subscriptionCommands++;
   }
-  ack(): void { this.counters.subscriptionAcks++; }
+  ack(): void { if (this.counters.subscriptionAcks) return; this.lease!.consume('acks', this.clock.wall()); this.counters.subscriptionAcks++; }
 }
 let runtime: OrdinaryRuntimeGate | undefined;
 export function initializeOrdinaryRuntime(env: NodeJS.ProcessEnv = process.env): OrdinaryRuntimeGate {

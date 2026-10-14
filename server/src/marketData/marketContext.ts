@@ -304,6 +304,8 @@ export class MarketContext {
     return engine;
   }
 
+  private cancelConnect?: () => void;
+
   public async startFeed(): Promise<void> {
     this.feedTransitionPromise = this.feedTransitionPromise
       .then(() => this.doStartFeed())
@@ -314,6 +316,7 @@ export class MarketContext {
   }
 
   public async stopFeed(): Promise<void> {
+    if (this.cancelConnect) { ++this.activeFeedToken; this.cancelConnect(); }
     this.feedTransitionPromise = this.feedTransitionPromise
       .then(() => this.doStopFeed())
       .catch((err) => {
@@ -393,7 +396,8 @@ export class MarketContext {
     console.log(`[MarketContext] Feed provider '${provider}' starting for ${this.symbol}`);
 
     try {
-      await feed.connect();
+      const cancelled = new Promise<void>(resolve => { this.cancelConnect = resolve; });
+      try { await Promise.race([feed.connect(), cancelled]); } finally { this.cancelConnect = undefined; }
     } catch (err) {
       if (this.disposed || token !== this.activeFeedToken) return;
       this.feedReason = (err as Error).message;
@@ -402,15 +406,7 @@ export class MarketContext {
       console.warn(`[Feed:${provider}] ${this.symbol} failed to connect: ${this.feedReason}`);
     }
 
-    if (token !== this.activeFeedToken) {
-      // Feed token superseded while connecting — disconnect this feed
-      try {
-        await feed.disconnect();
-      } catch {
-        // ignore
-      }
-      return;
-    }
+    if (this.disposed || token !== this.activeFeedToken) return;
 
     this.feedLifecycleState = 'RUNNING';
 
@@ -1156,42 +1152,50 @@ export class MarketContext {
     this.subscribers.add(session);
 
     // Instant local cache priming: if in-memory history is empty, populate from persistent store immediately
-    this.primeHistoryBarsFromStore(timeframe);
+    try {
+      this.primeHistoryBarsFromStore(timeframe);
 
-    if (!this.acceptance && this.historyTicks.length === 0) {
-      const storedTrades = marketDataStore.queryTrades({
-        provider: this.getEffectiveProvider(),
-        symbol: this.symbol,
-        limit: 1000,
-        beforeTime: this.historyBoundary,
-      });
-      // Only replay stored trades into the live footprint engine if they belong to the current active session
-      // (within the last 24h, or within 1h of the newest history bar) rather than stale ticks from days ago
-      const newestTradeTs = storedTrades.trades.length > 0 ? storedTrades.trades[0].timestamp : 0;
-      const cachedHistory = this.historyBarsByTf.get(timeframe) || this.historyBars;
-      const newestHistoryTs = cachedHistory.length > 0 ? cachedHistory[cachedHistory.length - 1].time : 0;
-      const isRecentEnough = newestTradeTs >= Math.max(Date.now() - 24 * 3600 * 1000, newestHistoryTs - 3600 * 1000);
+      if (!this.acceptance && this.historyTicks.length === 0) {
+        const storedTrades = marketDataStore.queryTrades({
+          provider: this.getEffectiveProvider(),
+          symbol: this.symbol,
+          limit: 1000,
+          beforeTime: this.historyBoundary,
+        });
+        // Only replay stored trades into the live footprint engine if they belong to the current active session
+        // (within the last 24h, or within 1h of the newest history bar) rather than stale ticks from days ago
+        const newestTradeTs = storedTrades.trades.length > 0 ? storedTrades.trades[0].timestamp : 0;
+        const cachedHistory = this.historyBarsByTf.get(timeframe) || this.historyBars;
+        const newestHistoryTs = cachedHistory.length > 0 ? cachedHistory[cachedHistory.length - 1].time : 0;
+        const isRecentEnough = newestTradeTs >= Math.max(Date.now() - 24 * 3600 * 1000, newestHistoryTs - 3600 * 1000);
 
-      if (storedTrades.trades.length > 0 && isRecentEnough) {
-        const window=contractWindow(uniqueTradeTicks(storedTrades.trades));
-        this.historyTicks = window.ticks;
-        this.observedContract = contractKey(this.historyTicks.find(t=>contractKey(t)) || {});
-        this.durability.restored += this.historyTicks.length;
-        const firstTs = this.historyTicks[0]?.timestamp || 0;
-        this.profile.reset(firstTs);
-        this.profile.setCoverage('PARTIAL', `Bounded SQLite restoration; ${window.excluded} other-contract rows excluded; full session not verified`);
-        this.vwap.reset(firstTs);
-        const engine = this.ensureFootprintEngine(timeframe);
-        for (const t of this.historyTicks) {
-          this.trackVendorTickId(t.id, JSON.stringify([t.timestamp, t.price, t.size, t.side.toLowerCase()]));
-          engine.processTick(t);
-          this.profile.processTick(t);
-          this.vwap.processTick(t);
-        }
-        if (this.historySource === 'NONE') {
-          this.historySource = 'REAL_TICKS';
+        if (storedTrades.trades.length > 0 && isRecentEnough) {
+          const window=contractWindow(uniqueTradeTicks(storedTrades.trades));
+          this.historyTicks = window.ticks;
+          this.observedContract = contractKey(this.historyTicks.find(t=>contractKey(t)) || {});
+          const restoredCount = this.historyTicks.length;
+          const firstTs = this.historyTicks[0]?.timestamp || 0;
+          this.profile.reset(firstTs);
+          this.profile.setCoverage('PARTIAL', `Bounded SQLite restoration; ${window.excluded} other-contract rows excluded; full session not verified`);
+          this.vwap.reset(firstTs);
+          const engine = this.ensureFootprintEngine(timeframe);
+          for (const t of this.historyTicks) {
+            this.trackVendorTickId(t.id, JSON.stringify([t.timestamp, t.price, t.size, t.side.toLowerCase()]));
+            engine.processTick(t);
+            this.profile.processTick(t);
+            this.vwap.processTick(t);
+          }
+          this.durability.restored += restoredCount;
+          if (this.historySource === 'NONE') {
+            this.historySource = 'REAL_TICKS';
+          }
         }
       }
+
+    } catch (error) {
+      this.historyTicks = []; this.footprintEngines.clear(); this.profile.reset(0); this.vwap.reset(0);
+      this.durability.projectionFailed++;
+      this.blockPersistence('Cache projection rebuild failed: ' + (error as Error).message);
     }
 
     // Deliver instant snapshot in <1ms
@@ -1318,6 +1322,7 @@ export class MarketContext {
 export class MarketContextManager {
   private contexts = new Map<string, MarketContext>();
   private pendingInits = new Map<string, Promise<MarketContext>>();
+  private initializing = new Set<MarketContext>();
   private disposed = false;
   private gexEngine: GEXEngine;
 
@@ -1362,7 +1367,8 @@ export class MarketContextManager {
             undefined,
             this.feedFactory
           );
-          await newCtx.startFeed();
+          this.initializing.add(newCtx);
+          try { await newCtx.startFeed(); } finally { this.initializing.delete(newCtx); }
           if (this.disposed) { await newCtx.dispose(); throw new Error('Context manager disposed during initialization'); }
           this.contexts.set(symbol, newCtx);
           return newCtx;
@@ -1377,8 +1383,9 @@ export class MarketContextManager {
 
   public async subscribe(session: ChartSession, symbol: string, timeframe: string, generation?: number, owner = 'default'): Promise<void> {
     const gen = generation ?? session.generationFor(owner);
+    const epoch = session.subscriptionEpoch;
     const ctx = await this.getOrCreateContext(symbol);
-    if (!session.isOpen || session.generationFor(owner) !== gen || this.disposed) { this.scheduleUnused(ctx); return; }
+    if (!session.isOpen || session.generationFor(owner) !== gen || session.subscriptionEpoch !== epoch || this.disposed) { this.scheduleUnused(ctx); return; }
     for (const [id, existing] of session.subscriptionOwners) {
       if (id !== owner && existing.symbol === symbol && existing.timeframe !== timeframe) throw new Error('Same-symbol pane timeframe conflict; use matching timeframe or a separate browser session');
     }
@@ -1410,6 +1417,7 @@ export class MarketContextManager {
       for (const [id,x] of session.subscriptionOwners) if (x.symbol === symbol) { session.nextGeneration(id); session.subscriptionOwners.delete(id); }
       this.detach(session, symbol);
     } else {
+      ++session.subscriptionEpoch;
       for (const id of session.subscriptionOwners.keys()) session.nextGeneration(id);
       const symbols = new Set([...session.subscriptions.keys(), ...Array.from(session.subscriptionOwners.values(), x=>x.symbol)]);
       session.subscriptionOwners.clear();
@@ -1418,7 +1426,7 @@ export class MarketContextManager {
   }
   public async disposeAll(): Promise<void> {
     this.disposed = true;
-    await Promise.all(Array.from(this.contexts.values(), ctx => ctx.dispose()));
+    await Promise.all(Array.from(new Set([...this.contexts.values(), ...this.initializing]), ctx => ctx.dispose()));
     this.contexts.clear();
     await Promise.allSettled(Array.from(this.pendingInits.values()));
   }

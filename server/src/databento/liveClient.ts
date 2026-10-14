@@ -349,6 +349,7 @@ interface DatabentoLiveOptions {
     expiresAt: string;
     beforeConnect: () => void;
     onSubscription: () => void;
+    isAuthorized?: () => boolean;
     onAck: () => void;
   };
   /** Only the private operator acceptance controller supplies these hooks. */
@@ -377,7 +378,8 @@ export class DatabentoLiveClient implements MarketDataFeed {
   private intentionallyClosed = false;
   private reconnectAttempts = 0;
   private reconnectTimer: any = null;
-  private liveResolver?: () => void;
+  private authorizationTimer?: ReturnType<typeof setInterval>;
+  private liveWaiters = new Set<{ resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private generation = 0;
   private dbnVersion = 2;
   private readonly acceptance?: DatabentoLiveOptions['acceptance'];
@@ -442,6 +444,11 @@ export class DatabentoLiveClient implements MarketDataFeed {
         this.handlers.onStatus({ state: 'UNAVAILABLE', reason: 'Ordinary approval expired; restart requires renewed profile', provider: this.provider, symbol: this.symbol });
       }, remaining);
       this.approvalTimer.unref();
+      if (this.ordinary.isAuthorized) {
+        this.authorizationTimer = setInterval(() => {
+          if (!this.ordinary!.isAuthorized!()) { void this.disconnect(); this.handlers.onStatus({state:'BLOCKED',reason:'Durable approval invalid/revoked; Operator reconciliation required',provider:this.provider,symbol:this.symbol}); }
+        }, 1000); this.authorizationTimer.unref();
+      }
     }
     if (!this.apiKey) {
       this.handlers.onStatus({
@@ -465,7 +472,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
     if (this.WSClass) {
       this.connectWebSocket();
     } else {
-      this.connectTcp();
+      try { this.connectTcp(); } catch (error) { await this.disconnect(); throw error; }
     }
   }
 
@@ -559,7 +566,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
         };
         this.hasMarket = true;
         this.handlers.onTrade(mt);
-        if (this.liveResolver) { this.liveResolver(); this.liveResolver = undefined; }
+        this.settleLiveWaiters();
       } catch (e: any) {
         console.warn(`[DatabentoLive:${this.symbol}] trade normalize failed: ${e?.message}`);
       }
@@ -624,7 +631,11 @@ export class DatabentoLiveClient implements MarketDataFeed {
 
     socket.on('data', (chunk: Buffer) => {
       if (this.generation !== currentGen) return;
-      if (this.acceptance && buffer.length + chunk.length > 1024 * 1024) { this.acceptance.onFailure('Input buffer limit'); return; }
+      if (buffer.length + chunk.length > 1024 * 1024) {
+        if (this.acceptance) { this.acceptance.onFailure('Input buffer limit'); return; }
+        if (this.ordinary) { void this.disconnect(); this.handlers.onError(new Error('Ordinary input buffer limit exceeded')); return; }
+      }
+      if (this.ordinary?.isAuthorized && !this.ordinary.isAuthorized()) { void this.disconnect(); this.handlers.onStatus({state:'BLOCKED',reason:'Durable approval invalid/revoked; Operator reconciliation required',provider:this.provider,symbol:this.symbol}); return; }
       if (this.ordinary && (this.clock.wall() >= Date.parse(this.ordinary.expiresAt) || this.clock.mono() >= this.approvalMono!)) {
         void this.disconnect(); this.handlers.onStatus({ state: 'UNAVAILABLE', reason: 'Ordinary approval expired; restart requires renewed profile', provider: this.provider, symbol: this.symbol }); return;
       }
@@ -666,7 +677,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
           }
 
           if (this.ordinary) {
-            this.ordinary.onSubscription();
+            try { this.ordinary.onSubscription(); } catch(error) { void this.disconnect(); this.handlers.onStatus({state:'BLOCKED',reason:'Durable approval subscription/ACK denied',provider:this.provider,symbol:this.symbol}); this.handlers.onError(error as Error); return; }
             socket.write('schema=trades|stype_in=continuous|symbols=ES.c.0|snapshot=0|is_last=1\n');
           } else if (this.acceptance) {
             socket.write('schema=trades|stype_in=continuous|symbols=ES.c.0|snapshot=0|is_last=1\n');
@@ -709,6 +720,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
         if (buffer.length >= 8 && buffer.subarray(0, 3).toString('ascii') === DBN_CONSTANTS.MAGIC) {
           this.dbnVersion = buffer.readUInt8(3);
           const metaLen = buffer.readUInt32LE(4);
+          if (this.ordinary && metaLen > 1024 * 1024 - 8) { void this.disconnect(); this.handlers.onError(new Error('Ordinary metadata exceeds input buffer budget')); return; }
           if (buffer.length >= 8 + metaLen) {
             buffer = buffer.subarray(8 + metaLen);
             this.acceptance?.onStage('METADATA');
@@ -725,6 +737,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
       if (phase === 'records') {
         while (buffer.length >= DBN_CONSTANTS.HEADER_SIZE) {
           if (this.generation !== currentGen) return;
+          if (this.ordinary && (this.clock.wall() >= Date.parse(this.ordinary.expiresAt) || this.clock.mono() >= this.approvalMono!)) { void this.disconnect(); this.handlers.onStatus({state:'BLOCKED',reason:'Ordinary approval expired during buffered records',provider:this.provider,symbol:this.symbol}); return; }
           const { parsed, recLen } = parseDbnRecord(buffer, this.symbol, this.provider, this.dbnVersion, {
             sourceKind: (this.ordinary?.createConnection || this.acceptance?.createConnection) ? 'LOCAL_FIXTURE' : 'VENDOR_LIVE',
             dataset: this.dataset,
@@ -758,7 +771,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
                 this.connected = true;
                 this.handlers.onStatus({ state: 'ACKNOWLEDGED', provider: this.provider, symbol: this.symbol });
                 if (this.ordinary) {
-                  this.ordinary.onAck();
+                  try { this.ordinary.onAck(); } catch(error) { void this.disconnect(); this.handlers.onStatus({state:'BLOCKED',reason:'Durable approval subscription/ACK denied',provider:this.provider,symbol:this.symbol}); this.handlers.onError(error as Error); return; }
                   this.connected = true;
 
                 }
@@ -771,7 +784,7 @@ export class DatabentoLiveClient implements MarketDataFeed {
             if (parsed.trade && (!this.ordinary || this.connected)) {
               this.hasMarket = true;
               this.handlers.onTrade(parsed.trade);
-              if (this.liveResolver) { this.liveResolver(); this.liveResolver = undefined; }
+              this.settleLiveWaiters();
             }
             if (!parsed.trade && !parsed.depth && !parsed.system && !parsed.error) {
               // Administrative or unhandled DBN record (e.g. SymbolMapping 0x16, Statistics 0x18)
@@ -795,8 +808,10 @@ export class DatabentoLiveClient implements MarketDataFeed {
     socket.on('close', () => {
       if (this.generation !== currentGen) return;
       this.connected = false; this.hasMarket = false;
+      if (this.ordinary) void this.disconnect();
+      else this.settleLiveWaiters(new Error('Databento socket closed'));
       this.socket = null;
-      if (!this.intentionallyClosed) {
+      if (!this.intentionallyClosed || this.ordinary) {
         if (this.acceptance) { this.acceptance.onFailure('Unexpected socket close'); return; }
         this.handlers.onStatus({
           state: 'UNAVAILABLE',
@@ -824,6 +839,8 @@ export class DatabentoLiveClient implements MarketDataFeed {
   }
 
   public async disconnect(): Promise<void> {
+    this.settleLiveWaiters(new Error('Databento stream disconnected'));
+    if (this.authorizationTimer) { clearInterval(this.authorizationTimer); this.authorizationTimer = undefined; }
     if (this.approvalTimer) { this.timers.clear(this.approvalTimer); this.approvalTimer = undefined; }
     this.intentionallyClosed = true;
     this.generation++;
@@ -845,17 +862,17 @@ export class DatabentoLiveClient implements MarketDataFeed {
     this.connected = false; this.hasMarket = false;
   }
 
+  private settleLiveWaiters(error?: Error): void {
+    for (const waiter of this.liveWaiters) { clearTimeout(waiter.timer); error ? waiter.reject(error) : waiter.resolve(); }
+    this.liveWaiters.clear();
+  }
   public waitForLive(timeoutMs = 8000): Promise<void> {
     if (this.hasMarket) return Promise.resolve();
+    if (this.intentionallyClosed) return Promise.reject(new Error('Databento stream disconnected'));
+    if (this.liveWaiters.size >= 32) return Promise.reject(new Error('Readiness waiter budget exhausted'));
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.liveResolver = undefined;
-        reject(new Error(`Timed out waiting for Databento live stream for ${this.symbol} (${timeoutMs}ms)`));
-      }, timeoutMs);
-      this.liveResolver = () => {
-        clearTimeout(timer);
-        resolve();
-      };
+      const waiter = { resolve, reject, timer: setTimeout(() => { this.liveWaiters.delete(waiter); reject(new Error(`Timed out waiting for Databento live stream for ${this.symbol} (${timeoutMs}ms)`)); }, timeoutMs) };
+      this.liveWaiters.add(waiter);
     });
   }
 }

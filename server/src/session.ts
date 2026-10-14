@@ -31,6 +31,7 @@ export class ChartSession {
   public subscribedTimeframe = '1m';
   public subscriptions = new Map<string, string>(); // symbol -> timeframe
   public subscriptionGeneration = 0;
+  public subscriptionEpoch = 0;
   public subscriptionOwners = new Map<string, { symbol: string; timeframe: string }>();
   private ownerGenerations = new Map<string, number>();
   public generationFor(owner = 'default'): number { return owner === 'default' ? this.subscriptionGeneration : this.ownerGenerations.get(owner) || 0; }
