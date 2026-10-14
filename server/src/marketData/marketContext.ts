@@ -125,6 +125,18 @@ export class MarketContext {
 
   private recentVendorTickIds = new Map<string, string>();
   private identityBlocked = false;
+  private persistenceBlocked = false;
+  private durability = { received: 0, accepted: 0, pending: 0, persisted: 0, failed: 0, projectionFailed: 0, published: 0, restored: 0, lastCommittedId: null as string | null };
+  public getDurability() {
+    return { ...this.durability, status: this.persistenceBlocked ? 'FAILED' : this.identityBlocked ? 'BLOCKED' : this.acceptance ? 'NOT_DURABLE_ACCEPTANCE' : 'COMMITTED_OBSERVATION',
+      scope: 'context lifetime counters; restored window is bounded, not full session coverage' };
+  }
+  private blockPersistence(reason: string): void {
+    this.persistenceBlocked = true;
+    this.feedReason = `Trade persistence BLOCKED: ${reason}; Operator reconciliation required`;
+    this.setFeedStatus('UNAVAILABLE');
+    void this.feed?.disconnect().catch(err => console.warn(`[Trade persistence] disconnect failed: ${(err as Error).message}`));
+  }
   private readonly MAX_DEDUP_IDS = 5000;
   private pendingHistoryFetches = new Map<string, { token: number; promise: Promise<HistoricalBar[]> }>();
   private feedLifecycleState: 'STARTING' | 'RUNNING' | 'STOPPING' | 'STOPPED' = 'STOPPED';
@@ -281,6 +293,7 @@ export class MarketContext {
   }
 
   private async doStartFeed(): Promise<void> {
+    if (this.persistenceBlocked || this.identityBlocked) { this.setFeedStatus('UNAVAILABLE'); return; }
     if (this.feedLifecycleState === 'RUNNING' || this.feedLifecycleState === 'STARTING') {
       await this.doStopFeed();
     }
@@ -305,7 +318,7 @@ export class MarketContext {
       },
       onStatus: (status: FeedStatusEvent) => {
         if (token !== this.activeFeedToken) return;
-        if (status.provider !== provider) return;
+        if (status.provider !== provider || this.persistenceBlocked || this.identityBlocked) return;
         const prevStatus = this.feedStatus;
         this.feedReason = status.reason;
         const nextStatus = status.state === 'LIVE' ? 'LIVE' : 'UNAVAILABLE';
@@ -396,7 +409,7 @@ export class MarketContext {
     }
     if (!this.acceptance) {
       this.flushTrailingAnalytics();
-      this.feedReason = 'feed stopped';
+      if (!this.persistenceBlocked && !this.identityBlocked) this.feedReason = 'feed stopped';
       this.setFeedStatus('UNAVAILABLE');
     }
     this.feedLifecycleState = 'STOPPED';
@@ -415,7 +428,8 @@ export class MarketContext {
   }
 
   private handleTrade(trade: MarketTrade): void {
-    if (this.identityBlocked) { this.acceptance?.onOutcome(trade, 'REJECTED'); return; }
+    this.durability.received++;
+    if (this.identityBlocked || this.persistenceBlocked) { this.acceptance?.onOutcome(trade, 'REJECTED'); return; }
     // 1. Validation: reject malformed or non-positive trade values
     if (
       !Number.isFinite(trade.price) ||
@@ -440,28 +454,17 @@ export class MarketContext {
     const tickId = identity.id;
     const signature = JSON.stringify([trade.ts, trade.price, trade.size, trade.side.toLowerCase()]);
     const known = this.recentVendorTickIds.get(tickId);
-    const storedStatus = this.acceptance ? 'UNSEEN' : marketDataStore.tradeIdentityStatus(this.provider, this.symbol, tickId, trade);
+    let storedStatus: 'UNSEEN' | 'DUPLICATE' | 'CONFLICT';
+    try { storedStatus = this.acceptance ? 'UNSEEN' : marketDataStore.tradeIdentityStatus(this.provider, this.symbol, tickId, trade); }
+    catch (err) { this.durability.failed++; this.blockPersistence((err as Error).message); return; }
     if ((known !== undefined && known !== signature) || storedStatus === 'CONFLICT') {
       this.blockIdentity(trade, 'conflicting payload for existing identity; rejected without overwrite');
       return;
     }
-    if (storedStatus === 'DUPLICATE' || !this.trackVendorTickId(tickId, signature)) {
+    if (storedStatus === 'DUPLICATE' || known !== undefined) {
         this.acceptance?.onOutcome(trade, 'DEDUPLICATED');
         return;
     }
-
-    this.lastTradeTs = Date.now();
-    if (this.feedStatus !== 'LIVE') this.setFeedStatus('LIVE');
-
-    // Venue message sequence is retained, but has no proven symbol-local trade continuity.
-
-    // 4. Session Rollover Detection (Reset VWAP & Profile on official session boundaries)
-    if (!this.acceptance && this.lastTradeEventTs > 0 && SessionCalendar.isNewSession(this.lastTradeEventTs, trade.ts, this.instrument.sessionScheduleId)) {
-      console.log(`[MarketContext] Session boundary crossed for ${this.symbol}. Resetting intraday profile & VWAP.`);
-      this.profile.reset(trade.ts);
-      this.vwap.reset(trade.ts);
-    }
-    this.lastTradeEventTs = trade.ts;
 
     const tick: Tick = {
       ...identity,
@@ -479,11 +482,41 @@ export class MarketContext {
       qualityFlags: trade.qualityFlags,
     };
 
+    this.durability.accepted++;
+    if (!this.acceptance) {
+      this.durability.pending = 1;
+      const result = marketDataStore.saveTrades([tick], this.symbol, this.provider);
+      this.durability.pending = 0;
+      if (result.status === 'FAILED') {
+        this.durability.failed++;
+        this.blockPersistence(`${result.error}; outcome=${result.commitOutcome}`);
+        return;
+      }
+      if (result.insertedIds.length === 0) return;
+      this.durability.persisted++;
+      this.durability.lastCommittedId = tick.id;
+    }
+    // Cache and analytics change only after the SQL commit, never on a failed write.
+    this.trackVendorTickId(tickId, signature);
+    this.lastTradeTs = Date.now();
+    if (this.feedStatus !== 'LIVE') this.setFeedStatus('LIVE');
+
+    // Venue message sequence is retained, but has no proven symbol-local trade continuity.
+
+    // 4. Session Rollover Detection (Reset VWAP & Profile on official session boundaries)
+    if (!this.acceptance && this.lastTradeEventTs > 0 && SessionCalendar.isNewSession(this.lastTradeEventTs, trade.ts, this.instrument.sessionScheduleId)) {
+      console.log(`[MarketContext] Session boundary crossed for ${this.symbol}. Resetting intraday profile & VWAP.`);
+      this.profile.reset(trade.ts);
+      this.vwap.reset(trade.ts);
+    }
+    this.lastTradeEventTs = trade.ts;
+
     if (this.acceptance && !this.acceptance.normalFanout) {
       for (const engine of this.footprintEngines.values()) engine.processTick(tick);
       this.profile.processTick(tick);
       this.profile.setCoverage('PARTIAL', 'Bounded acceptance observation; not full session');
       this.historyTicks.push(tick);
+      this.durability.published++;
       this.acceptance.onOutcome(trade, 'ACCEPTED');
       for (const session of this.subscribers) {
         session.send({ type: 'TICK', symbol: this.symbol, tick });
@@ -491,8 +524,6 @@ export class MarketContext {
       return;
     }
 
-    // Persist normalized trade
-    if (!this.acceptance) marketDataStore.saveTrades([tick], this.symbol, this.provider);
 
     // Buffer recent ticks (strictly maintained in timestamp ascending order)
     if (!this.isBackfillingHistory) {
@@ -522,6 +553,7 @@ export class MarketContext {
     if (!this.acceptance) microstructureEngine.recordTick(tick);
 
     if (this.isBackfillingHistory) {
+      this.durability.published++;
       this.liveBuffer.push(tick);
       for (const session of this.subscribers) {
         if (session.isReplay()) continue;
@@ -537,7 +569,11 @@ export class MarketContext {
 
       // Persist closed bar to store
       if (!this.acceptance && closedBar) {
-        marketDataStore.saveBar(closedBar, this.symbol, tf, this.provider);
+        if (!marketDataStore.saveBar(closedBar, this.symbol, tf, this.provider)) {
+          this.durability.projectionFailed++;
+          this.blockPersistence('Derived bar cache write failed; trade is committed, rebuild projection from committed trades required');
+          return;
+        }
         alertEngine.evaluateFootprintBar(this.symbol, closedBar, this.instrument.tickSize);
       } else if (!this.acceptance && currentBar) {
         alertEngine.evaluateFootprintBar(this.symbol, currentBar, this.instrument.tickSize);
@@ -641,6 +677,7 @@ export class MarketContext {
       this.trailingAnalyticsTimer = setTimeout(() => this.flushTrailingAnalytics(), 500);
       this.trailingAnalyticsTimer.unref();
     }
+    this.durability.published++;
     this.acceptance?.onOutcome(trade, 'ACCEPTED');
   }
 
@@ -1082,6 +1119,7 @@ export class MarketContext {
 
       if (storedTrades.trades.length > 0 && isRecentEnough) {
         this.historyTicks = uniqueTradeTicks(storedTrades.trades);
+        this.durability.restored += this.historyTicks.length;
         const firstTs = this.historyTicks[0]?.timestamp || 0;
         this.profile.reset(firstTs);
         this.vwap.reset(firstTs);

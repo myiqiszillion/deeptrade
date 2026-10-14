@@ -87,6 +87,14 @@ export interface InstrumentSpecRow {
   updatedAt?: number;
 }
 
+export interface TradeCommitResult {
+  status: 'COMMITTED' | 'FAILED';
+  insertedIds: string[];
+  duplicateIds: string[];
+  error?: string;
+  commitOutcome?: 'ROLLED_BACK' | 'NOT_STARTED' | 'UNKNOWN';
+}
+
 export class MarketDataStore implements IMarketDataStore {
   private db: DatabaseSync;
   private dbPath: string;
@@ -105,6 +113,11 @@ export class MarketDataStore implements IMarketDataStore {
   private writeFailures = 0;
   private lastWriteWarningTs = 0;
   private depthQueueOverflows = 0;
+  // Synchronous trade writes: no application retry or retained pending queue.
+  public readonly maxTradeBatchSize = 10000;
+  private tradeDurability = { attempts: 0, committed: 0, duplicates: 0, failed: 0, pending: 0, lastCommittedId: null as string | null };
+  private tradePersistenceBlocked = false;
+  public getTradeDurability() { return { ...this.tradeDurability, blocked: this.tradePersistenceBlocked }; }
 
   constructor(dbPath?: string) {
     let resolvedPath = dbPath;
@@ -445,7 +458,7 @@ export class MarketDataStore implements IMarketDataStore {
     }
 
     this.insertTradeStmt = this.db.prepare(`
-      INSERT OR IGNORE INTO trades (
+      INSERT INTO trades (
         provider, symbol, trade_id, ts, price, size, side,
         aggressor_provenance, receive_ts, sequence_id, source_provider, is_coalesced
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -665,7 +678,7 @@ export class MarketDataStore implements IMarketDataStore {
     if (now - this.lastWriteWarningTs > 5000) {
       this.lastWriteWarningTs = now;
       console.warn(
-        `[MarketDataStore] ${op} failed: ${(err as Error).message} (${this.writeFailures} write failure(s) so far; this batch was not persisted)`
+        `[MarketDataStore] ${op} failed: ${(err as Error).message} (${this.writeFailures} write failure(s) so far; operation failed; inspect transaction outcome before claiming durability)`
       );
     }
   }
@@ -673,48 +686,54 @@ export class MarketDataStore implements IMarketDataStore {
   /**
    * Batch insert trades into the persistent store. Deduplication is enforced by PRIMARY KEY (provider, symbol, trade_id).
    */
-  public saveTrades(trades: (MarketTrade | Tick)[], symbol: string, provider: string): void {
-    if (trades.length === 0) return;
-
+  public saveTrades(trades: (MarketTrade | Tick)[], symbol: string, provider: string): TradeCommitResult {
+    this.tradeDurability.attempts++;
+    const insertedIds: string[] = [], duplicateIds: string[] = [];
+    let transaction = false;
     try {
+      if (this.tradePersistenceBlocked) throw new Error('Trade persistence BLOCKED; reopen and reconcile required');
+      if (trades.length > this.maxTradeBatchSize) throw new Error('Trade batch exceeds synchronous capacity; no pending queue retained');
+      if (trades.length === 0) return { status: 'COMMITTED', insertedIds, duplicateIds };
+      this.db.exec('BEGIN IMMEDIATE');
+      transaction = true;
+      this.tradeDurability.pending = trades.length;
       for (const t of trades) {
         const ts = 'ts' in t ? t.ts : t.timestamp;
+        if (!Number.isFinite(ts) || ts <= 0 || !Number.isFinite(t.price) || t.price <= 0 || !Number.isFinite(t.size) || t.size <= 0) throw new Error('Invalid trade values');
         const tradeId = resolveTradeIdentity(t).id;
-        if (this.tradeIdentityStatus(provider, symbol, tradeId, t) === 'CONFLICT') {
-          throw new Error('Conflicting payload for existing trade identity; rejected without overwrite');
-        }
-        const receiveTs = t.receiveTs ?? Date.now();
-        const seqId = t.sequenceId !== undefined ? String(t.sequenceId) : null;
-        const srcProvider = t.sourceProvider || provider;
-        const isCoalesced = t.qualityFlags?.isCoalesced ? 1 : 0;
-
         const rawSide = typeof t.side === 'string' ? t.side.toLowerCase() : 'unknown';
         const side = rawSide === 'buy' || rawSide === 'b' ? 'buy' : rawSide === 'sell' || rawSide === 'a' ? 'sell' : 'unknown';
-
-        this.insertTradeStmt.run(
-          provider,
-          symbol,
-          tradeId,
-          ts,
-          t.price,
-          t.size,
-          side,
-          t.aggressorProvenance || 'UNKNOWN',
-          receiveTs,
-          seqId,
-          srcProvider,
-          isCoalesced
-        );
+        const existing = this.tradeIdentityStatus(provider, symbol, tradeId, { ...t, side });
+        if (existing === 'CONFLICT') throw new Error('Conflicting payload for existing trade identity; rejected without overwrite');
+        if (existing === 'DUPLICATE') { duplicateIds.push(tradeId); continue; }
+        const result = this.insertTradeStmt.run(provider, symbol, tradeId, ts, t.price, t.size, side,
+          t.aggressorProvenance || 'UNKNOWN', t.receiveTs ?? Date.now(),
+          t.sequenceId !== undefined ? String(t.sequenceId) : null, t.sourceProvider || provider,
+          t.qualityFlags?.isCoalesced ? 1 : 0);
+        if (Number(result.changes) !== 1) throw new Error('Trade INSERT did not insert exactly one row');
+        insertedIds.push(tradeId);
       }
+      this.db.exec('COMMIT');
+      transaction = false;
+      this.tradeDurability.committed += insertedIds.length;
+      this.tradeDurability.duplicates += duplicateIds.length;
+      if (insertedIds.length) this.tradeDurability.lastCommittedId = insertedIds.at(-1)!;
+      return { status: 'COMMITTED', insertedIds, duplicateIds };
     } catch (err) {
-      // A transient SQLite error (e.g. SQLITE_BUSY while another writer holds the lock) must never
-      // escape into the feed's trade handler: an uncaught throw there kills the whole server.
+      let commitOutcome: TradeCommitResult['commitOutcome'] = 'NOT_STARTED';
+      if (transaction) {
+        try { this.db.exec('ROLLBACK'); commitOutcome = 'ROLLED_BACK'; }
+        catch { commitOutcome = 'UNKNOWN'; this.tradePersistenceBlocked = true; }
+      }
+      this.tradeDurability.failed += trades.length;
       this.warnWriteFailure(`saveTrades(${provider}/${symbol}, ${trades.length} trades)`, err);
-    }
+      return { status: 'FAILED', insertedIds: [], duplicateIds: [], error: (err as Error).message, commitOutcome };
+    } finally { this.tradeDurability.pending = 0; }
   }
 
   public saveTrade(trade: MarketTrade, symbol: string, provider: string): void {
-    this.saveTrades([trade], symbol, provider);
+    const result = this.saveTrades([trade], symbol, provider);
+    if (result.status === 'FAILED') throw new Error(`Trade persistence failed: ${result.error}`);
   }
 
   /** Indexed read for dedup across context/reconnect/restart; no ingestion durability guarantee. */
@@ -725,7 +744,8 @@ export class MarketDataStore implements IMarketDataStore {
   }
 
   public saveTradesBatch(trades: MarketTrade[], symbol: string, provider: string): void {
-    this.saveTrades(trades, symbol, provider);
+    const result = this.saveTrades(trades, symbol, provider);
+    if (result.status === 'FAILED') throw new Error(`Trade persistence failed: ${result.error}`);
   }
 
   public saveOptionDefinitions(definitions: OptionContractDefinition[]): void {
@@ -826,7 +846,7 @@ export class MarketDataStore implements IMarketDataStore {
     symbol: string,
     timeframe: string,
     provider: string
-  ): void {
+  ): boolean {
     try {
       this.insertBarStmt.run(
         provider,
@@ -843,8 +863,10 @@ export class MarketDataStore implements IMarketDataStore {
         bar.delta ?? null,
         'isPartial' in bar && bar.isPartial ? 1 : 0
       );
+      return true;
     } catch (err) {
       this.warnWriteFailure(`saveBar(${provider}/${symbol}/${timeframe} @ ${bar.time})`, err);
+      return false;
     }
   }
 

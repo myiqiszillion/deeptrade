@@ -710,7 +710,7 @@ export class ChartService {
           limit
         );
         if (fetchedTrades && fetchedTrades.length > 0) {
-          marketDataStore.saveTrades(
+          const commit = marketDataStore.saveTrades(
             fetchedTrades.map((t) => ({
               price: t.price,
               size: t.size,
@@ -721,6 +721,7 @@ export class ChartService {
             symbol,
             'databento'
           );
+          if (commit.status === 'FAILED') throw new Error(`Historical trade persistence failed: ${commit.error}`);
           const isCompleteFetch = fetchedTrades.length < limit;
           marketDataStore.recordCheckpoint(
             symbol,

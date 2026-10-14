@@ -64,7 +64,7 @@ const clients: WebSocket[] = [];
 try {
   // Same default warm context is shared by simultaneous authenticated browser connections.
   const ctx = await manager.getOrCreateContext('ES');
-  await wait(() => gate.counters.subscriptionCommands === 1);
+  await wait(() => gate.counters.subscriptionCommands === 1 && commands.length === 1); // Wait for mock server receipt, not just client socket.write.
   assert.equal(ctx.feedStatus, 'UNAVAILABLE'); assert.equal(ctx.feed!.isConnected(), false);
   assert.equal(gate.counters.subscriptionAcks, 0, 'Authentication is not subscription ACK');
   assert.deepEqual(commands, ['schema=trades|stype_in=continuous|symbols=ES.c.0|snapshot=0|is_last=1']);
