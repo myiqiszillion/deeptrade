@@ -1,0 +1,7 @@
+import '../../scripts/offline_guard.cjs';
+import { OrdinaryRuntimeGate } from '../src/marketData/ordinaryRuntime.js';
+import { DatabentoLiveClient } from '../src/databento/liveClient.js';
+const env={FUTURES_PROVIDER:'databento',DATABENTO_API_KEY:'offline-sentinel',DATABENTO_RUNTIME_START:'1',DATABENTO_RUNTIME_PROFILE:JSON.stringify({version:1,approved:true,approvalId:'same-approval',expiresAt:new Date(Date.now()+60000).toISOString(),dataset:'GLBX.MDP3',symbol:'ES',vendorSymbol:'ES.c.0',schema:'trades',history:false,gex:false,quoteBoard:false,reconnect:false})};
+const a=new OrdinaryRuntimeGate(env);a.claimConnection('ES');a.subscription();const b=new OrdinaryRuntimeGate(env);b.claimConnection('ES');b.subscription();console.log('REPRO reused approval across boots',a.counters,b.counters);
+const f=new DatabentoLiveClient({symbol:'ES.c.0',dataset:'GLBX.MDP3',schema:'trades',apiKey:'offline-sentinel',WebSocketClass:class {} as any,handlers:{onTrade(){},onDepth(){},onStatus(){},onError(){}}});let settled=false;const wait=f.waitForLive(100).catch(()=>{settled=true;});await f.disconnect();await new Promise(r=>setTimeout(r,10));console.log('REPRO disconnect leaves readiness pending',!settled);await wait;
+

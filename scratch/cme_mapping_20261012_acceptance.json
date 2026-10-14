@@ -1,0 +1,12 @@
+{
+  "dataset": "GLBX.MDP3",
+  "requestedSymbol": "ES.c.0",
+  "stypeIn": "continuous",
+  "resolvedInstrumentId": 10252,
+  "resolvedRawSymbol": "ESZ6",
+  "effectiveRange": {
+    "d0": "2026-10-12",
+    "d1": "2026-10-13"
+  },
+  "resolvedAt": "2026-10-12T11:28:53.970Z"
+}

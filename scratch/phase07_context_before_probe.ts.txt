@@ -1,0 +1,8 @@
+import '../../scripts/offline_guard.cjs';
+import { MarketContextManager } from '../src/marketData/marketContext.js';
+import { initializeOrdinaryRuntime } from '../src/marketData/ordinaryRuntime.js';
+import { ChartSession } from '../src/session.js';
+initializeOrdinaryRuntime({FUTURES_PROVIDER:'none'});
+let release!:()=>void;const factory:any=(symbol:string)=>({provider:'pending-fixture',feed:{provider:'pending-fixture',symbol,connect:()=>new Promise<void>(r=>{release=r;}),disconnect:async()=>{},isConnected:()=>false}});
+const m=new MarketContextManager(undefined,undefined,undefined,factory),s=new ChartSession({readyState:1,bufferedAmount:0,send(){}} as any);const attach=m.subscribe(s,'NQ','1m',s.nextGeneration('pane'),'pane');await Promise.resolve();await Promise.resolve();m.unsubscribe(s);release();await attach;console.log('REPRO pending pane attaches after whole-session detach',s.subscriptionOwners.size,m.getContext('NQ')!.subscriberCount);await m.disposeAll();
+const hang=new MarketContextManager(undefined,undefined,undefined,((symbol:string)=>({provider:'pending-fixture',feed:{provider:'pending-fixture',symbol,connect:()=>new Promise<void>(()=>{}),disconnect:async()=>{},isConnected:()=>false}})) as any);void hang.getOrCreateContext('NQ');await Promise.resolve();await Promise.resolve();let settled=false;void hang.disposeAll().then(()=>settled=true);await new Promise(r=>setTimeout(r,100));console.log('REPRO shutdown stuck on never-resolving connect',!settled);process.exit(0);

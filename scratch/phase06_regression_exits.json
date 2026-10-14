@@ -1,0 +1,13 @@
+{
+  "test:multi:offline": 0,
+  "test:health:offline": 0,
+  "verify:p0": 0,
+  "test:ordinary:offline": 0,
+  "test:identity:offline": 0,
+  "typecheck:all": 0,
+  "test:unit": 0,
+  "test:provenance:offline": 0,
+  "test:integration": 0,
+  "test:isolation": 0,
+  "test:durability:offline": 0
+}

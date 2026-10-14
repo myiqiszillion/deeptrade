@@ -1,0 +1,7 @@
+{
+  "test:multi:ui": 0,
+  "controlled-trades-offline": 0,
+  "test:soak:offline": 0,
+  "test:terminal:offline": 0,
+  "test:e2e": 0
+}
